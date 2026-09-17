@@ -116,8 +116,12 @@
       Sound.hit();
     } else if (hit.type === 'glass') {
       hit.obj.shatter(world, this.vx, this.vy);
-    } else if (hit.type === 'crate') {
-      hit.obj.damage(d.damage, world);
+    } else if (hit.type === 'prop') {
+      hit.obj.damage(d.damage, world, this.ownerRef);
+      world.fx.burst(this.x, this.y, 5, {
+        colors: hit.obj.type === 'barrel' ? ['#ffc23c', '#ff8a3c'] : ['#b98a4e', '#d4a566'],
+        speedMax: 190, lifeMax: 0.35
+      });
     } else {
       var a = Math.atan2(-this.vy, -this.vx);
       world.fx.burst(this.x, this.y, 5, {

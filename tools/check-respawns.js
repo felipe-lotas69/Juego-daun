@@ -45,12 +45,52 @@ for (const [setName, SET] of [['campaign', sb.window.LEVELS], ['versus', sb.wind
         }
       });
       // also: is there any floor under it at all?
-      const floors = (L.platforms || []).concat((L.glass || []).map(g => ({ ...g })));
+      const floors = (L.platforms || []).concat((L.glass || []).filter(g => g.h <= g.w));
       const supported = floors.some(f =>
         pt.x >= f.x - 14 && pt.x <= f.x + f.w + 14 && Math.abs(f.y - pt.y) < 26);
       if (!supported) console.log(`${setName} L${li + 1} ${L.name}: ${pt.tag} @${pt.x},${pt.y} has no floor directly under it`);
     });
   });
 }
+/* Props are placed by hand, so check each one actually rests on a surface
+   rather than floating above it or sunk into it. */
+let floaters = 0;
+for (const [setName, SET] of [['campaign', sb.window.LEVELS], ['versus', sb.window.VERSUS_MAPS]]) {
+  SET.forEach((L, li) => {
+    const surfaces = (L.platforms || []).concat((L.glass || []).filter(g => g.h <= g.w));
+    const props = (L.crates || []).concat(L.props || []);
+    props.forEach((pr, i) => {
+      const barrel = pr.type === 'barrel' || pr.explosive;
+      const w = pr.w || (barrel ? 24 : 30);
+      const h = pr.h || (barrel ? 33 : 30);
+      const box = { x: pr.x, y: pr.y, w, h };
+      const bottom = pr.y + h;
+
+      /* a stack is fine: a crate may rest on another prop */
+      const propTops = props.filter(o => o !== pr).map(o => {
+        const ob = o.type === 'barrel' || o.explosive;
+        return { x: o.x, y: o.y, w: o.w || (ob ? 24 : 30), h: o.h || (ob ? 33 : 30) };
+      });
+      const rest = surfaces.concat(propTops).find(f =>
+        pr.x + w > f.x + 2 && pr.x < f.x + f.w - 2 && Math.abs(f.y - bottom) <= 3);
+      const sunk = (L.platforms || []).some(f => overlap(box, f));
+
+      if (sunk) {
+        floaters++;
+        console.log(`${setName} L${li + 1} ${L.name}: prop ${i} (${barrel ? 'barrel' : 'crate'}) @${pr.x},${pr.y} is inside a platform`);
+      } else if (!rest) {
+        const below = surfaces
+          .filter(f => pr.x + w > f.x + 2 && pr.x < f.x + f.w - 2 && f.y >= bottom - 2)
+          .sort((a, b) => a.y - b.y)[0];
+        floaters++;
+        console.log(`${setName} L${li + 1} ${L.name}: prop ${i} (${barrel ? 'barrel' : 'crate'}) @${pr.x},${pr.y} rests on nothing`
+          + (below ? ` (nearest floor is ${below.y - bottom}px below; want y=${below.y - h})` : ' (no floor under it at all)'));
+      }
+    });
+  });
+}
+console.log(floaters ? `\n${floaters} prop(s) misplaced` : 'every prop rests on a surface');
+
 console.log(bad ? `\n${bad} respawn point(s) sit inside something lethal` : '\nno respawn point sits inside a hazard');
+if (floaters) process.exit(1);
 if (bad) process.exit(1);

@@ -32,8 +32,9 @@ function build(L) {
   const S = [];
   const add = (x,w,y,tag,door) => S.push({ x1:x, x2:x+w, y, tag, door: door||null });
   (L.platforms||[]).forEach((p,i)=>add(p.x,p.w,p.y,p.type==='bounce'?'bounce'+i:'plat'+i));
-  (L.glass||[]).forEach((g,i)=>add(g.x,g.w,g.y,'glass'+i));
-  (L.crates||[]).forEach((c,i)=>add(c.x,c.w||34,c.y,'crate'+i));
+  // A tall thin pane is a wall you smash through, not a ledge you stand on.
+  (L.glass||[]).forEach((g,i)=>{ if (g.h <= g.w) add(g.x,g.w,g.y,'glass'+i); });
+  // Props are destructible and shoveable, so a route must never depend on one.
   (L.elevators||[]).forEach((e,i)=>{
     add(e.x,e.w,e.y,'lift'+i+'A'); add(e.bx!=null?e.bx:e.x,e.w,e.by!=null?e.by:e.y,'lift'+i+'B');
   });

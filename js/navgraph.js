@@ -91,6 +91,8 @@
     }
     for (i = 0; i < world.glass.length; i++) {
       var gl = world.glass[i];
+      /* A tall thin pane is a wall to go through, not a ledge to stand on. */
+      if (gl.h > gl.w) continue;
       /* glass counts, but a bot would rather not trust it */
       this.addSurface(gl.x + 4, gl.x + gl.w - 4, gl.y, 'glass', gl, 0.18);
     }

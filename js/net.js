@@ -140,8 +140,16 @@
     for (i = 0; i < world.glass.length && i < s.gl.length; i++) {
       if (s.gl[i] && !world.glass[i].broken) world.glass[i].shatter(world, 0, 0);
     }
-    for (i = 0; i < world.crates.length && i < s.cr.length; i++) {
-      if (s.cr[i] && !world.crates[i].broken) world.crates[i].destroy(world);
+    for (i = 0; i < world.props.length && i < s.pr.length; i++) {
+      var pr = world.props[i], q = s.pr[i];
+      if (q.b) {
+        if (!pr.broken) {
+          if (pr.type === 'barrel') pr.blowUp(world); else pr.smash(world);
+        }
+        continue;
+      }
+      pr.x = q.x; pr.y = q.y;
+      pr.fuse = q.f ? 0.2 : 0;
     }
 
     /* pickups are rebuilt wholesale: they are few and they come and go */

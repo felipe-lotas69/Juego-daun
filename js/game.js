@@ -76,7 +76,8 @@
     });
     this.glass = (L.glass || []).map(function (g) { return new Glass(g); });
     this.elevators = (L.elevators || []).map(function (e) { return new Elevator(e); });
-    this.crates = (L.crates || []).map(function (c) { return new Crate(c); });
+    /* `crates` is the old key; `props` is the new one. Both build Props. */
+    this.props = (L.crates || []).concat(L.props || []).map(function (c) { return new Prop(c); });
     this.hazards = (L.hazards || []).map(function (h) { return new Hazard(h); });
     this.doors = (L.doors || []).map(function (d) { return new Door(d); });
     this.buttons = (L.buttons || []).map(function (b) { return new Button(b); });
@@ -180,8 +181,8 @@
       var g = this.glass[i];
       if (!g.broken) s.push({ x: g.x, y: g.y, w: g.w, h: g.h, dx: 0, dy: 0, type: 'glass', ref: g });
     }
-    for (i = 0; i < this.crates.length; i++) {
-      var c = this.crates[i];
+    for (i = 0; i < this.props.length; i++) {
+      var c = this.props[i];
       if (!c.broken) s.push({ x: c.x, y: c.y, w: c.w, h: c.h, dx: 0, dy: 0, type: 'wood', ref: c });
     }
     for (i = 0; i < this.doors.length; i++) {
@@ -197,10 +198,13 @@
     return false;
   };
 
-  World.prototype.lineOfSight = function (x0, y0, x1, y1) {
+  /* `ignore` is the thing you are looking AT: a barrel is solid, so without
+     this it would always block the sightline to itself. */
+  World.prototype.lineOfSight = function (x0, y0, x1, y1, ignore) {
     for (var i = 0; i < this.solids.length; i++) {
       var s = this.solids[i];
       if (s.ref && s.ref.kind === 'glass') continue;   /* you can see through windows */
+      if (ignore && s.ref === ignore) continue;
       if (U.segRect(x0, y0, x1, y1, s) >= 0) return false;
     }
     return true;
@@ -215,7 +219,7 @@
       t = U.segRect(x0, y0, x1, y1, s);
       if (t >= 0 && (!best || t < best.t)) {
         var kind = s.ref ? s.ref.kind : 'solid';
-        best = { t: t, type: kind === 'glass' ? 'glass' : (kind === 'crate' ? 'crate' : 'solid'), obj: s.ref || s };
+        best = { t: t, type: kind === 'glass' ? 'glass' : (kind === 'prop' ? 'prop' : 'solid'), obj: s.ref || s };
       }
     }
 
@@ -232,6 +236,54 @@
       if (pl === ownerRef || pl.dead || pl.finished) continue;
       t = U.segRect(x0, y0, x1, y1, pl);
       if (t >= 0 && (!best || t < best.t)) best = { t: t, type: 'player', obj: pl };
+    }
+    return best;
+  };
+
+  /* ------------------------------------------------- aim assist
+     Aiming is deliberately awkward here, so the shot is nudged onto
+     whatever is worth hitting: a gas barrel first, otherwise the nearest
+     rival. Only inside a cone you are already pointing down, and only
+     with line of sight, so it assists rather than plays for you. */
+  var ASSIST_CONE = 0.62;         /* about 35 degrees either side */
+  var ASSIST_RANGE = 560;
+
+  World.prototype.aimAssist = function (p) {
+    if (!p || p.dead || p.finished) return null;
+    var c = p.center();
+    var base = p.aim();
+    var best = null, bestScore = 0;
+    var self = this;
+
+    function consider(tx, ty, obj, bonus) {
+      var dx = tx - c.x, dy = ty - c.y;
+      var d = Math.sqrt(dx * dx + dy * dy);
+      if (d < 30 || d > ASSIST_RANGE) return;
+      var ang = Math.atan2(dy, dx);
+      var off = Math.abs(U.angleDiff(ang, base));
+      if (off > ASSIST_CONE) return;
+      if (!self.lineOfSight(c.x, c.y, tx, ty, obj)) return;
+      var score = (1 - off / ASSIST_CONE) * 0.62 + (1 - d / ASSIST_RANGE) * 0.38 + bonus;
+      if (score > bestScore) { bestScore = score; best = { x: tx, y: ty, obj: obj, angle: ang }; }
+    }
+
+    var i, cc;
+    for (i = 0; i < this.props.length; i++) {
+      var pr = this.props[i];
+      if (pr.broken || pr.type !== 'barrel' || pr.fuse > 0) continue;
+      cc = pr.center();
+      consider(cc.x, cc.y, pr, 0.34);
+    }
+    for (i = 0; i < this.players.length; i++) {
+      var o = this.players[i];
+      if (o === p || o.dead || o.finished) continue;
+      cc = o.center();
+      consider(cc.x, cc.y, o, 0);
+    }
+    for (i = 0; i < this.enemies.length; i++) {
+      if (this.enemies[i].dead) continue;
+      cc = this.enemies[i].center();
+      consider(cc.x, cc.y, this.enemies[i], 0);
     }
     return best;
   };
@@ -286,11 +338,21 @@
       var gc = U.rectCenter(g);
       if (U.dist(x, y, gc.x, gc.y) < radius + Math.max(g.w, g.h) * 0.5) g.shatter(this, 0, 0);
     }
-    for (i = 0; i < this.crates.length; i++) {
-      var c = this.crates[i];
-      if (c.broken) continue;
-      var cc = U.rectCenter(c);
-      if (U.dist(x, y, cc.x, cc.y) < radius + 18) c.destroy(this);
+    /* Props get thrown as well as hurt, and barrels take a fuse rather than
+       going off inside this loop - that is what makes a chain read. */
+    for (i = 0; i < this.props.length; i++) {
+      var pr = this.props[i];
+      if (pr.broken) continue;
+      var pcc = pr.center();
+      d = U.dist(x, y, pcc.x, pcc.y);
+      if (d > radius + 24) continue;
+      f = 1 - U.clamp(d / (radius + 24), 0, 1);
+      var pa2 = Math.atan2(pcc.y - y, pcc.x - x);
+      pr.vx += Math.cos(pa2) * force * f * 0.75;
+      pr.vy += Math.sin(pa2) * force * f * 0.75 - 130;
+      pr.settle = 0;
+      if (pr.type === 'barrel') pr.light(this, ownerRef);
+      else pr.damage(damage * f * 1.5, this, ownerRef);
     }
     this.buildSolids();
   };
@@ -430,6 +492,7 @@
       var input = p.brain ? p.brain.think(dt, this, p) : (inputs[i] || NULL_INPUT);
 
       p.prompt = p.dead ? null : this.findInteractable(p);
+      p.aimTarget = (p.isBot || p.dead || !p.weapon) ? null : this.aimAssist(p);
       if (!p.dead && input.interactPressed()) {
         if (!this.interact(p) && p.weapon) p.shoot(this);
       }
@@ -443,6 +506,8 @@
     for (i = 0; i < this.enemies.length; i++) this.enemies[i].update(dt, this);
 
     /* ---- pickups ---- */
+    for (i = 0; i < this.props.length; i++) this.props[i].update(dt, this);
+
     for (i = this.pickups.length - 1; i >= 0; i--) {
       var pk = this.pickups[i];
       pk.update(dt, this);
@@ -733,7 +798,7 @@
     this.gore.drawDecals(ctx);
     for (i = 0; i < this.doors.length; i++) this.doors[i].draw(ctx);
     for (i = 0; i < this.elevators.length; i++) this.elevators[i].draw(ctx);
-    for (i = 0; i < this.crates.length; i++) this.crates[i].draw(ctx);
+    for (i = 0; i < this.props.length; i++) this.props[i].draw(ctx);
     for (i = 0; i < this.buttons.length; i++) this.buttons[i].draw(ctx);
     for (i = 0; i < this.hazards.length; i++) this.hazards[i].draw(ctx, this.time);
     for (i = 0; i < this.pickups.length; i++) this.pickups[i].draw(ctx);
@@ -755,6 +820,23 @@
 
     /* glass on top so you see the player through it */
     for (i = 0; i < this.glass.length; i++) this.glass[i].draw(ctx, this.time);
+
+    /* what the next shot will actually hit */
+    var lock = this.player.aimTarget;
+    if (lock && !this.player.dead) {
+      var P2 = Pixel.SIZE;
+      var lx = Pixel.s(lock.x), ly = Pixel.s(lock.y);
+      var r2 = P2 * 6;
+      var col = (lock.obj && lock.obj.type === 'barrel') ? '#ff6a4d' : '#ffd15c';
+      Pixel.rect(ctx, lx - r2, ly - r2, P2 * 3, P2, col);
+      Pixel.rect(ctx, lx - r2, ly - r2, P2, P2 * 3, col);
+      Pixel.rect(ctx, lx + r2 - P2 * 3, ly - r2, P2 * 3, P2, col);
+      Pixel.rect(ctx, lx + r2 - P2, ly - r2, P2, P2 * 3, col);
+      Pixel.rect(ctx, lx - r2, ly + r2 - P2, P2 * 3, P2, col);
+      Pixel.rect(ctx, lx - r2, ly + r2 - P2 * 3, P2, P2 * 3, col);
+      Pixel.rect(ctx, lx + r2 - P2 * 3, ly + r2 - P2, P2 * 3, P2, col);
+      Pixel.rect(ctx, lx + r2 - P2, ly + r2 - P2 * 3, P2, P2 * 3, col);
+    }
 
     /* interaction highlight */
     if (this.player.prompt) {

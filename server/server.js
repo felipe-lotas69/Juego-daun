@@ -189,7 +189,8 @@ function snapshot() {
     dz: w.doors.map(d => ({ x: Math.round(d.x), y: Math.round(d.y) })),
     hz: w.hazards.map(h => ({ x: Math.round(h.x), y: Math.round(h.y) })),
     gl: w.glass.map(g => (g.broken ? 1 : 0)),
-    cr: w.crates.map(c => (c.broken ? 1 : 0)),
+    pr: w.props.map(c => ({ x: Math.round(c.x), y: Math.round(c.y),
+                            b: c.broken ? 1 : 0, f: c.fuse > 0 ? 1 : 0 })),
     pk: w.pickups.map(p => ({ x: Math.round(p.x), y: Math.round(p.y), k: p.key }))
   };
 }

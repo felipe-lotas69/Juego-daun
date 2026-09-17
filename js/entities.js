@@ -31,7 +31,9 @@
           if (sx > 0) e.x = s.x - e.w; else e.x = s.x + s.w;
           e.hitWallDir = sx > 0 ? 1 : -1;
           e.hitWall = s;
-          if (Math.abs(e.vx) > 260 && e.bouncy) e.vx = -e.vx * 0.36;
+          var soft = !!(s.ref && s.ref.dynamic && !s.ref.broken);
+          if (soft) e.vx *= 0.55;                      /* lean into it and keep shoving */
+          else if (Math.abs(e.vx) > 260 && e.bouncy) e.vx = -e.vx * 0.36;
           else e.vx = 0;
           sx = 0;
           break;
@@ -67,6 +69,36 @@
       }
       if (sx === 0 && sy === 0) break;
     }
+  }
+
+  /* What happens when a player runs into something that is not just wall.
+     Skipped during bot planning: a rollout must not shatter real glass or
+     shove real crates around. */
+  function playerContact(e, sd, axis, world) {
+    if (e.quietSim) return true;
+    var ref = sd.ref;
+    if (!ref) return true;
+
+    if (ref.kind === 'glass' && !ref.broken) {
+      var sp = axis === 'x' ? Math.abs(e.vx) : Math.abs(e.vy);
+      if (sp > 300) {
+        ref.shatter(world, e.vx, e.vy);
+        world.shake(3.5);
+        if (axis === 'x') e.vx *= 0.82; else e.vy *= 0.82;
+        return false;                       /* straight through it */
+      }
+    }
+
+    if (ref.dynamic && !ref.broken) {
+      if (axis === 'x') {
+        ref.vx += U.clamp(e.vx * 0.95, -520, 520);
+        ref.vy -= 30;
+        ref.settle = 0;
+      } else if (axis === 'y' && e.vy > 320) {
+        ref.damage(e.vy * 0.05, world, e);
+      }
+    }
+    return true;
   }
 
   /* ==================================================================
@@ -138,9 +170,9 @@
     return { x: this.x + this.w / 2, y: this.y + this.h * 0.42 };
   };
 
-  Player.prototype.muzzle = function () {
+  Player.prototype.muzzle = function (overrideAngle) {
     var c = this.center();
-    var a = this.aim();
+    var a = overrideAngle == null ? this.aim() : overrideAngle;
     var len = this.weapon ? WEAPONS[this.weapon.key].barrel + 8 : 14;
     return { x: c.x + Math.cos(a) * len, y: c.y + Math.sin(a) * len };
   };
@@ -292,7 +324,7 @@
     }
 
     this.hitWall = null;
-    moveAndCollide(this, this.vx * dt, this.vy * dt, world);
+    moveAndCollide(this, this.vx * dt, this.vy * dt, world, playerContact);
 
     if (quiet) return;
 
@@ -312,8 +344,15 @@
     if (!this.weapon) return;
     var def = WEAPONS[this.weapon.key];
     if (this.weapon.ammo <= 0) { Sound.click(); return; }
-    var m = this.muzzle();
-    var kick = fireWeapon(world, this, this.weapon.key, this.aim(), m.x, m.y, 'player');
+    /* Humans get the assist; bots have their own accuracy model and would
+       become dead-eyed if they got this too. */
+    var angle = this.aim();
+    if (!this.isBot && this.aimTarget) {
+      var mc = this.center();
+      angle = Math.atan2(this.aimTarget.y - mc.y, this.aimTarget.x - mc.x);
+    }
+    var m = this.muzzle(angle);
+    var kick = fireWeapon(world, this, this.weapon.key, angle, m.x, m.y, 'player');
     this.weapon.ammo--;
     this.cooldown = def.rate;
     this.muzzleFlash = 1;
@@ -837,47 +876,177 @@
   };
 
   /* ==================================================================
-     CRATE  (destructible, solid)
+     PROP - crates and gas barrels
+
+     These are solid like scenery but they fall, get shoved around, take
+     damage and go off. A barrel lights a short fuse rather than vanishing
+     instantly, which is what makes a chain of them readable.
      ================================================================== */
-  function Crate(o) {
-    this.kind = 'crate';
-    this.x = o.x; this.y = o.y; this.w = o.w || 34; this.h = o.h || 34;
-    this.health = o.health || 45;
+  function Prop(o) {
+    this.kind = 'prop';
+    this.type = o.type || (o.explosive ? 'barrel' : 'crate');
+    this.dynamic = true;
+    this.w = o.w || (this.type === 'barrel' ? 24 : 30);
+    this.h = o.h || (this.type === 'barrel' ? 33 : 30);
+    this.x = o.x; this.y = o.y;
+    this.vx = 0; this.vy = 0;
+    this.grounded = false;
+    this.groundRef = null;
+    this.health = o.health || (this.type === 'barrel' ? 26 : 50);
+    this.maxHealth = this.health;
     this.broken = false;
-    this.explosive = !!o.explosive;
+    this.fuse = 0;
+    this.litBy = null;
+    this.hitFlash = 0;
+    this.roll = 0;
+    this.settle = 0;
   }
-  Crate.prototype.damage = function (amount, world) {
+
+  Prop.prototype.center = function () { return { x: this.x + this.w / 2, y: this.y + this.h / 2 }; };
+
+  Prop.prototype.update = function (dt, world) {
+    if (this.broken) return;
+    this.hitFlash = Math.max(0, this.hitFlash - dt * 4);
+
+    if (this.fuse > 0) {
+      this.fuse -= dt;
+      if (this.fuse <= 0) { this.blowUp(world); return; }
+    }
+
+    /* asleep until something disturbs it */
+    if (this.settle > 1.2 && this.grounded && !this.vx && !this.vy) return;
+
+    this.vy += GRAV * dt;
+    if (this.vy > MAX_FALL) this.vy = MAX_FALL;
+    this.vx *= U.damp(this.grounded ? (this.type === 'barrel' ? 1.3 : 2.0) : 0.3, dt);
+    if (Math.abs(this.vx) < 4) this.vx = 0;
+
+    if (this.grounded && this.groundRef && (this.groundRef.dx || this.groundRef.dy)) {
+      this.x += this.groundRef.dx;
+      this.y += this.groundRef.dy;
+    }
+
+    var self = this;
+    var preVy = this.vy;
+    moveAndCollide(this, this.vx * dt, this.vy * dt, world, function (e, sd, axis) {
+      if (sd.ref === self) return false;                 /* never collide with yourself */
+      if (sd.ref && sd.ref.kind === 'glass' && !sd.ref.broken && Math.abs(preVy) > 520) {
+        sd.ref.shatter(world, e.vx, e.vy);               /* heavy props go through glass */
+        return false;
+      }
+      /* pass the shove down a row of them */
+      if (sd.ref && sd.ref.dynamic && !sd.ref.broken && axis === 'x') {
+        sd.ref.vx += e.vx * 0.7;
+        sd.ref.settle = 0;
+      }
+      return true;
+    });
+
+    if (this.grounded) {
+      this.settle += dt;
+      if (preVy > 700) this.damage(preVy * 0.02, world, null);
+    } else {
+      this.settle = 0;
+    }
+
+    /* barrels roll, crates just sit there */
+    if (this.type === 'barrel') this.roll += this.vx * dt * 0.06;
+
+    /* a prop moving with intent knocks people over */
+    if (Math.abs(this.vx) > 180 || Math.abs(this.vy) > 340) {
+      for (var i = 0; i < world.players.length; i++) {
+        var pl = world.players[i];
+        if (pl.dead || pl.finished) continue;
+        if (!U.aabb(this, pl)) continue;
+        pl.damage(9, U.sign(this.vx) * 260, -140, world, null);
+        this.vx *= 0.4;
+      }
+    }
+
+    if (this.y > world.level.height + 200) this.broken = true;
+  };
+
+  Prop.prototype.damage = function (amount, world, by) {
     if (this.broken) return;
     this.health -= amount;
-    if (this.health <= 0) this.destroy(world);
-    else {
-      world.fx.burst(this.x + this.w / 2, this.y + this.h / 2, 5, {
-        colors: ['#b98a4e', '#8a6534'], speedMax: 150, lifeMax: 0.4
+    this.hitFlash = 1;
+    this.settle = 0;
+    if (this.health > 0) {
+      world.fx.burst(this.x + this.w / 2, this.y + this.h / 2, 4, {
+        colors: this.type === 'barrel' ? ['#ffc23c', '#ff8a3c'] : ['#b98a4e', '#8a6534'],
+        speedMax: 150, lifeMax: 0.35
       });
+      return;
     }
+    if (this.type === 'barrel') this.light(world, by);
+    else this.smash(world);
   };
-  Crate.prototype.destroy = function (world) {
+
+  /* Light the fuse. A beat of warning turns a chain into a spectacle
+     instead of one indistinguishable bang. */
+  Prop.prototype.light = function (world, by) {
+    if (this.broken || this.fuse > 0) return;
+    this.fuse = U.rand(0.16, 0.32);
+    this.litBy = by || null;
+    this.health = Math.min(this.health, 1);
+    Sound.crack();
+  };
+
+  Prop.prototype.blowUp = function (world) {
     if (this.broken) return;
     this.broken = true;
-    world.fx.burst(this.x + this.w / 2, this.y + this.h / 2, 20, {
-      colors: ['#b98a4e', '#8a6534', '#d4a566'], speedMax: 260, lifeMax: 0.9, sizeMax: 6, bounce: 0.3
+    var c = this.center();
+    world.fx.burst(c.x, c.y, 16, {
+      colors: ['#8a5a2a', '#c4a24a'], speedMax: 260, lifeMax: 0.7, sizeMax: 5, bounce: 0.3
+    });
+    world.explode(c.x, c.y, 132, 58, 720, 'world', this.litBy);
+  };
+
+  Prop.prototype.smash = function (world) {
+    if (this.broken) return;
+    this.broken = true;
+    var c = this.center();
+    world.fx.burst(c.x, c.y, 22, {
+      colors: ['#b98a4e', '#8a6534', '#d4a566'], speedMax: 280, lifeMax: 0.9, sizeMax: 6, bounce: 0.3
     });
     Sound.thud();
-    if (this.explosive) world.explode(this.x + this.w / 2, this.y + this.h / 2, 130, 70, 700, 'world');
+    world.shake(2.5);
   };
-  Crate.prototype.draw = function (ctx) {
+
+  Prop.prototype.draw = function (ctx) {
     if (this.broken) return;
     var P = Pixel.SIZE;
-    Pixel.rect(ctx, this.x, this.y, this.w, this.h, this.explosive ? '#9c4630' : '#8a6534');
-    Pixel.rect(ctx, this.x + P, this.y + P, this.w - P * 2, this.h - P * 2,
-               this.explosive ? '#c46446' : '#b98a4e');
-    var col = this.explosive ? '#6d2c1c' : '#6d4e22';
-    for (var i = 0; i < Math.floor(this.w / P) - 1; i++) {
-      Pixel.rect(ctx, this.x + P + i * P, this.y + P + i * P, P, P, col);
-      Pixel.rect(ctx, this.x + this.w - P * 2 - i * P, this.y + P + i * P, P, P, col);
-    }
-    if (this.explosive) {
-      Pixel.text(ctx, '!', this.x + this.w / 2, this.y + this.h / 2 - P * 2, P, '#ffc23c', 'center');
+    var x = Pixel.s(this.x), y = Pixel.s(this.y), w = this.w, h = this.h;
+    var flash = this.fuse > 0 && Math.floor(this.fuse * 26) % 2 === 0;
+
+    if (this.type === 'barrel') {
+      var body = flash ? '#ffffff' : (this.hitFlash > 0.4 ? '#ff9a6a' : '#c4432a');
+      var band = flash ? '#ffe9a8' : '#8e2a18';
+      Pixel.rect(ctx, x, y, w, h, body);
+      Pixel.rect(ctx, x, y, w, P, band);
+      Pixel.rect(ctx, x, y + h - P, w, P, band);
+      Pixel.rect(ctx, x, y + P * 4, w, P, band);
+      Pixel.rect(ctx, x, y + h - P * 5, w, P, band);
+      /* hazard mark */
+      Pixel.rect(ctx, x + P * 2, y + P * 6, P * 4, P * 3, flash ? '#c4432a' : '#ffc23c');
+      /* a rim of light so it pops off the scenery */
+      Pixel.rect(ctx, x, y + P, P, h - P * 2, flash ? '#ffffff' : '#e0644a');
+      if (this.fuse > 0) {
+        Pixel.rect(ctx, x + w / 2 - P, y - P * 2, P * 2, P * 2, '#fff3c4');
+      }
+    } else {
+      var base = this.hitFlash > 0.4 ? '#d8b070' : '#8a6534';
+      Pixel.rect(ctx, x, y, w, h, base);
+      Pixel.rect(ctx, x + P, y + P, w - P * 2, h - P * 2, this.hitFlash > 0.4 ? '#f0d09a' : '#b98a4e');
+      for (var i = 0; i < Math.floor(w / P) - 1; i++) {
+        Pixel.rect(ctx, x + P + i * P, y + P + i * P, P, P, '#6d4e22');
+        Pixel.rect(ctx, x + w - P * 2 - i * P, y + P + i * P, P, P, '#6d4e22');
+      }
+      /* damage shows as missing planks */
+      if (this.health < this.maxHealth * 0.5) {
+        Pixel.rect(ctx, x + P * 2, y + P * 2, P * 2, P * 2, '#5d4018');
+        Pixel.rect(ctx, x + w - P * 4, y + h - P * 4, P * 2, P * 2, '#5d4018');
+      }
     }
   };
 
@@ -1170,7 +1339,7 @@
   root.Enemy = Enemy;
   root.Elevator = Elevator;
   root.Glass = Glass;
-  root.Crate = Crate;
+  root.Prop = Prop;
   root.Hazard = Hazard;
   root.Pickup = Pickup;
   root.Button = Button;

@@ -55,6 +55,25 @@ back off — through the real physics for two thirds of a second and picking the
 one that gets furthest without dying. That is also how they learn to wait out
 an elevator piston, follow a saw blade through, and stop short of a ledge.
 
+## Things to break
+
+Crates and gas barrels are physical: they fall, stack, get shoved when you walk
+into them, and get flung across the roof by a blast. Shoot a barrel and it
+lights a short fuse before going off, which is long enough to read — and long
+enough for it to take its neighbours with it, so a row of them goes up in a
+chain. Crates just come apart.
+
+Glass is not only underfoot. Every map has panes standing across the running
+line, and hitting one with pace puts you straight through it instead of
+stopping you. The same goes for a glass floor you land on hard, or a crate
+thrown through one.
+
+Because aiming by leaning is deliberately awkward, the shot is nudged onto
+whatever is worth hitting: a gas barrel first, otherwise the nearest rival.
+It only assists inside a cone you are already pointing down, only with line of
+sight, and it shows you the lock — so it helps you commit rather than playing
+for you. Bots keep their own accuracy model and do not get it.
+
 ## Ways to die that aren't a bullet
 
 Long drops, lava, spikes, saw blades, and the elevator pistons, which do not
@@ -127,6 +146,17 @@ node server/server.js          # or: python3 -m http.server 8000
 Opening `index.html` straight off disk works too — the scripts are plain classic
 scripts, not ES modules, specifically so `file://` doesn't break.
 
+## Checks
+
+```bash
+tools/verify-all.sh
+```
+
+Runs the level verifiers: goal reachability through door-gated progression,
+geometry intruding into standing space, respawn points sitting inside a
+hazard's sweep, and props that float or sink instead of resting on a surface.
+The same script runs in CI on every push.
+
 ## How the levels were validated
 
 The jump envelope was measured from the running engine rather than guessed, by
@@ -154,7 +184,7 @@ js/audio.js        WebAudio sound synthesis
 js/particles.js    particle + debris system
 js/gore.js         gibs, arterial spray, blood decals
 js/weapons.js      weapon defs, bullets, explosions
-js/entities.js     player, enemies, elevators, pistons, glass, hazards, pickups
+js/entities.js     player, enemies, elevators, pistons, glass, props, hazards, pickups
 js/levels.js       the six campaign levels, as data
 js/versusmaps.js   the three race maps
 js/navgraph.js     walkable graph + A* over a map

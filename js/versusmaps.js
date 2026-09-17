@@ -41,7 +41,11 @@
       glass: [
         G(520, 760, 180, 16),
         G(1660, 620, 100, 14),
-        G(2400, 690, 160, 14)
+        G(2400, 690, 160, 14),
+        /* panes across the running line: hit them with pace and go through */
+        G(380, 700, 12, 60),
+        G(1300, 630, 12, 60),
+        G(3120, 480, 12, 60)
       ],
       elevators: [
         /* the piston. it is on a timer and it does not care about you. */
@@ -52,9 +56,23 @@
         { type: 'saw', x: 1140, y: 653, w: 74, h: 74, bx: 1200, by: 653, speed: 150 },
         { type: 'saw', x: 2180, y: 653, w: 74, h: 74, bx: 2260, by: 653, speed: 165 }
       ],
-      crates: [
-        { x: 760, y: 726, w: 34, h: 34 },
-        { x: 794, y: 726, w: 34, h: 34, explosive: true }
+      props: [
+        { type: 'crate', x: 420, y: 730 },
+        { type: 'barrel', x: 748, y: 727 },
+        { type: 'barrel', x: 776, y: 727 },
+        { type: 'crate', x: 812, y: 730 },
+        { type: 'barrel', x: 1082, y: 657 },
+        { type: 'barrel', x: 1110, y: 657 },
+        /* right under the piston: let it do the work for you */
+        { type: 'barrel', x: 1768, y: 587 },
+        { type: 'barrel', x: 1794, y: 587 },
+        { type: 'crate', x: 2345, y: 660 },
+        { type: 'crate', x: 2345, y: 630 },
+        { type: 'barrel', x: 2596, y: 587 },
+        { type: 'barrel', x: 2624, y: 587 },
+        { type: 'barrel', x: 2960, y: 507 },
+        { type: 'barrel', x: 2988, y: 507 },
+        { type: 'crate', x: 3040, y: 510 }
       ],
       pickups: [
         { x: 260, y: 736, key: 'pistol' },
@@ -119,7 +137,10 @@
         G(740, 1500, 160, 14),
         G(1120, 1150, 120, 14),
         G(460, 960, 120, 14),
-        G(400, 720, 140, 14)
+        G(400, 720, 140, 14),
+        G(1380, 1730, 12, 60),
+        G(1080, 540, 12, 60),
+        G(1000, 320, 12, 60)
       ],
       elevators: [
         { x: 1400, y: 1974, w: 160, h: 16, by: 1810, mode: 'auto', speed: 115, wait: 0.9 },
@@ -135,9 +156,21 @@
         { type: 'saw', x: 1260, y: 1113, w: 74, h: 74, bx: 1400, by: 1113, speed: 185 },
         { type: 'saw', x: 580, y: 623, w: 74, h: 74, bx: 700, by: 623, speed: 175 }
       ],
-      crates: [
-        { x: 620, y: 2166, w: 34, h: 34 },
-        { x: 1300, y: 1756, w: 34, h: 34, explosive: true }
+      props: [
+        { type: 'crate', x: 620, y: 2170 },
+        { type: 'barrel', x: 664, y: 2167 },
+        { type: 'barrel', x: 692, y: 2167 },
+        { type: 'barrel', x: 1100, y: 1967 },
+        { type: 'barrel', x: 1128, y: 1967 },
+        { type: 'crate', x: 1300, y: 1760 },
+        { type: 'barrel', x: 1340, y: 1757 },
+        { type: 'barrel', x: 960, y: 1397 },
+        { type: 'barrel', x: 1300, y: 1117 },
+        { type: 'barrel', x: 280, y: 927 },
+        { type: 'barrel', x: 308, y: 927 },
+        { type: 'barrel', x: 600, y: 627 },
+        { type: 'barrel', x: 700, y: 347 },
+        { type: 'crate', x: 760, y: 350 }
       ],
       pickups: [
         { x: 700, y: 2176, key: 'pistol' },
@@ -197,7 +230,10 @@
         G(2060, 950, 140, 16),
         G(860, 700, 140, 14),
         G(1240, 630, 160, 14),
-        G(2020, 630, 140, 14)
+        G(2020, 630, 140, 14),
+        G(300, 960, 12, 60),
+        G(1600, 960, 12, 60),
+        G(2760, 420, 12, 60)
       ],
       elevators: [
         { x: 460, y: 1004, w: 160, h: 16, bx: 460, by: 684, mode: 'auto', speed: 130, wait: 0.9 },
@@ -213,11 +249,25 @@
         { type: 'saw', x: 1060, y: 593, w: 74, h: 74, bx: 1180, by: 593, speed: 160 },
         { type: 'saw', x: 2200, y: 523, w: 74, h: 74, bx: 2340, by: 523, speed: 180 }
       ],
-      crates: [
-        { x: 680, y: 986, w: 34, h: 34, explosive: true },
-        { x: 1480, y: 986, w: 34, h: 34 },
-        { x: 1514, y: 986, w: 34, h: 34, explosive: true },
-        { x: 2260, y: 986, w: 34, h: 34 }
+      props: [
+        { type: 'crate', x: 380, y: 990 },
+        { type: 'barrel', x: 416, y: 987 },
+        { type: 'barrel', x: 680, y: 987 },
+        { type: 'barrel', x: 708, y: 987 },
+        { type: 'crate', x: 1480, y: 990 },
+        { type: 'barrel', x: 1516, y: 987 },
+        { type: 'barrel', x: 1544, y: 987 },
+        { type: 'crate', x: 2260, y: 990 },
+        { type: 'barrel', x: 2296, y: 987 },
+        /* the high road is lined with them */
+        { type: 'barrel', x: 656, y: 667 },
+        { type: 'barrel', x: 684, y: 667 },
+        { type: 'barrel', x: 1036, y: 597 },
+        { type: 'barrel', x: 1440, y: 667 },
+        { type: 'barrel', x: 1816, y: 597 },
+        { type: 'barrel', x: 2600, y: 447 },
+        { type: 'barrel', x: 2628, y: 447 },
+        { type: 'crate', x: 2680, y: 450 }
       ],
       pickups: [
         { x: 240, y: 996, key: 'pistol' },

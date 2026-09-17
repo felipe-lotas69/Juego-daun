@@ -37,14 +37,21 @@
         P(2030, 380, 650, 500, 'solid')
       ],
       glass: [
-        G(1420, 660, 160, 16)
+        G(1420, 660, 160, 16),
+        G(560, 700, 12, 60),
+        G(2260, 320, 12, 60)
       ],
       elevators: [
         { x: 1920, y: 644, w: 110, h: 16, by: 380, mode: 'auto', speed: 95, wait: 1.1 }
       ],
-      crates: [
-        { x: 1180, y: 626, w: 34, h: 34 },
-        { x: 1214, y: 626, w: 34, h: 34 }
+      props: [
+        { type: 'crate', x: 1180, y: 630 },
+        { type: 'crate', x: 1214, y: 630 },
+        { type: 'barrel', x: 1252, y: 627 },
+        { type: 'barrel', x: 1280, y: 627 },
+        { type: 'barrel', x: 1700, y: 627 },
+        { type: 'crate', x: 2100, y: 350 },
+        { type: 'barrel', x: 2140, y: 347 }
       ],
       pickups: [
         { x: 640, y: 676, key: 'pistol' }
@@ -86,11 +93,11 @@
         P(1230, 1558, 200, 18, 'metal'),
 
         P(1430, 1470, 330, 18, 'metal'),
-        P(1040, 1396, 240, 18, 'metal'),
-        P(700, 1334, 220, 18, 'metal'),
-        P(330, 1322, 220, 18, 'metal'),
+        P(1120, 1400, 240, 18, 'metal'),
+        P(780, 1340, 220, 18, 'metal'),
+        P(400, 1322, 220, 18, 'metal'),
 
-        P(60, 1240, 240, 18, 'metal'),
+        P(60, 1252, 240, 18, 'metal'),
         P(280, 1100, 300, 20, 'solid'),          /* landing off the lift */
         P(470, 1030, 200, 18, 'metal'),
         P(820, 1030, 220, 18, 'metal'),
@@ -112,16 +119,32 @@
         G(1400, 950, 100, 14),
         G(690, 670, 140, 14),
         G(680, 300, 80, 30),                     /* the pane between the two roof halves */
-        G(580, 1100, 110, 20)
+        G(580, 1100, 110, 20),
+        /* run at these and you go straight through */
+        G(300, 1646, 12, 60),
+        G(1000, 1498, 12, 60),
+        G(1660, 1410, 12, 60),
+        G(560, 970, 12, 60),
+        G(1100, 730, 12, 60),
+        G(1200, 240, 12, 60)
       ],
       elevators: [
-        { x: 60, y: 1222, w: 180, h: 16, by: 1116, mode: 'auto', speed: 80, wait: 1.0 },
+        { x: 60, y: 1236, w: 180, h: 16, by: 1116, mode: 'auto', speed: 80, wait: 1.0 },
         { x: 60, y: 542, w: 180, h: 18, by: 300, mode: 'call', speed: 105, label: 'ROOF' }
       ],
-      crates: [
-        { x: 900, y: 1524, w: 34, h: 34 },
-        { x: 1500, y: 1436, w: 34, h: 34 },
-        { x: 1534, y: 1436, w: 34, h: 34 }
+      props: [
+        { type: 'crate', x: 900, y: 1540 },
+        { type: 'barrel', x: 940, y: 1537 },
+        { type: 'crate', x: 1500, y: 1440 },
+        { type: 'crate', x: 1534, y: 1440 },
+        { type: 'barrel', x: 1572, y: 1437 },
+        { type: 'barrel', x: 1600, y: 1437 },
+        { type: 'barrel', x: 880, y: 997 },
+        { type: 'barrel', x: 1240, y: 917 },
+        { type: 'barrel', x: 900, y: 697 },
+        { type: 'barrel', x: 480, y: 637 },
+        { type: 'crate', x: 340, y: 550 },
+        { type: 'barrel', x: 900, y: 267 }
       ],
       pickups: [
         { x: 620, y: 1608, key: 'pistol' },
@@ -181,6 +204,9 @@
       ],
       glass: [
         G(620, 1340, 140, 16),
+        G(300, 1280, 12, 60),
+        G(1900, 840, 12, 60),
+        G(2700, 240, 12, 60),
         G(2000, 1120, 120, 16),
         G(1300, 420, 300, 24),
         G(1980, 360, 220, 24)
@@ -199,10 +225,18 @@
         { x: 1900, y: 1098, target: 'door1' },
         { x: 2380, y: 286, target: 'door2', plate: true, w: 66, h: 14 }
       ],
-      crates: [
-        { x: 2280, y: 1086, w: 34, h: 34 },
-        { x: 1350, y: 811, w: 34, h: 34 },
-        { x: 1384, y: 811, w: 34, h: 34, explosive: true }
+      props: [
+        { type: 'crate', x: 2280, y: 1090 },
+        { type: 'barrel', x: 2318, y: 1087 },
+        { type: 'crate', x: 1350, y: 815 },
+        { type: 'barrel', x: 1388, y: 812 },
+        { type: 'barrel', x: 1416, y: 812 },
+        { type: 'barrel', x: 1760, y: 867 },
+        { type: 'barrel', x: 1788, y: 867 },
+        { type: 'crate', x: 940, y: 760 },
+        { type: 'barrel', x: 500, y: 702 },
+        { type: 'barrel', x: 2500, y: 267 },
+        { type: 'barrel', x: 2528, y: 267 }
       ],
       pickups: [
         { x: 400, y: 1316, key: 'pistol' },
@@ -260,6 +294,8 @@
       ],
       glass: [
         G(940, 1000, 120, 16),
+        G(300, 940, 12, 60),
+        G(2800, 1000, 12, 60),
         G(1840, 870, 120, 16),
         G(2340, 800, 120, 16),
         G(2680, 730, 120, 16)
@@ -276,10 +312,16 @@
         { type: 'spike', x: 1660, y: 1160, w: 700, h: 40 },
         { type: 'saw', x: 2860, y: 693, w: 74, h: 74, bx: 2960, by: 693, speed: 120 }
       ],
-      crates: [
-        { x: 700, y: 966, w: 34, h: 34 },
-        { x: 2500, y: 766, w: 34, h: 34 },
-        { x: 2900, y: 696, w: 34, h: 34, explosive: true }
+      props: [
+        { type: 'crate', x: 700, y: 970 },
+        { type: 'barrel', x: 738, y: 967 },
+        { type: 'barrel', x: 766, y: 967 },
+        { type: 'crate', x: 2500, y: 770 },
+        { type: 'barrel', x: 2538, y: 767 },
+        { type: 'barrel', x: 2620, y: 1027 },
+        { type: 'barrel', x: 2648, y: 1027 },
+        { type: 'barrel', x: 3100, y: 627 },
+        { type: 'crate', x: 3140, y: 630 }
       ],
       pickups: [
         { x: 300, y: 976, key: 'smg' },
@@ -332,6 +374,9 @@
       ],
       glass: [
         G(880, 980, 140, 18),
+        G(300, 920, 12, 60),
+        G(2200, 920, 12, 60),
+        G(2860, 320, 12, 60),
         G(1640, 980, 160, 18),
         G(1280, 620, 220, 18),
         G(2260, 500, 200, 18)
@@ -345,11 +390,19 @@
         { type: 'saw', x: 1440, y: 800, w: 74, h: 74, bx: 1700, by: 800, speed: 180 },
         { type: 'spike', x: 2000, y: 1150, w: 160, h: 40 }
       ],
-      crates: [
-        { x: 700, y: 946, w: 34, h: 34, explosive: true },
-        { x: 1450, y: 946, w: 34, h: 34 },
-        { x: 1484, y: 946, w: 34, h: 34, explosive: true },
-        { x: 2300, y: 946, w: 34, h: 34 }
+      props: [
+        { type: 'barrel', x: 700, y: 947 },
+        { type: 'barrel', x: 728, y: 947 },
+        { type: 'crate', x: 1450, y: 950 },
+        { type: 'barrel', x: 1488, y: 947 },
+        { type: 'barrel', x: 1516, y: 947 },
+        { type: 'crate', x: 2300, y: 950 },
+        { type: 'barrel', x: 2338, y: 947 },
+        { type: 'barrel', x: 1060, y: 877 },
+        { type: 'barrel', x: 1840, y: 857 },
+        { type: 'barrel', x: 2060, y: 467 },
+        { type: 'barrel', x: 2088, y: 467 },
+        { type: 'crate', x: 2900, y: 350 }
       ],
       pickups: [
         { x: 260, y: 956, key: 'pistol' },
@@ -412,6 +465,11 @@
       ],
       glass: [
         G(560, 1180, 140, 18),
+        G(900, 1120, 12, 60),
+        G(2200, 1120, 12, 60),
+        G(3100, 760, 12, 60),
+        G(1700, 180, 12, 60),
+        G(2900, 120, 12, 60),
         G(1480, 1030, 140, 18),
         G(2780, 760, 160, 24),
         G(2300, 700, 160, 24),
@@ -435,11 +493,21 @@
         { x: 1300, y: 1078, target: 'vaultA' },
         { x: 2200, y: 166, target: 'vaultB', plate: true, w: 70, h: 14 }
       ],
-      crates: [
-        { x: 300, y: 1146, w: 34, h: 34 },
-        { x: 2250, y: 1146, w: 34, h: 34, explosive: true },
-        { x: 2284, y: 1146, w: 34, h: 34 },
-        { x: 3200, y: 786, w: 34, h: 34 }
+      props: [
+        { type: 'crate', x: 300, y: 1150 },
+        { type: 'barrel', x: 338, y: 1147 },
+        { type: 'barrel', x: 2250, y: 1147 },
+        { type: 'crate', x: 2288, y: 1150 },
+        { type: 'barrel', x: 2326, y: 1147 },
+        { type: 'crate', x: 3200, y: 790 },
+        { type: 'barrel', x: 3238, y: 787 },
+        { type: 'barrel', x: 2500, y: 727 },
+        { type: 'barrel', x: 1600, y: 607 },
+        { type: 'barrel', x: 700, y: 487 },
+        { type: 'barrel', x: 728, y: 487 },
+        { type: 'barrel', x: 2400, y: 147 },
+        { type: 'barrel', x: 2428, y: 147 },
+        { type: 'crate', x: 3000, y: 150 }
       ],
       pickups: [
         { x: 200, y: 1156, key: 'pistol' },

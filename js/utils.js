@@ -69,6 +69,14 @@
     return true;
   };
 
+  /* shortest signed distance between two angles */
+  U.angleDiff = function (a, b) {
+    var d = a - b;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return d;
+  };
+
   U.formatTime = function (sec) {
     if (sec == null || !isFinite(sec)) return '--';
     var m = Math.floor(sec / 60);
