@@ -10,7 +10,12 @@
 (function (root) {
   'use strict';
 
-  var PIXEL = 3;                 /* world units per screen pixel */
+  /* World units per art pixel. Smaller means a finer grid: the frame shows
+     the same amount of world, but everything in it is built from more
+     pixels, which is the only way a face gets a nose and a jacket gets a
+     lapel. The chunk stays big enough to read as pixel art - a 480-unit
+     view is 240 pixels across, and a character is 22 of them tall. */
+  var PIXEL = 2;
 
   /* ---------------------------------------------------------- 3x5 font
      Each glyph is five rows; each row is three bits, high bit on the
@@ -116,11 +121,16 @@
       var P = PIXEL;
       var dx = x1 - x0, dy = y1 - y0;
       var steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / P));
-      var half = Math.max(P, Math.round(thick / 2 / P) * P);
+      /* Thickness counted in whole pixels, then offset by half of THAT.
+         Centring on a half-pixel would push the block off the grid and
+         anti-alias the edge, so an odd thickness leans one pixel to one
+         side instead - which is what a three-pixel limb needs. */
+      var n = Math.max(1, Math.round(thick / P));
+      var off = Math.floor(n / 2) * P, size = n * P;
       if (color) ctx.fillStyle = color;
       for (var i = 0; i <= steps; i++) {
         var t = i / steps;
-        ctx.fillRect(this.s(x0 + dx * t) - half, this.s(y0 + dy * t) - half, half * 2, half * 2);
+        ctx.fillRect(this.s(x0 + dx * t) - off, this.s(y0 + dy * t) - off, size, size);
       }
     },
 

@@ -114,7 +114,7 @@
     { name: 'BLUE',   suit: '#3b4370', suit2: '#2b3157', tie: '#ff4d5e', mark: '#7c8ad6', hat: '#222845', skin: '#f2cfa2' },
     { name: 'GREEN',  suit: '#2f6b47', suit2: '#235036', tie: '#ffd15c', mark: '#57e07a', hat: '#93331f', skin: '#e8bd8c' },
     { name: 'PURPLE', suit: '#67356e', suit2: '#4d2752', tie: '#7fe0ff', mark: '#c07ad6', hat: '#2a2230', skin: '#c98f63' },
-    { name: 'AMBER',  suit: '#c07a2e', suit2: '#95591d', tie: '#a8f4b8', mark: '#ffa23c', hat: '#d8cdb4', skin: '#7a4a2c' }
+    { name: 'AMBER',  suit: '#c07a2e', suit2: '#95591d', tie: '#a8f4b8', mark: '#ffa23c', hat: '#d8cdb4', skin: '#8f5b38' }
   ];
 
   function Player(x, y, opt) {

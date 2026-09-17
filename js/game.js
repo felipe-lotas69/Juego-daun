@@ -786,10 +786,10 @@
          wide platform an unbroken line reads as a roller shutter. */
       ctx.fillStyle = st.edge;
       var course = 0;
-      for (var y = p.y + P * 5; y < p.y + p.h - P * 2; y += P * 7) {
+      for (var y = p.y + P * 7; y < p.y + p.h - P * 3; y += P * 11) {
         var right = Pixel.s(p.x + p.w - P);
-        for (var bx = Pixel.s(p.x + P + (course % 2 ? P * 5 : 0)); bx < right; bx += P * 10) {
-          ctx.fillRect(bx, Pixel.s(y), Math.min(P * 8, right - bx), P);
+        for (var bx = Pixel.s(p.x + P + (course % 2 ? P * 9 : 0)); bx < right; bx += P * 18) {
+          ctx.fillRect(bx, Pixel.s(y), Math.min(P * 11, right - bx), P);
         }
         course++;
       }

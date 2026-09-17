@@ -221,11 +221,13 @@
      which meant every gib carried a soft blended border - and a death
      throws nine of them across the screen at once. */
   var GIB = {
-    head:  ['kkkkk', 'sssss', 'sesss', 'sssss', 'bbbbb'],
-    torso: ['bbbbbb', 'uuTuuu', 'uuTuuu', 'uuuuuu', 'uuuuuu', 'dddddd'],
-    arm:   ['bb', 'uu', 'uu', 'uu', 'ss'],
-    leg:   ['bbb', 'ddd', 'ddd', 'ddd', 'nnn', 'nnn'],
-    chunk: ['cC', 'cc']
+    head:  ['kkkkkkkk', 'kkkkkkkk', 'ssssssss', 'sseessss',
+            'ssssssss', 'sssmmsss', 'ssssssss', 'bbbbbbbb'],
+    torso: ['bbbbbbbbb', 'uuwwTwuuu', 'uuuuTuuua', 'uuuuTuuuu', 'uuuuuuuua',
+            'uuuuuuuuu', 'dddddddda', 'ddddddddd', 'bbddddddd'],
+    arm:   ['bbbb', 'uuuu', 'uuuu', 'uuuu', 'uuuu', 'uuuu', 'ssss', 'ssss'],
+    leg:   ['bbbb', 'dddd', 'dddd', 'dddd', 'dddd', 'dddd', 'nnnn', 'nnnn', 'mmmm'],
+    chunk: ['cccC', 'ccCC', 'cccC', '.ccc']
   };
 
   Gore.prototype.drawGibs = function (ctx) {
@@ -241,6 +243,8 @@
         u: pal.suit,
         d: pal.suit2,
         T: pal.tie || '#ff4d5e',
+        w: Pixel.tint(pal.suit, 0.66),
+        m: Pixel.tint(pal.skin || '#f2cfa2', -0.42),
         n: '#20232f',
         b: '#8c0f1c',
         c: '#a3121f',

@@ -160,31 +160,40 @@
 
      Facing right is the authored direction; the stamp mirrors for the other. */
 
-  /* cap crown / cap band and brim / skin / skin in shadow / eye */
+  /* cap crown / band and brim / skin / skin in shadow / eye / nose / mouth */
   var SPR_HEAD = [
-    '.ccccc.',
-    'bbbbbbb',
-    '.tssss.',
-    '.tsses.',
-    '.tssss.',
-    '..tss..'
+    '...ccccc...',
+    '..ccccccc..',
+    '..ccccccc..',
+    '.bbbbbbbbbb',
+    '..tsssssss.',
+    '..tsssessn.',
+    '..tssssssn.',
+    '..tsssmms..',
+    '...tssss...'
   ];
 
-  /* back edge in shadow / suit / lit front edge / tie / button / belt */
+  /* shadowed back edge / suit / lit front edge / shirt / tie / button /
+     belt / buckle */
   var SPR_TORSO = [
-    'dlllll',
-    'duuTul',
-    'duuTua',
-    'duuTul',
-    'duuTua',
-    'duuuul',
-    'duuuul',
-    'dkkkkk',
-    'duuuul'
+    'duuuuuuul',
+    'duuwwwuul',
+    'duuwTwuul',
+    'duuuTuual',
+    'duuuTuuul',
+    'duuuTuual',
+    'duuuTuuul',
+    'duuuTuuul',
+    'duuuuuual',
+    'duuuuuuul',
+    'dkkkkkkkl',
+    'dkkkggkkl',
+    'duuuuuuul',
+    'dduuuuuul'
   ];
 
-  var SPR_SHOE = ['nnnn', 'mmmm'];
-  var SPR_HAND = ['ss', 'ts'];
+  var SPR_SHOE = ['.nnnnn', 'nnnnnn', 'mmmmmm'];
+  var SPR_HAND = ['sss', 'sss', '.tt'];
 
   /* A gun is the one sprite whose size depends on what it is, so it gets
      built from the weapon's barrel length and kept. */
@@ -215,31 +224,35 @@
       b: Pixel.tint(hat, -0.35),
       s: skin,
       t: Pixel.tint(skin, -0.22),
+      n: Pixel.tint(skin, -0.12),
+      m: Pixel.tint(skin, -0.42),
       e: '#20232f'
     };
     var torsoMap = {
       d: suit2,
       u: suit,
       l: Pixel.tint(suit, 0.18),
+      w: Pixel.tint(suit, 0.66),
       T: palette.tie,
       a: palette.mark,
-      k: Pixel.tint(suit, -0.45)
+      k: Pixel.tint(suit, -0.45),
+      g: '#e0c169'
     };
     var shoeMap = { n: '#20232f', m: '#4a4f60' };
     var handMap = { s: skin, t: Pixel.tint(skin, -0.22) };
 
     /* back arm and back leg first, so the body reads in front of them */
-    Pixel.line(ctx, P[CHEST].x, P[CHEST].y, P[ELBOW_B].x, P[ELBOW_B].y, Px * 2, suit2);
-    Pixel.line(ctx, P[ELBOW_B].x, P[ELBOW_B].y, P[HAND_B].x, P[HAND_B].y, Px * 2, suit2);
+    Pixel.line(ctx, P[CHEST].x, P[CHEST].y, P[ELBOW_B].x, P[ELBOW_B].y, Px * 3, suit2);
+    Pixel.line(ctx, P[ELBOW_B].x, P[ELBOW_B].y, P[HAND_B].x, P[HAND_B].y, Px * 3, suit2);
     Pixel.stamp(ctx, SPR_HAND, handMap, P[HAND_B].x, P[HAND_B].y, 0, flip);
 
-    Pixel.line(ctx, P[HIP].x, P[HIP].y, P[KNEE_B].x, P[KNEE_B].y, Px * 2, suit2);
-    Pixel.line(ctx, P[KNEE_B].x, P[KNEE_B].y, P[FOOT_B].x, P[FOOT_B].y, Px * 2, suit2);
+    Pixel.line(ctx, P[HIP].x, P[HIP].y, P[KNEE_B].x, P[KNEE_B].y, Px * 3, suit2);
+    Pixel.line(ctx, P[KNEE_B].x, P[KNEE_B].y, P[FOOT_B].x, P[FOOT_B].y, Px * 3, suit2);
     Pixel.stamp(ctx, SPR_SHOE, shoeMap, P[FOOT_B].x, P[FOOT_B].y, 0, flip);
 
     /* front leg */
-    Pixel.line(ctx, P[HIP].x, P[HIP].y, P[KNEE_A].x, P[KNEE_A].y, Px * 2, suit);
-    Pixel.line(ctx, P[KNEE_A].x, P[KNEE_A].y, P[FOOT_A].x, P[FOOT_A].y, Px * 2, suit);
+    Pixel.line(ctx, P[HIP].x, P[HIP].y, P[KNEE_A].x, P[KNEE_A].y, Px * 3, suit);
+    Pixel.line(ctx, P[KNEE_A].x, P[KNEE_A].y, P[FOOT_A].x, P[FOOT_A].y, Px * 3, suit);
     Pixel.stamp(ctx, SPR_SHOE, shoeMap, P[FOOT_A].x, P[FOOT_A].y, 0, flip);
 
     /* torso follows the spine rather than the box */
@@ -254,8 +267,8 @@
     /* front arm, and whatever it is holding */
     /* sleeve to the wrist, then the hand - a forearm in bare skin reads as
        a rolled-up shirt, which is not what anyone here is wearing */
-    Pixel.line(ctx, P[CHEST].x, P[CHEST].y, P[ELBOW_A].x, P[ELBOW_A].y, Px * 2, suit);
-    Pixel.line(ctx, P[ELBOW_A].x, P[ELBOW_A].y, P[HAND_A].x, P[HAND_A].y, Px * 2, suit);
+    Pixel.line(ctx, P[CHEST].x, P[CHEST].y, P[ELBOW_A].x, P[ELBOW_A].y, Px * 3, suit);
+    Pixel.line(ctx, P[ELBOW_A].x, P[ELBOW_A].y, P[HAND_A].x, P[HAND_A].y, Px * 3, suit);
     Pixel.stamp(ctx, SPR_HAND, handMap, P[HAND_A].x, P[HAND_A].y, 0, flip);
 
     if (weapon) {
