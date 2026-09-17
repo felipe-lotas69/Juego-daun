@@ -7,7 +7,7 @@
   /* The logical view the camera frames, in world units. Smaller than the
      canvas: it renders into a 240x135 buffer and is blown up 4x, which is
      what makes a character read as ~15 pixels tall instead of 45. */
-  var VIEW_W = 720, VIEW_H = 405;
+  var VIEW_W = 576, VIEW_H = 324;
 
   var NO = function () { return false; };
   var NULL_INPUT = {
@@ -651,6 +651,7 @@
     p.invuln = 1.4;
     p.stumble = 0;
     p.deathCause = null;
+    if (p.resetLimbs) p.resetLimbs();
     if (p.brain) p.brain.reset();
     if (p === this.player) this.bullets.length = 0;
     this.fx.burst(p.checkpoint.x, p.checkpoint.y - 20, 18, {

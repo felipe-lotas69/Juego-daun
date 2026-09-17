@@ -349,9 +349,9 @@
   /* -------------------------------------------------- scaling */
   function resize() {
     var shell = document.getElementById('shell');
-    var pad = 24;
+    var pad = 8;
     var s = Math.min((root.innerWidth - pad) / CANVAS_W, (root.innerHeight - pad) / CANVAS_H);
-    s = Math.max(0.35, Math.min(s, 2.2));
+    s = Math.max(0.35, Math.min(s, 4));
     shell.style.transform = 'scale(' + s + ')';
   }
 

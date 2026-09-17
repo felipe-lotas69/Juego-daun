@@ -110,6 +110,20 @@
       }
     },
 
+    /* A limb: a run of blocks from joint to joint. Squares rather than a
+       stroked path, so it stays on the grid at any angle. */
+    line: function (ctx, x0, y0, x1, y1, thick, color) {
+      var P = PIXEL;
+      var dx = x1 - x0, dy = y1 - y0;
+      var steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / P));
+      var half = Math.max(P, Math.round(thick / 2 / P) * P);
+      if (color) ctx.fillStyle = color;
+      for (var i = 0; i <= steps; i++) {
+        var t = i / steps;
+        ctx.fillRect(this.s(x0 + dx * t) - half, this.s(y0 + dy * t) - half, half * 2, half * 2);
+      }
+    },
+
     /* ---------------------------------------------------------- text */
     textWidth: function (str, size) {
       size = size || PIXEL;

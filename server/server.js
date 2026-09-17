@@ -33,7 +33,7 @@ const FILL_BOTS = Math.max(0, Math.min(3, parseInt(arg('bots', '3'), 10)));
 const TARGET = Math.max(1, parseInt(arg('target', '3'), 10));
 
 /* ------------------------------------------------------------ the engine */
-['utils', 'pixel', 'audio', 'particles', 'gore', 'weapons', 'entities',
+['utils', 'pixel', 'ragdoll', 'audio', 'particles', 'gore', 'weapons', 'entities',
  'levels', 'versusmaps', 'game', 'navgraph', 'bots', 'match']
   .forEach(f => require(path.join(ROOT, 'js', f + '.js')));
 globalThis.Sound.setEnabled(false);          /* nobody is listening here */
@@ -180,6 +180,7 @@ function snapshot() {
       x: Math.round(p.x), y: Math.round(p.y),
       a: +p.angle.toFixed(2), f: p.facing,
       h: Math.round(p.health), d: p.dead ? 1 : 0, fin: p.finished ? 1 : 0,
+      g: p.grounded ? 1 : 0, sb: p.stumble > 0 ? 1 : 0,
       w: p.weapon ? p.weapon.key : null, am: p.weapon ? p.weapon.ammo : 0,
       wn: p.wins
     })),

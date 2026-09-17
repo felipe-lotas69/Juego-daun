@@ -123,6 +123,15 @@
       } else {
         p.weapon = null;
       }
+
+      /* The client never runs Player.update for anyone, so the limbs have to
+         be driven from here or every character on screen stands frozen. */
+      p.grounded = !!q.g;
+      p.stumble = q.sb ? 0.2 : 0;
+      if (p.rag && !p.dead && !p.finished) {
+        if (!p.rag.ready) p.rag.place(p);
+        p.rag.update(dt, p, p.aim(), world);
+      }
     }
 
     for (i = 0; i < world.elevators.length && i < s.ev.length; i++) {

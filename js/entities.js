@@ -158,6 +158,7 @@
     this.stepPhase = 0;
     this.spawnX = x; this.spawnY = y;
     this.muzzleFlash = 0;
+    this.rag = (typeof Ragdoll !== 'undefined') ? new Ragdoll() : null;
   }
 
   /* Aim follows the lean: leaning the way you face drops the muzzle, leaning
@@ -328,6 +329,10 @@
 
     if (quiet) return;
 
+    /* limbs are cosmetic, so they are simulated after the body has settled
+       and skipped entirely while a bot is planning */
+    if (this.rag) this.rag.update(dt, this, this.aim(), world);
+
     /* ---------- shooting ---------- */
     if (this.weapon) {
       var def = WEAPONS[this.weapon.key];
@@ -406,6 +411,8 @@
     else Sound.hurt();
   };
 
+  Player.prototype.resetLimbs = function () { if (this.rag) this.rag.ready = false; };
+
   Player.prototype.kill = function (world, cause) {
     if (this.dead) return;
     this.dead = true;
@@ -435,68 +442,19 @@
     if (this.invuln > 0 && Math.floor(this.invuln * 18) % 2 === 0) return;
 
     var P = Pixel.SIZE;
-    var cx = Pixel.s(this.x + this.w / 2);
-    var feet = Pixel.s(this.y + this.h);
     var hurt = this.hurtFlash > 0;
     var skin = hurt ? '#ffd6d6' : '#f2cfa2';
-    var suit = hurt ? '#ff8f9a' : this.palette.suit;
-    var suit2 = hurt ? '#ff7b88' : this.palette.suit2;
-    var dark = '#20232f';
+    var pal = hurt
+      ? { suit: '#ff8f9a', suit2: '#ff7b88', tie: this.palette.tie, mark: this.palette.mark }
+      : this.palette;
 
-    ctx.save();
-    ctx.translate(cx, feet);
-    ctx.rotate(this.angle);
-
-    var swing = this.grounded && Math.sin(this.stepPhase * 1.7) > 0 ? P : 0;
-
-    /* legs */
-    ctx.fillStyle = suit2;
-    ctx.fillRect(-9, -15 + swing, 6, 15 - swing);
-    ctx.fillRect(3, -15, 6, 15 - swing);
-    ctx.fillStyle = dark;
-    ctx.fillRect(-9, -3, 6, 3);
-    ctx.fillRect(3, -3 - swing, 6, 3);
-
-    /* torso and tie */
-    ctx.fillStyle = suit;
-    ctx.fillRect(-9, -30, 18, 15);
-    ctx.fillStyle = this.palette.tie;
-    ctx.fillRect(-3, -30, 3, 9);
-
-    /* head, hair, one pixel of eye */
-    ctx.fillStyle = skin;
-    ctx.fillRect(-9, -45, 18, 15);
-    ctx.fillStyle = dark;
-    ctx.fillRect(-9, -45, 18, 6);
-    ctx.fillRect(this.facing === 1 ? 3 : -6, -36, 3, 3);
-    ctx.restore();
-
-    /* arm and weapon ride the aim line */
-    var c = this.center();
-    var aim = this.aim();
-    ctx.save();
-    ctx.translate(Pixel.s(c.x), Pixel.s(c.y));
-    ctx.rotate(aim);
-    ctx.fillStyle = skin;
-    ctx.fillRect(0, -3, this.weapon ? 12 : 9, 3);
-
-    if (this.weapon) {
-      var def = WEAPONS[this.weapon.key];
-      ctx.fillStyle = def.body;
-      ctx.fillRect(6, -6, def.barrel, 6);
-      ctx.fillStyle = dark;
-      ctx.fillRect(9, 0, 6, 6);
-      if (def.explosive) { ctx.fillStyle = '#ff6a4d'; ctx.fillRect(def.barrel, -6, 6, 6); }
-      if (def.teleport) { ctx.fillStyle = '#49e0e8'; ctx.fillRect(def.barrel, -6, 6, 6); }
-      if (this.muzzleFlash > 0.25) {
-        ctx.fillStyle = '#fff3c4';
-        ctx.fillRect(def.barrel + 6, -6, 9, 6);
-        ctx.fillRect(def.barrel + 12, -3, 6, 3);
-      }
+    if (this.rag) {
+      if (!this.rag.ready) this.rag.place(this);
+      this.rag.draw(ctx, this, pal, skin, this.weapon, this.muzzleFlash);
     }
-    ctx.restore();
 
     if (this.showTag) {
+      var cx = Pixel.s(this.x + this.w / 2);
       var tw = Pixel.textWidth(this.label, P);
       var ty = Pixel.s(this.y - P * 7);
       Pixel.rect(ctx, cx - tw / 2 - P, ty - P, tw + P * 2, P * 7, 'rgba(12,24,34,0.55)');
@@ -528,6 +486,8 @@
     this.hurtFlash = 0;
     this.drops = opt.drops !== false;
     this.aimAngle = Math.PI;
+    this.stumble = 0;
+    this.rag = (typeof Ragdoll !== 'undefined') ? new Ragdoll() : null;
   }
 
   Enemy.prototype.center = function () { return { x: this.x + this.w / 2, y: this.y + this.h * 0.42 }; };
@@ -604,6 +564,7 @@
 
     this.angle = U.approach(this.angle, U.clamp(this.vx / 500, -0.35, 0.35), 4 * dt);
     moveAndCollide(this, this.vx * dt, this.vy * dt, world);
+    if (this.rag) this.rag.update(dt, this, this.aimAngle, world);
 
     if (this.y > world.level.height + 400) this.dead = true;
   };
@@ -619,6 +580,7 @@
   Enemy.prototype.die = function (world, kx) {
     this.dead = true;
     this.deathTimer = 0;
+    this.stumble = 99;                 /* limbs go slack */
     this.spin = U.rand(-9, 9) + U.sign(kx || 1) * 5;
     this.vy = -260;
     this.vx += (kx || 0) * 0.6;
@@ -639,50 +601,27 @@
   };
 
   Enemy.prototype.draw = function (ctx) {
-    var cx = Pixel.s(this.x + this.w / 2), feet = Pixel.s(this.y + this.h);
-    var hurt = this.hurtFlash > 0;
-    var suit = hurt ? '#ffa0a8' : '#6b3a4a';
-    var suit2 = hurt ? '#ff8f9a' : '#542d3a';
-    var dark = '#20232f';
     var P = Pixel.SIZE;
+    var hurt = this.hurtFlash > 0;
+    var pal = {
+      suit: hurt ? '#ffa0a8' : '#6b3a4a',
+      suit2: hurt ? '#ff8f9a' : '#542d3a',
+      tie: '#2a2028',
+      mark: '#c06070'
+    };
+    var skin = hurt ? '#ffd6d6' : '#d8a87e';
 
     ctx.save();
     if (this.dead) ctx.globalAlpha = U.clamp(1 - (this.deathTimer - 3) / 1.5, 0, 1);
-    ctx.translate(cx, feet);
-    ctx.rotate(this.angle);
-
-    var swing = this.grounded && Math.sin(this.stepPhase * 1.7) > 0 ? P : 0;
-    ctx.fillStyle = suit2;
-    ctx.fillRect(-9, -15 + swing, 6, 15 - swing);
-    ctx.fillRect(3, -15, 6, 15 - swing);
-    ctx.fillStyle = dark;
-    ctx.fillRect(-9, -3, 6, 3);
-    ctx.fillRect(3, -3 - swing, 6, 3);
-
-    ctx.fillStyle = suit;
-    ctx.fillRect(-9, -30, 18, 15);
-    ctx.fillStyle = hurt ? '#ffd6d6' : '#d8a87e';
-    ctx.fillRect(-9, -45, 18, 15);
-    ctx.fillStyle = dark;
-    ctx.fillRect(-12, -45, 24, 6);          /* cap with a brim */
-    ctx.fillRect(this.facing === 1 ? 3 : -6, -36, 3, 3);
+    if (this.rag) {
+      if (!this.rag.ready) this.rag.place(this);
+      this.rag.draw(ctx, this, pal, skin,
+                    this.dead ? null : { key: this.weaponKey }, 0);
+    }
     ctx.restore();
 
-    if (!this.dead) {
-      var c = this.center();
-      ctx.save();
-      ctx.translate(Pixel.s(c.x), Pixel.s(c.y));
-      ctx.rotate(this.aimAngle);
-      ctx.fillStyle = '#d8a87e';
-      ctx.fillRect(0, -3, 12, 3);
-      var def = WEAPONS[this.weaponKey];
-      ctx.fillStyle = def.body;
-      ctx.fillRect(6, -6, def.barrel, 6);
-      ctx.restore();
-
-      if (this.alert > 0 && Math.floor(this.alert * 6) % 2) {
-        Pixel.text(ctx, '!', cx, this.y - 18, P * 2, '#ff4d5e', 'center');
-      }
+    if (!this.dead && this.alert > 0 && Math.floor(this.alert * 6) % 2) {
+      Pixel.text(ctx, '!', Pixel.s(this.x + this.w / 2), this.y - P * 6, P * 2, '#ff4d5e', 'center');
     }
     ctx.globalAlpha = 1;
   };

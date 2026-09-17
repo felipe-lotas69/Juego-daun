@@ -81,9 +81,22 @@ push you aside. Each map is strung with **invisible checkpoints** you cross
 without noticing; dying puts you back at the last one, so a mistake costs you
 position rather than the whole run.
 
+## The bodies
+
+The collision shape is a plain box, because that is what keeps the movement
+predictable. Everything you actually see hanging off it — head, arms, legs —
+is a small verlet rig pinned at the chest and hips. The pins get dragged
+around by the box and the free ends lag, swing and overshoot, so a character
+flails through a jump, the gun arm whips round to where you are aiming, and
+the legs trail behind you in the air. Take a hard landing and the whole rig
+goes slack for a moment.
+
+It is cosmetic — it never touches collision, and it is skipped entirely while
+a bot is planning its next move, so the AI is not paying for animation.
+
 ## The look
 
-Everything is drawn into a 240x135 buffer and blown up four times with
+Everything is drawn into a 192x108 buffer and blown up five times with
 nearest-neighbour, so one pixel really is one pixel. That is what gives a
 leaning character stair-stepped edges rather than smooth anti-aliased ones:
 the blending happens at buffer resolution and then gets magnified along with
@@ -179,6 +192,7 @@ index.html         markup + boot
 styles.css         shell, menus, HUD
 js/utils.js        math, rng, collision helpers
 js/pixel.js        low-res buffer, grid snapping, 3x5 bitmap font
+js/ragdoll.js      verlet limb rig for players and goons
 js/input.js        keyboard/mouse state, two-player pads
 js/audio.js        WebAudio sound synthesis
 js/particles.js    particle + debris system
