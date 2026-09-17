@@ -162,38 +162,75 @@
 
   /* cap crown / band and brim / skin / skin in shadow / eye / nose / mouth */
   var SPR_HEAD = [
-    '...ccccc...',
-    '..ccccccc..',
-    '..ccccccc..',
-    '.bbbbbbbbbb',
-    '..tsssssss.',
-    '..tsssessn.',
-    '..tssssssn.',
-    '..tsssmms..',
-    '...tssss...'
+    '......cCCCCccccc......',
+    '......cCCCCccccc......',
+    '....cCCCCCcccccccc....',
+    '....cCCCCCcccccccc....',
+    '....cccccccccccccc....',
+    '....cccccccccccccc....',
+    '..bbbbbbbbbbbbbbbbbbbb',
+    '..bbbbbbbbbbbbbbbbbbbb',
+    '....hhBBBBBBBBBBBBBB..',
+    '....hhBBBBBBBBBBBBBB..',
+    '....hhsssssswessssnn..',
+    '....hhrrsssseessssnn..',
+    '....hhrrsssssssssnnn..',
+    '....hhsssssssssssnnn..',
+    '....ttssssssmmmmss....',
+    '....ttssssssmmmmss....',
+    '......ttssssssss......',
+    '......ttssssssss......'
   ];
 
   /* shadowed back edge / suit / lit front edge / shirt / tie / button /
      belt / buckle */
   var SPR_TORSO = [
-    'duuuuuuul',
-    'duuwwwuul',
-    'duuwTwuul',
-    'duuuTuual',
-    'duuuTuuul',
-    'duuuTuual',
-    'duuuTuuul',
-    'duuuTuuul',
-    'duuuuuual',
-    'duuuuuuul',
-    'dkkkkkkkl',
-    'dkkkggkkl',
-    'duuuuuuul',
-    'dduuuuuul'
+    'dduuuuuuuuuuuuuull',
+    'dduuuuuuuuuuuuuull',
+    'dduuulwwwwwwluuull',
+    'dduuulwwwwwwluuull',
+    'dduuulwTTTTwluuull',
+    'dduuulwTTTTwluuull',
+    'dduuuuuuTTuuuuaall',
+    'dduuuuuuTTuuuuaall',
+    'dduuuuuuTTuuuuuull',
+    'dduuuuuuTTuuuuuull',
+    'dduuuuuuTTuuuuaall',
+    'dduuuuuuTTuuuuaall',
+    'dduuuuuuTTuuuuuull',
+    'dduuuuuuTTuuuuuull',
+    'dduullllTTuuuuuull',
+    'dduullllTTuuuuuull',
+    'dduuuuuuuuuuuuaall',
+    'dduuuuuuuuuuuuaall',
+    'dduuuuuuuuuuuuuull',
+    'dduuuuuuuuuuuuuull',
+    'ddkkkkkkggggkkkkll',
+    'ddkkkkkkgkkgkkkkll',
+    'ddkkkkkkgkkgkkkkll',
+    'ddkkkkkkggggkkkkll',
+    'dduuuuuuuuuuuuuull',
+    'dduuuuuuuuuuuuuull',
+    'dddduuuuuuuuuuuull',
+    'dddduuuuuuuuuuuull'
   ];
 
-  var SPR_SHOE = ['.nnnnn', 'nnnnnn', 'mmmmmm'];
-  var SPR_HAND = ['sss', 'sss', '.tt'];
+  var SPR_SHOE = [
+    '..nnnnnnnnnn',
+    '..nnnnnnnnnn',
+    'nnnnnnnnmmmm',
+    'nnnnnnnnmmmm',
+    'mmmmmmmmmmmm',
+    'mmmmmmmmmmmm'
+  ];
+  var SPR_HAND = [
+    'ssssss',
+    'ssssss',
+    'ssssss',
+    'ssssss',
+    '..tttt',
+    '..tttt'
+  ];
 
   /* A gun is the one sprite whose size depends on what it is, so it gets
      built from the weapon's barrel length and kept. */
@@ -201,13 +238,18 @@
   function gunSprite(key, def) {
     var hit = gunCache[key];
     if (hit) return hit;
-    var n = Math.max(2, Math.round(def.barrel / Pixel.SIZE));
+    var n = Math.max(3, Math.round(def.barrel / Pixel.SIZE));
     var barrel = new Array(n + 1).join('B');
     var tip = def.explosive || def.teleport ? 'T' : 'B';
+    var gap = new Array(n).join('.');
     var sprite = [
       '.' + new Array(n + 1).join('H'),
+      'G' + barrel,
       'G' + barrel.slice(0, n - 1) + tip,
-      'GG' + new Array(n).join('.')
+      'G' + barrel.slice(0, n - 1) + tip,
+      'GG' + gap,
+      'GG' + gap,
+      '.GG' + gap.slice(1)
     ];
     gunCache[key] = sprite;
     return sprite;
@@ -222,11 +264,16 @@
     var headMap = {
       c: hat,
       b: Pixel.tint(hat, -0.35),
+      C: Pixel.tint(hat, 0.22),
       s: skin,
       t: Pixel.tint(skin, -0.22),
+      B: Pixel.tint(skin, -0.30),
+      r: Pixel.tint(skin, -0.16),
+      h: Pixel.tint(skin, -0.62),
       n: Pixel.tint(skin, -0.12),
       m: Pixel.tint(skin, -0.42),
-      e: '#20232f'
+      e: '#20232f',
+      w: '#ffffff'
     };
     var torsoMap = {
       d: suit2,
@@ -242,17 +289,17 @@
     var handMap = { s: skin, t: Pixel.tint(skin, -0.22) };
 
     /* back arm and back leg first, so the body reads in front of them */
-    Pixel.line(ctx, P[CHEST].x, P[CHEST].y, P[ELBOW_B].x, P[ELBOW_B].y, Px * 3, suit2);
-    Pixel.line(ctx, P[ELBOW_B].x, P[ELBOW_B].y, P[HAND_B].x, P[HAND_B].y, Px * 3, suit2);
+    Pixel.line(ctx, P[CHEST].x, P[CHEST].y, P[ELBOW_B].x, P[ELBOW_B].y, Px * 6, suit2);
+    Pixel.line(ctx, P[ELBOW_B].x, P[ELBOW_B].y, P[HAND_B].x, P[HAND_B].y, Px * 6, suit2);
     Pixel.stamp(ctx, SPR_HAND, handMap, P[HAND_B].x, P[HAND_B].y, 0, flip);
 
-    Pixel.line(ctx, P[HIP].x, P[HIP].y, P[KNEE_B].x, P[KNEE_B].y, Px * 3, suit2);
-    Pixel.line(ctx, P[KNEE_B].x, P[KNEE_B].y, P[FOOT_B].x, P[FOOT_B].y, Px * 3, suit2);
+    Pixel.line(ctx, P[HIP].x, P[HIP].y, P[KNEE_B].x, P[KNEE_B].y, Px * 6, suit2);
+    Pixel.line(ctx, P[KNEE_B].x, P[KNEE_B].y, P[FOOT_B].x, P[FOOT_B].y, Px * 6, suit2);
     Pixel.stamp(ctx, SPR_SHOE, shoeMap, P[FOOT_B].x, P[FOOT_B].y, 0, flip);
 
     /* front leg */
-    Pixel.line(ctx, P[HIP].x, P[HIP].y, P[KNEE_A].x, P[KNEE_A].y, Px * 3, suit);
-    Pixel.line(ctx, P[KNEE_A].x, P[KNEE_A].y, P[FOOT_A].x, P[FOOT_A].y, Px * 3, suit);
+    Pixel.line(ctx, P[HIP].x, P[HIP].y, P[KNEE_A].x, P[KNEE_A].y, Px * 6, suit);
+    Pixel.line(ctx, P[KNEE_A].x, P[KNEE_A].y, P[FOOT_A].x, P[FOOT_A].y, Px * 6, suit);
     Pixel.stamp(ctx, SPR_SHOE, shoeMap, P[FOOT_A].x, P[FOOT_A].y, 0, flip);
 
     /* torso follows the spine rather than the box */
@@ -267,8 +314,8 @@
     /* front arm, and whatever it is holding */
     /* sleeve to the wrist, then the hand - a forearm in bare skin reads as
        a rolled-up shirt, which is not what anyone here is wearing */
-    Pixel.line(ctx, P[CHEST].x, P[CHEST].y, P[ELBOW_A].x, P[ELBOW_A].y, Px * 3, suit);
-    Pixel.line(ctx, P[ELBOW_A].x, P[ELBOW_A].y, P[HAND_A].x, P[HAND_A].y, Px * 3, suit);
+    Pixel.line(ctx, P[CHEST].x, P[CHEST].y, P[ELBOW_A].x, P[ELBOW_A].y, Px * 6, suit);
+    Pixel.line(ctx, P[ELBOW_A].x, P[ELBOW_A].y, P[HAND_A].x, P[HAND_A].y, Px * 6, suit);
     Pixel.stamp(ctx, SPR_HAND, handMap, P[HAND_A].x, P[HAND_A].y, 0, flip);
 
     if (weapon) {
@@ -287,8 +334,8 @@
       if (muzzleFlash > 0.25) {
         var mzx = P[HAND_A].x + cos * (reach + sprite[0].length / 2 * Px);
         var mzy = P[HAND_A].y + sin * (reach + sprite[0].length / 2 * Px);
-        Pixel.rect(ctx, mzx - Px, mzy - Px * 2, Px * 3, Px * 3, '#fff3c4');
-        Pixel.rect(ctx, mzx - Px * 2, mzy - Px, Px * 5, Px, '#ffd15c');
+        Pixel.rect(ctx, mzx - Px * 2, mzy - Px * 4, Px * 6, Px * 6, '#fff3c4');
+        Pixel.rect(ctx, mzx - Px * 4, mzy - Px * 2, Px * 10, Px * 2, '#ffd15c');
       }
     }
   };

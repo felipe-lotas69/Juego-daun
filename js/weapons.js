@@ -136,8 +136,18 @@
      a sprite rather than a rotated triangle: a filled path is anti-aliased,
      and at this size the soft edge is wider than the rocket. */
   var ROCKET = [
-    ['..bbbn.', 'ffbbbnn', '..bbbn.'],
-    ['.fbbbn.', 'ffbbbnn', '.fbbbn.']
+    ['....bbbbbbnn..',
+     '....bbbbbbnn..',
+     'ffffbbbbbbnnnn',
+     'ffffbbbbbbnnnn',
+     '....bbbbbbnn..',
+     '....bbbbbbnn..'],
+    ['..ffbbbbbbnn..',
+     '..ffbbbbbbnn..',
+     'ffffbbbbbbnnnn',
+     'ffffbbbbbbnnnn',
+     '..ffbbbbbbnn..',
+     '..ffbbbbbbnn..']
   ];
   var ROCKET_MAP = { b: '#d8d3c6', n: '#ff6a4d', f: '#ffbe50' };
 

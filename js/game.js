@@ -7,7 +7,7 @@
   /* The logical view the camera frames, in world units. Smaller than the
      canvas: it renders into a 240x135 buffer and is blown up 4x, which is
      what makes a character read as ~15 pixels tall instead of 45. */
-  var VIEW_W = 480, VIEW_H = 270;
+  var VIEW_W = 224, VIEW_H = 126;
 
   var NO = function () { return false; };
   var NULL_INPUT = {
@@ -120,10 +120,12 @@
       var layer = i % 2;
       this.sky.push({
         x: Pixel.s(rnd() * (L.width + 1600) - 300),
-        w: Pixel.s(45 + rnd() * 105),
-        /* low: the city is a horizon line, not a backdrop that swallows
-           the play area */
-        h: Pixel.s(layer === 0 ? 45 + rnd() * 105 : 75 + rnd() * 165),
+        w: Pixel.s(VIEW_W * 0.09 + rnd() * VIEW_W * 0.21),
+        /* Low, and measured against the frame: the city is a horizon line,
+           not a backdrop that swallows the play area, and a height in bare
+           world units stops meaning that the moment the view changes. */
+        h: Pixel.s(layer === 0 ? VIEW_H * 0.16 + rnd() * VIEW_H * 0.38
+                               : VIEW_H * 0.27 + rnd() * VIEW_H * 0.60),
         layer: layer,
         lit: rnd()
       });
@@ -131,9 +133,9 @@
     this.clouds = [];
     for (i = 0; i < 9; i++) {
       this.clouds.push({
-        x: rnd() * (VIEW_W + 400),
-        y: Pixel.s(40 + rnd() * 190),
-        w: Pixel.s(30 + rnd() * 46),
+        x: rnd() * (VIEW_W * 1.8),
+        y: Pixel.s(VIEW_H * 0.09 + rnd() * VIEW_H * 0.45),
+        w: Pixel.s(VIEW_W * 0.06 + rnd() * VIEW_W * 0.10),
         sp: 5 + rnd() * 10
       });
     }
@@ -677,9 +679,9 @@
 
   World.prototype.updateCamera = function (dt) {
     var p = this.player;
-    var look = U.clamp(p.vx * 0.30, -150, 150);
+    var look = U.clamp(p.vx * 0.30, -70, 70);
     this.camTarget.x = p.x + p.w / 2 - VIEW_W / 2 + look;
-    this.camTarget.y = p.y + p.h / 2 - VIEW_H / 2 + U.clamp(p.vy * 0.15, -90, 130);
+    this.camTarget.y = p.y + p.h / 2 - VIEW_H / 2 + U.clamp(p.vy * 0.15, -42, 60);
     this.clampCam(this.camTarget);
     var k = 1 - U.damp(7.5, dt);
     this.cam.x += (this.camTarget.x - this.cam.x) * k;
@@ -698,11 +700,12 @@
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
 
     /* the sun is a block, like everything else */
-    Pixel.disc(ctx, VIEW_W * 0.80 - this.cam.x * 0.02, 88 - this.cam.y * 0.02, 33, 'rgba(255,255,255,0.22)');
+    Pixel.disc(ctx, VIEW_W * 0.80 - this.cam.x * 0.02,
+                    VIEW_H * 0.33 - this.cam.y * 0.02, VIEW_H * 0.12, 'rgba(255,255,255,0.22)');
 
     /* Vertical parallax is clamped: on a tall map the skyline should drift,
        not launch off the top of the screen. */
-    var camY = U.clamp(this.cam.y * 0.06, -90, 90);
+    var camY = U.clamp(this.cam.y * 0.06, -VIEW_H * 0.33, VIEW_H * 0.33);
     var layers = [
       { p: 0.12, col: sky[1], win: null, yo: 0 },
       { p: 0.26, col: sky[2], win: sky[3] || 'rgba(0,0,0,0.13)', yo: 0 }
@@ -726,19 +729,19 @@
         Pixel.rect(ctx, bx + bd.w - P, by + P, P, bd.h + 400, Pixel.tint(face, -0.13));
         if (lay.win && bd.lit > 0.28) {
           /* a neat grid of windows, inset from the edges */
-          var cols = Math.max(1, Math.floor((bd.w - P * 4) / (P * 5)));
-          for (var wy = by + P * 4; wy < by + bd.h - P * 4; wy += P * 6) {
+          var cols = Math.max(1, Math.floor((bd.w - P * 8) / (P * 10)));
+          for (var wy = by + P * 8; wy < by + bd.h - P * 8; wy += P * 12) {
             for (var c2 = 0; c2 < cols; c2++) {
-              var wx = bx + P * 3 + c2 * P * 5;
+              var wx = bx + P * 6 + c2 * P * 10;
               var key = (c2 * 3 + Math.round(wy / P)) % 7;
               if (key >= 5) continue;
               /* not every pane the same: a couple of darker ones per face
                  stop the grid looking printed on */
               ctx.fillStyle = lay.win;
-              ctx.fillRect(Pixel.s(wx), Pixel.s(wy), P * 2, P * 3);
+              ctx.fillRect(Pixel.s(wx), Pixel.s(wy), P * 4, P * 6);
               if (key === 1) {
                 ctx.fillStyle = 'rgba(0,0,0,0.12)';
-                ctx.fillRect(Pixel.s(wx), Pixel.s(wy), P * 2, P * 3);
+                ctx.fillRect(Pixel.s(wx), Pixel.s(wy), P * 4, P * 6);
               }
             }
           }
@@ -762,9 +765,9 @@
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     for (var c = 0; c < this.clouds.length; c++) {
       var cl = this.clouds[c];
-      var cxp = Pixel.s(((cl.x + this.time * cl.sp) % (VIEW_W + 400)) - 200 - this.cam.x * 0.05);
+      var cxp = Pixel.s(((cl.x + this.time * cl.sp) % (VIEW_W * 1.8)) - VIEW_W * 0.4 - this.cam.x * 0.05);
       var cyp = Pixel.s(cl.y - this.cam.y * 0.04);
-      if (cxp > VIEW_W + 120 || cxp < -140) continue;
+      if (cxp > VIEW_W + cl.w || cxp < -cl.w * 2) continue;
       Pixel.rect(ctx, cxp, cyp, cl.w, P * 3);
       Pixel.rect(ctx, cxp + P * 3, cyp - P * 3, cl.w - P * 6, P * 3);
       Pixel.rect(ctx, cxp + P * 2, cyp + P * 3, cl.w - P * 3, P * 2);

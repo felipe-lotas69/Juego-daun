@@ -10,12 +10,16 @@
 (function (root) {
   'use strict';
 
-  /* World units per art pixel. Smaller means a finer grid: the frame shows
-     the same amount of world, but everything in it is built from more
-     pixels, which is the only way a face gets a nose and a jacket gets a
-     lapel. The chunk stays big enough to read as pixel art - a 480-unit
-     view is 240 pixels across, and a character is 22 of them tall. */
-  var PIXEL = 2;
+  /* World units per art pixel - one, so the grid is as fine as the world
+     itself and a character is its full 44 pixels tall.
+
+     Pixel count and pixel SIZE pull against each other: at a fixed window,
+     pixels-per-character times pixel-size is just how tall the character
+     is on screen. The only way to have more pixels AND bigger ones is for
+     the character to take up more of the frame, which is what the tight
+     224-unit view is for. It buys both - 44 pixels a character instead of
+     22, each one larger than before - and costs camera. */
+  var PIXEL = 1;
 
   /* ---------------------------------------------------------- 3x5 font
      Each glyph is five rows; each row is three bits, high bit on the

@@ -93,7 +93,10 @@
 
   /* A tumbling splinter. Stamped, because a rotated fillRect is anti-aliased
      and a three-pixel shard is then mostly soft edge. */
-  var SHARD = ['ss.', '.ss'];
+  var SHARD = ['ssss..',
+               'ssss..',
+               '..ssss',
+               '..ssss'];
 
   Particles.prototype.draw = function (ctx) {
     var L = this.list;

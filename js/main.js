@@ -10,7 +10,7 @@
 
   /* Everything is drawn small and blown up, so a pixel is a pixel. The
      buffer is the camera's view; the canvas it lands on is 960x540. */
-  var CANVAS_W = 960, CANVAS_H = 540;
+  var CANVAS_W = 1120, CANVAS_H = 630;
   var pctx = Pixel.init(VIEW_W, VIEW_H);
   void pctx;
 
@@ -333,11 +333,11 @@
         Pixel.rect(b, bx, by, bd.w, bd.h + 300, lay.c);
         if (lay.win && bd.lit > 0.35) {
           b.fillStyle = lay.win;
-          var cols = Math.max(1, Math.floor((bd.w - P * 4) / (P * 5)));
-          for (var wy = by + P * 4; wy < by + bd.h - P * 4; wy += P * 6) {
+          var cols = Math.max(1, Math.floor((bd.w - P * 8) / (P * 10)));
+          for (var wy = by + P * 8; wy < by + bd.h - P * 8; wy += P * 12) {
             for (var c3 = 0; c3 < cols; c3++) {
-              var wx = bx + P * 3 + c3 * P * 5;
-              if (((c3 * 3 + Math.round(wy / P)) % 7) < 5) b.fillRect(Pixel.s(wx), Pixel.s(wy), P * 2, P * 3);
+              var wx = bx + P * 6 + c3 * P * 10;
+              if (((c3 * 3 + Math.round(wy / P)) % 7) < 5) b.fillRect(Pixel.s(wx), Pixel.s(wy), P * 4, P * 6);
             }
           }
         }
