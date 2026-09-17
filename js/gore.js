@@ -203,7 +203,7 @@
     var L = this.decals;
     for (var i = 0; i < L.length; i++) {
       var d = L[i];
-      ctx.globalAlpha = d.alpha;
+      ctx.globalAlpha = Pixel.qa(d.alpha);
       ctx.fillStyle = d.color;
       for (var j = 0; j < d.blobs.length; j++) {
         var b = d.blobs[j];
@@ -217,44 +217,35 @@
     ctx.globalAlpha = 1;
   };
 
+  /* A torn-off limb is a sprite too. These used to be rotated fillRects,
+     which meant every gib carried a soft blended border - and a death
+     throws nine of them across the screen at once. */
+  var GIB = {
+    head:  ['kkkkk', 'sssss', 'sesss', 'sssss', 'bbbbb'],
+    torso: ['bbbbbb', 'uuTuuu', 'uuTuuu', 'uuuuuu', 'uuuuuu', 'dddddd'],
+    arm:   ['bb', 'uu', 'uu', 'uu', 'ss'],
+    leg:   ['bbb', 'ddd', 'ddd', 'ddd', 'nnn', 'nnn'],
+    chunk: ['cC', 'cc']
+  };
+
   Gore.prototype.drawGibs = function (ctx) {
     var i, g;
     for (i = 0; i < this.gibs.length; i++) {
       g = this.gibs[i];
-      ctx.save();
-      ctx.translate(g.x + g.w / 2, g.y + g.h / 2);
-      ctx.rotate(g.rot);
       var pal = g.palette || { suit: '#3b4370', suit2: '#2b3157' };
-
-      var P = Pixel.SIZE;
-      if (g.kind === 'head') {
-        ctx.fillStyle = '#f2cfa2';
-        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, g.h);
-        ctx.fillStyle = '#20232f';
-        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, P);
-        ctx.fillStyle = '#8c0f1c';
-        ctx.fillRect(-g.w / 2, g.h / 2 - P, g.w, P);
-      } else if (g.kind === 'torso') {
-        ctx.fillStyle = pal.suit;
-        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, g.h);
-        ctx.fillStyle = pal.tie || '#ff4d5e';
-        ctx.fillRect(-P / 2, -g.h / 2, P, g.h * 0.6);
-        ctx.fillStyle = '#8c0f1c';
-        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, P);
-      } else if (g.kind === 'arm' || g.kind === 'leg') {
-        ctx.fillStyle = g.kind === 'leg' ? pal.suit2 : pal.suit;
-        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, g.h);
-        ctx.fillStyle = '#f2cfa2';
-        ctx.fillRect(-g.w / 2, g.h / 2 - P, g.w, P);
-        ctx.fillStyle = '#8c0f1c';
-        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, P);
-      } else {
-        ctx.fillStyle = '#a3121f';
-        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, g.h);
-        ctx.fillStyle = '#6d0a15';
-        ctx.fillRect(-g.w / 2, -g.h / 2, g.w - P, P);
-      }
-      ctx.restore();
+      var sprite = GIB[g.kind] || GIB.chunk;
+      Pixel.stamp(ctx, sprite, {
+        k: '#20232f',
+        s: pal.skin || '#f2cfa2',
+        e: '#20232f',
+        u: pal.suit,
+        d: pal.suit2,
+        T: pal.tie || '#ff4d5e',
+        n: '#20232f',
+        b: '#8c0f1c',
+        c: '#a3121f',
+        C: '#6d0a15'
+      }, g.x + g.w / 2, g.y + g.h / 2, g.rot, false);
     }
 
     /* droplets last so they read over everything */

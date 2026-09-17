@@ -124,6 +124,76 @@
       }
     },
 
+    /* ---------------------------------------------------------- colour
+       Shading tones are derived rather than written out, so a palette only
+       has to name its base colours and anything drawn from it - players,
+       enemies, the hurt flash - gets the same treatment. */
+    tintCache: {},
+    tint: function (hex, f) {
+      if (!hex || hex.charAt(0) !== '#') return hex;
+      var key = hex + '|' + f;
+      var hit = this.tintCache[key];
+      if (hit) return hit;
+      var h = hex.slice(1);
+      if (h.length === 3) {
+        h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2);
+      }
+      var n = parseInt(h, 16);
+      var t = f > 0 ? 255 : 0, a = Math.abs(f);
+      var r = Math.round(((n >> 16) & 255) + (t - ((n >> 16) & 255)) * a);
+      var g = Math.round(((n >> 8) & 255) + (t - ((n >> 8) & 255)) * a);
+      var b = Math.round((n & 255) + (t - (n & 255)) * a);
+      var out = '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+      this.tintCache[key] = out;
+      return out;
+    },
+
+    /* Alpha in steps rather than a smooth ramp. A continuous fade lands on
+       a slightly different blend every frame, and a pile of them - smoke,
+       blood, a body fading out - turns into a soft gradient, which is the
+       one thing a grid this coarse cannot carry. Four steps keep the whole
+       pile on a countable set of tones. */
+    qa: function (a) {
+      if (!(a > 0)) return 0;
+      if (a >= 1) return 1;
+      return Math.round(a * 4) / 4;
+    },
+
+    /* ---------------------------------------------------------- sprites
+       A sprite is rows of characters, one per pixel, looked up in a colour
+       map; anything the map has no colour for is transparent.
+
+       Rotation is why this exists rather than a rotate() and a fillRect.
+       The buffer is only a couple of hundred pixels across, so a rotated
+       rect gets anti-aliased AT THAT SIZE and the blended edge pixels are
+       then magnified with everything else - which is a smear, not a stair
+       step. Here every destination pixel is filled whole, in a colour that
+       came out of the map: the shape rotates, the palette stays pure.
+
+       Destination pixels are walked and mapped BACK through the rotation,
+       so no gap opens up between source pixels at an angle. */
+    stamp: function (ctx, sprite, map, cx, cy, angle, flipX) {
+      var h = sprite.length, w = sprite[0].length;
+      var cos = Math.cos(angle), sin = Math.sin(angle);
+      var reach = Math.ceil(Math.sqrt(w * w + h * h) / 2) + 1;
+      var ox = this.s(cx), oy = this.s(cy);
+      var last = null;
+      for (var dy = -reach; dy <= reach; dy++) {
+        for (var dx = -reach; dx <= reach; dx++) {
+          var lx = dx + 0.5, ly = dy + 0.5;
+          var sx = lx * cos + ly * sin;
+          var sy = -lx * sin + ly * cos;
+          var col = Math.floor(sx + w / 2);
+          var row = Math.floor(sy + h / 2);
+          if (row < 0 || row >= h || col < 0 || col >= w) continue;
+          var c = map[sprite[row].charAt(flipX ? w - 1 - col : col)];
+          if (!c) continue;
+          if (c !== last) { ctx.fillStyle = c; last = c; }
+          ctx.fillRect(ox + dx * PIXEL, oy + dy * PIXEL, PIXEL, PIXEL);
+        }
+      }
+    },
+
     /* ---------------------------------------------------------- text */
     textWidth: function (str, size) {
       size = size || PIXEL;

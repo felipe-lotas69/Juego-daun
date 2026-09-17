@@ -715,24 +715,45 @@
         var bx = Pixel.s(bd.x - this.cam.x * lay.p);
         var by = Pixel.s(VIEW_H - bd.h - camY * lay.p);
         if (bx > VIEW_W + 60 || bx + bd.w < -60) continue;
-        Pixel.rect(ctx, bx, by, bd.w, bd.h + 400, lay.col);
+        /* Nudge each block off the layer colour so a row of them is a city
+           and not one long wall with seams drawn on it. */
+        var face = Pixel.tint(lay.col, (bd.lit - 0.5) * 0.14);
+        Pixel.rect(ctx, bx, by, bd.w, bd.h + 400, face);
+        /* A lit roof lip and a shaded far side. Two pixels, and the flat
+           rectangle starts reading as a block with a top and a side - which
+           is most of what separates a skyline from a bar chart. */
+        Pixel.rect(ctx, bx, by, bd.w, P, Pixel.tint(face, 0.16));
+        Pixel.rect(ctx, bx + bd.w - P, by + P, P, bd.h + 400, Pixel.tint(face, -0.13));
         if (lay.win && bd.lit > 0.28) {
           /* a neat grid of windows, inset from the edges */
-          ctx.fillStyle = lay.win;
           var cols = Math.max(1, Math.floor((bd.w - P * 4) / (P * 5)));
           for (var wy = by + P * 4; wy < by + bd.h - P * 4; wy += P * 6) {
             for (var c2 = 0; c2 < cols; c2++) {
               var wx = bx + P * 3 + c2 * P * 5;
-              if (((c2 * 3 + Math.round(wy / P)) % 7) < 5) {
+              var key = (c2 * 3 + Math.round(wy / P)) % 7;
+              if (key >= 5) continue;
+              /* not every pane the same: a couple of darker ones per face
+                 stop the grid looking printed on */
+              ctx.fillStyle = lay.win;
+              ctx.fillRect(Pixel.s(wx), Pixel.s(wy), P * 2, P * 3);
+              if (key === 1) {
+                ctx.fillStyle = 'rgba(0,0,0,0.12)';
                 ctx.fillRect(Pixel.s(wx), Pixel.s(wy), P * 2, P * 3);
               }
             }
           }
         }
-        /* a water tank on some of the near ones */
+        /* roof clutter on the near ones - a tank, a vent, an aerial */
         if (l === 1 && bd.lit > 0.76) {
-          Pixel.rect(ctx, bx + bd.w * 0.3, by - P * 3, P * 4, P * 3, lay.col);
-          Pixel.rect(ctx, bx + bd.w * 0.3 + P, by - P * 5, P * 2, P * 2, lay.col);
+          var tx = Pixel.s(bx + bd.w * 0.3);
+          Pixel.rect(ctx, tx, by - P * 3, P * 4, P * 3, face);
+          Pixel.rect(ctx, tx, by - P * 3, P * 4, P, Pixel.tint(face, 0.16));
+          Pixel.rect(ctx, tx + P, by - P * 5, P * 2, P * 2, face);
+        } else if (l === 1 && bd.lit > 0.58) {
+          Pixel.rect(ctx, bx + bd.w - P * 6, by - P * 2, P * 4, P * 2, face);
+          Pixel.rect(ctx, bx + bd.w - P * 6, by - P * 2, P * 4, P, Pixel.tint(face, 0.16));
+        } else if (l === 1 && bd.lit > 0.44) {
+          Pixel.rect(ctx, bx + bd.w * 0.5, by - P * 6, P, P * 6, Pixel.tint(face, -0.13));
         }
       }
     }
@@ -755,12 +776,22 @@
     var P = Pixel.SIZE;
     Pixel.rect(ctx, p.x, p.y, p.w, p.h, st.body);
     Pixel.rect(ctx, p.x, p.y, p.w, Math.min(P * 2, p.h), st.top);
+    /* a bright rim on the very top row: it is the line you actually aim
+       your feet at, so it is worth a pixel of its own */
+    Pixel.rect(ctx, p.x, p.y, p.w, Math.min(P, p.h), Pixel.tint(st.top, 0.3));
     Pixel.rect(ctx, p.x, p.y + p.h - P, p.w, P, st.edge);
 
     if (p.h > P * 8) {
+      /* Staggered courses rather than a band running the full width: on a
+         wide platform an unbroken line reads as a roller shutter. */
       ctx.fillStyle = st.edge;
+      var course = 0;
       for (var y = p.y + P * 5; y < p.y + p.h - P * 2; y += P * 7) {
-        ctx.fillRect(Pixel.s(p.x + P), Pixel.s(y), Pixel.s(p.w - P * 2), P);
+        var right = Pixel.s(p.x + p.w - P);
+        for (var bx = Pixel.s(p.x + P + (course % 2 ? P * 5 : 0)); bx < right; bx += P * 10) {
+          ctx.fillRect(bx, Pixel.s(y), Math.min(P * 8, right - bx), P);
+        }
+        course++;
       }
     }
     if (p.type === 'bounce') {

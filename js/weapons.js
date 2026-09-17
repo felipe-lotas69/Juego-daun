@@ -132,39 +132,34 @@
     }
   };
 
+  /* A rocket, nose to flame. Two frames so the exhaust flickers. Drawn as
+     a sprite rather than a rotated triangle: a filled path is anti-aliased,
+     and at this size the soft edge is wider than the rocket. */
+  var ROCKET = [
+    ['..bbbn.', 'ffbbbnn', '..bbbn.'],
+    ['.fbbbn.', 'ffbbbnn', '.fbbbn.']
+  ];
+  var ROCKET_MAP = { b: '#d8d3c6', n: '#ff6a4d', f: '#ffbe50' };
+
   Bullet.prototype.draw = function (ctx) {
     var d = this.def;
     if (d.explosive) {
-      ctx.save();
-      ctx.translate(this.x, this.y);
-      ctx.rotate(Math.atan2(this.vy, this.vx));
-      ctx.fillStyle = '#d8d3c6';
-      ctx.fillRect(-9, -3, 14, 6);
-      ctx.fillStyle = '#ff6a4d';
-      ctx.beginPath();
-      ctx.moveTo(5, -3); ctx.lineTo(11, 0); ctx.lineTo(5, 3);
-      ctx.closePath(); ctx.fill();
-      ctx.fillStyle = 'rgba(255,190,80,' + (0.5 + Math.random() * 0.4) + ')';
-      ctx.fillRect(-9 - Math.random() * 10, -2, 10, 4);
-      ctx.restore();
+      Pixel.stamp(ctx, ROCKET[Math.random() < 0.5 ? 0 : 1], ROCKET_MAP,
+                  this.x, this.y, Math.atan2(this.vy, this.vx), false);
       return;
     }
 
     if (d.trail && this.trail.length >= 4) {
-      ctx.strokeStyle = d.color;
       ctx.globalAlpha = 0.5;
-      ctx.lineWidth = d.size * 0.9;
-      ctx.beginPath();
-      ctx.moveTo(this.trail[0], this.trail[1]);
-      for (var i = 2; i < this.trail.length; i += 2) ctx.lineTo(this.trail[i], this.trail[i + 1]);
-      ctx.lineTo(this.x, this.y);
-      ctx.stroke();
+      for (var i = 0; i + 3 < this.trail.length; i += 2) {
+        Pixel.line(ctx, this.trail[i], this.trail[i + 1],
+                        this.trail[i + 2], this.trail[i + 3], d.size, d.color);
+      }
+      var n = this.trail.length;
+      Pixel.line(ctx, this.trail[n - 2], this.trail[n - 1], this.x, this.y, d.size, d.color);
       ctx.globalAlpha = 1;
     }
-    ctx.fillStyle = d.color;
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, d.size, 0, 6.2832);
-    ctx.fill();
+    Pixel.disc(ctx, this.x, this.y, d.size, d.color);
   };
 
   /* ---------------------------------------------------------- firing */

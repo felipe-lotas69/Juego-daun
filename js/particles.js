@@ -91,23 +91,22 @@
     }
   };
 
+  /* A tumbling splinter. Stamped, because a rotated fillRect is anti-aliased
+     and a three-pixel shard is then mostly soft edge. */
+  var SHARD = ['ss.', '.ss'];
+
   Particles.prototype.draw = function (ctx) {
     var L = this.list;
     for (var i = 0; i < L.length; i++) {
       var p = L[i];
       var t = p.age / p.life;
-      ctx.globalAlpha = p.fade === false ? 1 : U.clamp(1 - t * t, 0, 1);
+      ctx.globalAlpha = p.fade === false ? 1 : Pixel.qa(U.clamp(1 - t * t, 0, 1));
       ctx.fillStyle = p.color;
       if (p.shape === 'circle') {
         /* smoke reads as a block cluster at this resolution */
         Pixel.rect(ctx, p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
       } else if (p.shape === 'shard') {
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(p.rot);
-        ctx.fillRect(-p.size, -p.size * 0.5, p.size * 1.6, p.size);
-        ctx.fillRect(-p.size * 0.4, -p.size * 0.5, p.size * 0.8, p.size * 1.6);
-        ctx.restore();
+        Pixel.stamp(ctx, SHARD, { s: p.color }, p.x, p.y, p.rot, false);
       } else {
         Pixel.rect(ctx, p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
       }

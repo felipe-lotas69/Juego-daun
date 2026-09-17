@@ -150,73 +150,133 @@
     }
   };
 
-  /* ---------------------------------------------------------- drawing */
+  /* ---------------------------------------------------------- drawing
+     The body parts are sprites rather than rectangles. At this size a flat
+     block of colour has nothing in it to read - the reference art carries a
+     cap with a brim, an eye, a collar, buttons and a belt in about the same
+     number of pixels, and that detail is most of what separates pixel art
+     from a coloured box. Tones are derived from the palette, so every
+     character - player, enemy, hurt-flashed - gets the same shading.
+
+     Facing right is the authored direction; the stamp mirrors for the other. */
+
+  /* cap crown / cap band and brim / skin / skin in shadow / eye */
+  var SPR_HEAD = [
+    '.ccccc.',
+    'bbbbbbb',
+    '.tssss.',
+    '.tsses.',
+    '.tssss.',
+    '..tss..'
+  ];
+
+  /* back edge in shadow / suit / lit front edge / tie / button / belt */
+  var SPR_TORSO = [
+    'dlllll',
+    'duuTul',
+    'duuTua',
+    'duuTul',
+    'duuTua',
+    'duuuul',
+    'duuuul',
+    'dkkkkk',
+    'duuuul'
+  ];
+
+  var SPR_SHOE = ['nnnn', 'mmmm'];
+  var SPR_HAND = ['ss', 'ts'];
+
+  /* A gun is the one sprite whose size depends on what it is, so it gets
+     built from the weapon's barrel length and kept. */
+  var gunCache = {};
+  function gunSprite(key, def) {
+    var hit = gunCache[key];
+    if (hit) return hit;
+    var n = Math.max(2, Math.round(def.barrel / Pixel.SIZE));
+    var barrel = new Array(n + 1).join('B');
+    var tip = def.explosive || def.teleport ? 'T' : 'B';
+    var sprite = [
+      '.' + new Array(n + 1).join('H'),
+      'G' + barrel.slice(0, n - 1) + tip,
+      'GG' + new Array(n).join('.')
+    ];
+    gunCache[key] = sprite;
+    return sprite;
+  }
+
   Ragdoll.prototype.draw = function (ctx, owner, palette, skin, weapon, muzzleFlash) {
     var P = this.p, Px = Pixel.SIZE;
     var suit = palette.suit, suit2 = palette.suit2;
+    var flip = owner.facing !== 1;
+
+    var hat = palette.hat || Pixel.tint(suit, -0.5);
+    var headMap = {
+      c: hat,
+      b: Pixel.tint(hat, -0.35),
+      s: skin,
+      t: Pixel.tint(skin, -0.22),
+      e: '#20232f'
+    };
+    var torsoMap = {
+      d: suit2,
+      u: suit,
+      l: Pixel.tint(suit, 0.18),
+      T: palette.tie,
+      a: palette.mark,
+      k: Pixel.tint(suit, -0.45)
+    };
+    var shoeMap = { n: '#20232f', m: '#4a4f60' };
+    var handMap = { s: skin, t: Pixel.tint(skin, -0.22) };
 
     /* back arm and back leg first, so the body reads in front of them */
     Pixel.line(ctx, P[CHEST].x, P[CHEST].y, P[ELBOW_B].x, P[ELBOW_B].y, Px * 2, suit2);
     Pixel.line(ctx, P[ELBOW_B].x, P[ELBOW_B].y, P[HAND_B].x, P[HAND_B].y, Px * 2, suit2);
-    Pixel.rect(ctx, P[HAND_B].x - Px, P[HAND_B].y - Px, Px * 2, Px * 2, skin);
+    Pixel.stamp(ctx, SPR_HAND, handMap, P[HAND_B].x, P[HAND_B].y, 0, flip);
 
     Pixel.line(ctx, P[HIP].x, P[HIP].y, P[KNEE_B].x, P[KNEE_B].y, Px * 2, suit2);
     Pixel.line(ctx, P[KNEE_B].x, P[KNEE_B].y, P[FOOT_B].x, P[FOOT_B].y, Px * 2, suit2);
-    Pixel.rect(ctx, P[FOOT_B].x - Px * 2, P[FOOT_B].y - Px, Px * 4, Px * 2, '#20232f');
+    Pixel.stamp(ctx, SPR_SHOE, shoeMap, P[FOOT_B].x, P[FOOT_B].y, 0, flip);
 
     /* front leg */
-    Pixel.line(ctx, P[HIP].x, P[HIP].y, P[KNEE_A].x, P[KNEE_A].y, Px * 2, suit2);
-    Pixel.line(ctx, P[KNEE_A].x, P[KNEE_A].y, P[FOOT_A].x, P[FOOT_A].y, Px * 2, suit2);
-    Pixel.rect(ctx, P[FOOT_A].x - Px * 2, P[FOOT_A].y - Px, Px * 4, Px * 2, '#20232f');
+    Pixel.line(ctx, P[HIP].x, P[HIP].y, P[KNEE_A].x, P[KNEE_A].y, Px * 2, suit);
+    Pixel.line(ctx, P[KNEE_A].x, P[KNEE_A].y, P[FOOT_A].x, P[FOOT_A].y, Px * 2, suit);
+    Pixel.stamp(ctx, SPR_SHOE, shoeMap, P[FOOT_A].x, P[FOOT_A].y, 0, flip);
 
     /* torso follows the spine rather than the box */
     var mx = (P[CHEST].x + P[HIP].x) / 2, my = (P[CHEST].y + P[HIP].y) / 2;
     var spine = Math.atan2(P[CHEST].y - P[HIP].y, P[CHEST].x - P[HIP].x) + Math.PI / 2;
-    ctx.save();
-    ctx.translate(Pixel.s(mx), Pixel.s(my));
-    ctx.rotate(spine);
-    ctx.fillStyle = suit;
-    ctx.fillRect(-9, -12, 18, 24);
-    ctx.fillStyle = palette.tie;
-    ctx.fillRect(-3, -9, 3, 12);
-    ctx.restore();
+    Pixel.stamp(ctx, SPR_TORSO, torsoMap, mx, my, spine, flip);
 
     /* head, tilted along the neck */
     var neck = Math.atan2(P[HEAD].y - P[CHEST].y, P[HEAD].x - P[CHEST].x) + Math.PI / 2;
-    ctx.save();
-    ctx.translate(Pixel.s(P[HEAD].x), Pixel.s(P[HEAD].y));
-    ctx.rotate(neck);
-    ctx.fillStyle = skin;
-    ctx.fillRect(-9, -9, 18, 15);
-    ctx.fillStyle = '#20232f';
-    ctx.fillRect(-9, -9, 18, 6);
-    ctx.fillRect(owner.facing === 1 ? 3 : -6, 0, 3, 3);
-    ctx.restore();
+    Pixel.stamp(ctx, SPR_HEAD, headMap, P[HEAD].x, P[HEAD].y, neck, flip);
 
     /* front arm, and whatever it is holding */
+    /* sleeve to the wrist, then the hand - a forearm in bare skin reads as
+       a rolled-up shirt, which is not what anyone here is wearing */
     Pixel.line(ctx, P[CHEST].x, P[CHEST].y, P[ELBOW_A].x, P[ELBOW_A].y, Px * 2, suit);
-    Pixel.line(ctx, P[ELBOW_A].x, P[ELBOW_A].y, P[HAND_A].x, P[HAND_A].y, Px * 2, skin);
+    Pixel.line(ctx, P[ELBOW_A].x, P[ELBOW_A].y, P[HAND_A].x, P[HAND_A].y, Px * 2, suit);
+    Pixel.stamp(ctx, SPR_HAND, handMap, P[HAND_A].x, P[HAND_A].y, 0, flip);
 
     if (weapon) {
       var def = WEAPONS[weapon.key];
+      var sprite = gunSprite(weapon.key, def);
       var hold = Math.atan2(P[HAND_A].y - P[ELBOW_A].y, P[HAND_A].x - P[ELBOW_A].x);
-      ctx.save();
-      ctx.translate(Pixel.s(P[HAND_A].x), Pixel.s(P[HAND_A].y));
-      ctx.rotate(hold);
-      ctx.fillStyle = def.body;
-      ctx.fillRect(-3, -6, def.barrel, 6);
-      ctx.fillStyle = '#20232f';
-      ctx.fillRect(0, 0, 6, 6);
-      if (def.explosive) { ctx.fillStyle = '#ff6a4d'; ctx.fillRect(def.barrel - 9, -6, 6, 6); }
-      if (def.teleport) { ctx.fillStyle = '#49e0e8'; ctx.fillRect(def.barrel - 9, -6, 6, 6); }
+      var cos = Math.cos(hold), sin = Math.sin(hold);
+      /* the sprite is centred, but the gun hangs forward off the hand */
+      var reach = (sprite[0].length / 2 - 1) * Px;
+      var gx = P[HAND_A].x + cos * reach, gy = P[HAND_A].y + sin * reach;
+      Pixel.stamp(ctx, sprite, {
+        H: '#8d93a6', B: def.body, G: '#20232f',
+        T: def.explosive ? '#ff6a4d' : '#49e0e8'
+      }, gx, gy, hold, false);
+
       if (muzzleFlash > 0.25) {
-        ctx.fillStyle = '#fff3c4';
-        ctx.fillRect(def.barrel - 3, -6, 9, 6);
-        ctx.fillRect(def.barrel + 3, -3, 6, 3);
+        var mzx = P[HAND_A].x + cos * (reach + sprite[0].length / 2 * Px);
+        var mzy = P[HAND_A].y + sin * (reach + sprite[0].length / 2 * Px);
+        Pixel.rect(ctx, mzx - Px, mzy - Px * 2, Px * 3, Px * 3, '#fff3c4');
+        Pixel.rect(ctx, mzx - Px * 2, mzy - Px, Px * 5, Px, '#ffd15c');
       }
-      ctx.restore();
-    } else {
-      Pixel.rect(ctx, P[HAND_A].x - Px, P[HAND_A].y - Px, Px * 2, Px * 2, skin);
     }
   };
 
