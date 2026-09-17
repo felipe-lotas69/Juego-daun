@@ -62,6 +62,16 @@ push you aside. Each map is strung with **invisible checkpoints** you cross
 without noticing; dying puts you back at the last one, so a mistake costs you
 position rather than the whole run.
 
+## The look
+
+Everything is drawn into a 240x135 buffer and blown up four times with
+nearest-neighbour, so one pixel really is one pixel. That is what gives a
+leaning character stair-stepped edges rather than smooth anti-aliased ones:
+the blending happens at buffer resolution and then gets magnified along with
+the rest of the picture. Shapes snap to the grid, the text is a 3x5 bitmap
+font, and the palette is flat and bright — no gradients, no vignette, no soft
+glows, and round things are built out of squares.
+
 ## Blood
 
 Gibs are rigid bodies run through the same swept collision as everything else,
@@ -133,6 +143,7 @@ last check that the routes hold up under play.
 index.html         markup + boot
 styles.css         shell, menus, HUD
 js/utils.js        math, rng, collision helpers
+js/pixel.js        low-res buffer, grid snapping, 3x5 bitmap font
 js/input.js        keyboard/mouse state, two-player pads
 js/audio.js        WebAudio sound synthesis
 js/particles.js    particle + debris system

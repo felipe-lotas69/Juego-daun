@@ -33,7 +33,7 @@ const FILL_BOTS = Math.max(0, Math.min(3, parseInt(arg('bots', '3'), 10)));
 const TARGET = Math.max(1, parseInt(arg('target', '3'), 10));
 
 /* ------------------------------------------------------------ the engine */
-['utils', 'audio', 'particles', 'gore', 'weapons', 'entities',
+['utils', 'pixel', 'audio', 'particles', 'gore', 'weapons', 'entities',
  'levels', 'versusmaps', 'game', 'navgraph', 'bots', 'match']
   .forEach(f => require(path.join(ROOT, 'js', f + '.js')));
 globalThis.Sound.setEnabled(false);          /* nobody is listening here */

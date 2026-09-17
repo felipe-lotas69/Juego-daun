@@ -207,15 +207,11 @@
       ctx.fillStyle = d.color;
       for (var j = 0; j < d.blobs.length; j++) {
         var b = d.blobs[j];
-        ctx.beginPath();
-        ctx.ellipse(d.x + b.dx, d.y + b.dy, b.r, b.r * 0.72, 0, 0, 6.2832);
-        ctx.fill();
+        Pixel.rect(ctx, d.x + b.dx - b.r, d.y + b.dy - b.r * 0.7, b.r * 2, b.r * 1.4);
       }
       if (d.run > 0) {          /* a drip running down the wall */
-        ctx.fillRect(d.x - 1.4, d.y, 2.8, d.run);
-        ctx.beginPath();
-        ctx.arc(d.x, d.y + d.run, 2.2, 0, 6.2832);
-        ctx.fill();
+        Pixel.rect(ctx, d.x - Pixel.SIZE / 2, d.y, Pixel.SIZE, d.run);
+        Pixel.rect(ctx, d.x - Pixel.SIZE, d.y + d.run, Pixel.SIZE * 2, Pixel.SIZE * 2);
       }
     }
     ctx.globalAlpha = 1;
@@ -230,36 +226,33 @@
       ctx.rotate(g.rot);
       var pal = g.palette || { suit: '#3b4370', suit2: '#2b3157' };
 
+      var P = Pixel.SIZE;
       if (g.kind === 'head') {
-        ctx.fillStyle = '#f0c9a0';
-        U.roundRect(ctx, -g.w / 2, -g.h / 2, g.w, g.h, 5); ctx.fill();
+        ctx.fillStyle = '#f2cfa2';
+        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, g.h);
         ctx.fillStyle = '#20232f';
-        U.roundRect(ctx, -g.w / 2, -g.h / 2, g.w, 5, 2); ctx.fill();
+        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, P);
         ctx.fillStyle = '#8c0f1c';
-        ctx.fillRect(-g.w / 2, g.h / 2 - 3, g.w, 3);
+        ctx.fillRect(-g.w / 2, g.h / 2 - P, g.w, P);
       } else if (g.kind === 'torso') {
         ctx.fillStyle = pal.suit;
-        U.roundRect(ctx, -g.w / 2, -g.h / 2, g.w, g.h, 3); ctx.fill();
+        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, g.h);
         ctx.fillStyle = pal.tie || '#ff4d5e';
-        ctx.fillRect(-2, -g.h / 2, 4, g.h * 0.6);
+        ctx.fillRect(-P / 2, -g.h / 2, P, g.h * 0.6);
         ctx.fillStyle = '#8c0f1c';
-        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, 3);
+        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, P);
       } else if (g.kind === 'arm' || g.kind === 'leg') {
         ctx.fillStyle = g.kind === 'leg' ? pal.suit2 : pal.suit;
-        U.roundRect(ctx, -g.w / 2, -g.h / 2, g.w, g.h, 3); ctx.fill();
-        ctx.fillStyle = '#f0c9a0';
-        ctx.fillRect(-g.w / 2, g.h / 2 - 4, g.w, 4);
+        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, g.h);
+        ctx.fillStyle = '#f2cfa2';
+        ctx.fillRect(-g.w / 2, g.h / 2 - P, g.w, P);
         ctx.fillStyle = '#8c0f1c';
-        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, 2.5);
+        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, P);
       } else {
         ctx.fillStyle = '#a3121f';
-        ctx.beginPath();
-        ctx.ellipse(0, 0, g.w / 2, g.h / 2, 0, 0, 6.2832);
-        ctx.fill();
+        ctx.fillRect(-g.w / 2, -g.h / 2, g.w, g.h);
         ctx.fillStyle = '#6d0a15';
-        ctx.beginPath();
-        ctx.ellipse(-1, -1, g.w / 4, g.h / 4, 0, 0, 6.2832);
-        ctx.fill();
+        ctx.fillRect(-g.w / 2, -g.h / 2, g.w - P, P);
       }
       ctx.restore();
     }
@@ -267,10 +260,7 @@
     /* droplets last so they read over everything */
     for (i = 0; i < this.drops.length; i++) {
       var d = this.drops[i];
-      ctx.fillStyle = d.color;
-      ctx.beginPath();
-      ctx.ellipse(d.x, d.y, d.size * 0.8, d.size * 1.5, Math.atan2(d.vy, d.vx) - Math.PI / 2, 0, 6.2832);
-      ctx.fill();
+      Pixel.rect(ctx, d.x - d.size / 2, d.y - d.size, d.size, d.size * 2, d.color);
     }
   };
 

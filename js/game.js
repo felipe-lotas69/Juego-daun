@@ -4,7 +4,10 @@
 (function (root) {
   'use strict';
 
-  var VIEW_W = 960, VIEW_H = 540;
+  /* The logical view the camera frames, in world units. Smaller than the
+     canvas: it renders into a 240x135 buffer and is blown up 4x, which is
+     what makes a character read as ~15 pixels tall instead of 45. */
+  var VIEW_W = 720, VIEW_H = 405;
 
   var NO = function () { return false; };
   var NULL_INPUT = {
@@ -13,13 +16,15 @@
     mouse: { down: false, pressed: false }
   };
 
+  /* Flat, bright and few colours per surface: the look is carried by the
+     pixel grid, not by shading. */
   var PLATFORM_STYLE = {
-    solid:  { top: '#8892b5', body: '#4b5575', edge: '#222939' },
-    metal:  { top: '#a3adc4', body: '#626d88', edge: '#2e3446' },
-    wood:   { top: '#d4a566', body: '#a07a42', edge: '#5d4322' },
-    ice:    { top: '#e2f6ff', body: '#93c9dd', edge: '#4d7f93' },
-    bounce: { top: '#7df29c', body: '#3cb567', edge: '#1d6b38' },
-    grass:  { top: '#86d986', body: '#4d9055', edge: '#2a5230' }
+    solid:  { top: '#c9ced3', body: '#969ca4', edge: '#6a7078' },
+    metal:  { top: '#d8dce0', body: '#a6acb4', edge: '#767c86' },
+    wood:   { top: '#d9a960', body: '#a87c3c', edge: '#6d4e22' },
+    ice:    { top: '#eafaff', body: '#a6dcee', edge: '#6ea8c2' },
+    bounce: { top: '#a8f890', body: '#54c84e', edge: '#2c8a32' },
+    grass:  { top: '#96e07e', body: '#54a049', edge: '#2e6a2e' }
   };
 
   function World(levelIndex, hooks, opts) {
@@ -111,12 +116,24 @@
     var seed = 1337 + this.levelIndex * 91;
     function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
     for (i = 0; i < 90; i++) {
+      var layer = i % 2;
       this.sky.push({
-        x: rnd() * (L.width + 1600) - 300,
-        w: 60 + rnd() * 140,
-        h: 120 + rnd() * 420,
-        layer: i % 3,
+        x: Pixel.s(rnd() * (L.width + 1600) - 300),
+        w: Pixel.s(45 + rnd() * 105),
+        /* low: the city is a horizon line, not a backdrop that swallows
+           the play area */
+        h: Pixel.s(layer === 0 ? 45 + rnd() * 105 : 75 + rnd() * 165),
+        layer: layer,
         lit: rnd()
+      });
+    }
+    this.clouds = [];
+    for (i = 0; i < 9; i++) {
+      this.clouds.push({
+        x: rnd() * (VIEW_W + 400),
+        y: Pixel.s(40 + rnd() * 190),
+        w: Pixel.s(30 + rnd() * 46),
+        sp: 5 + rnd() * 10
       });
     }
   };
@@ -607,77 +624,84 @@
   /* ---------------------------------------------------------- drawing */
   World.prototype.drawBackground = function (ctx) {
     var L = this.level;
-    var g = ctx.createLinearGradient(0, 0, 0, VIEW_H);
-    var s = L.sky;
-    for (var i = 0; i < s.length; i++) g.addColorStop(i / (s.length - 1), s[i]);
-    ctx.fillStyle = g;
+    var sky = (L.sky && L.sky.length) ? L.sky : ['#2fb6ea', '#8fd8f2', '#d8cba4'];
+    var P = Pixel.SIZE;
+
+    /* flat sky, no gradient */
+    ctx.fillStyle = sky[0];
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
 
-    /* moon / sun */
-    ctx.fillStyle = 'rgba(255,255,255,0.10)';
-    ctx.beginPath();
-    ctx.arc(VIEW_W * 0.78 - this.cam.x * 0.02, 96 - this.cam.y * 0.02, 46, 0, 6.2832);
-    ctx.fill();
+    /* the sun is a block, like everything else */
+    Pixel.disc(ctx, VIEW_W * 0.80 - this.cam.x * 0.02, 88 - this.cam.y * 0.02, 33, 'rgba(255,255,255,0.22)');
 
+    /* Vertical parallax is clamped: on a tall map the skyline should drift,
+       not launch off the top of the screen. */
+    var camY = U.clamp(this.cam.y * 0.06, -90, 90);
     var layers = [
-      { p: 0.10, col: 'rgba(16,21,40,0.40)', yo: 60 },
-      { p: 0.22, col: 'rgba(14,19,36,0.52)', yo: 30 },
-      { p: 0.38, col: 'rgba(10,13,26,0.66)', yo: 0 }
+      { p: 0.12, col: sky[1], win: null, yo: 0 },
+      { p: 0.26, col: sky[2], win: sky[3] || 'rgba(0,0,0,0.13)', yo: 0 }
     ];
     for (var l = 0; l < layers.length; l++) {
       var lay = layers[l];
-      ctx.fillStyle = lay.col;
       for (var b = 0; b < this.sky.length; b++) {
         var bd = this.sky[b];
         if (bd.layer !== l) continue;
-        var bx = bd.x - this.cam.x * lay.p;
-        var by = VIEW_H - bd.h + lay.yo - this.cam.y * lay.p * 0.35;
+        var bx = Pixel.s(bd.x - this.cam.x * lay.p);
+        var by = Pixel.s(VIEW_H - bd.h - camY * lay.p);
         if (bx > VIEW_W + 60 || bx + bd.w < -60) continue;
-        ctx.fillRect(bx, by, bd.w, bd.h + 500);
-        if (l === 2 && bd.lit > 0.35) {
-          ctx.fillStyle = 'rgba(255,205,110,0.13)';
-          for (var wy = by + 16; wy < by + bd.h - 10; wy += 26) {
-            for (var wx = bx + 10; wx < bx + bd.w - 14; wx += 22) {
-              if (((wx * 7 + wy * 13) % 5) < 2) ctx.fillRect(wx, wy, 9, 12);
+        Pixel.rect(ctx, bx, by, bd.w, bd.h + 400, lay.col);
+        if (lay.win && bd.lit > 0.28) {
+          /* a neat grid of windows, inset from the edges */
+          ctx.fillStyle = lay.win;
+          var cols = Math.max(1, Math.floor((bd.w - P * 4) / (P * 5)));
+          for (var wy = by + P * 4; wy < by + bd.h - P * 4; wy += P * 6) {
+            for (var c2 = 0; c2 < cols; c2++) {
+              var wx = bx + P * 3 + c2 * P * 5;
+              if (((c2 * 3 + Math.round(wy / P)) % 7) < 5) {
+                ctx.fillRect(Pixel.s(wx), Pixel.s(wy), P * 2, P * 3);
+              }
             }
           }
-          ctx.fillStyle = lay.col;
+        }
+        /* a water tank on some of the near ones */
+        if (l === 1 && bd.lit > 0.76) {
+          Pixel.rect(ctx, bx + bd.w * 0.3, by - P * 3, P * 4, P * 3, lay.col);
+          Pixel.rect(ctx, bx + bd.w * 0.3 + P, by - P * 5, P * 2, P * 2, lay.col);
         }
       }
     }
-  };
 
-  World.prototype.drawHaze = function (ctx) {
-    var h = ctx.createLinearGradient(0, 0, 0, VIEW_H);
-    h.addColorStop(0, 'rgba(18,22,40,0.10)');
-    h.addColorStop(1, 'rgba(18,22,40,0.46)');
-    ctx.fillStyle = h;
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    /* clouds drift slowly and are made of two or three blocks */
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    for (var c = 0; c < this.clouds.length; c++) {
+      var cl = this.clouds[c];
+      var cxp = Pixel.s(((cl.x + this.time * cl.sp) % (VIEW_W + 400)) - 200 - this.cam.x * 0.05);
+      var cyp = Pixel.s(cl.y - this.cam.y * 0.04);
+      if (cxp > VIEW_W + 120 || cxp < -140) continue;
+      Pixel.rect(ctx, cxp, cyp, cl.w, P * 3);
+      Pixel.rect(ctx, cxp + P * 3, cyp - P * 3, cl.w - P * 6, P * 3);
+      Pixel.rect(ctx, cxp + P * 2, cyp + P * 3, cl.w - P * 3, P * 2);
+    }
   };
 
   World.prototype.drawPlatform = function (ctx, p) {
     var st = PLATFORM_STYLE[p.type] || PLATFORM_STYLE.solid;
-    ctx.fillStyle = 'rgba(8,10,18,0.55)';
-    ctx.fillRect(p.x - 2, p.y - 2, p.w + 4, p.h + 4);
-    ctx.fillStyle = st.body;
-    ctx.fillRect(p.x, p.y, p.w, p.h);
-    ctx.fillStyle = st.top;
-    ctx.fillRect(p.x, p.y, p.w, Math.min(6, p.h));
-    ctx.fillStyle = 'rgba(255,255,255,0.18)';
-    ctx.fillRect(p.x, p.y, p.w, 2);
-    ctx.fillStyle = st.edge;
-    ctx.fillRect(p.x, p.y + p.h - 3, p.w, 3);
-    if (p.h > 26) {
-      ctx.fillStyle = 'rgba(0,0,0,0.16)';
-      for (var y = p.y + 16; y < p.y + p.h - 8; y += 26) ctx.fillRect(p.x + 4, y, p.w - 8, 2);
+    var P = Pixel.SIZE;
+    Pixel.rect(ctx, p.x, p.y, p.w, p.h, st.body);
+    Pixel.rect(ctx, p.x, p.y, p.w, Math.min(P * 2, p.h), st.top);
+    Pixel.rect(ctx, p.x, p.y + p.h - P, p.w, P, st.edge);
+
+    if (p.h > P * 8) {
+      ctx.fillStyle = st.edge;
+      for (var y = p.y + P * 5; y < p.y + p.h - P * 2; y += P * 7) {
+        ctx.fillRect(Pixel.s(p.x + P), Pixel.s(y), Pixel.s(p.w - P * 2), P);
+      }
     }
     if (p.type === 'bounce') {
-      ctx.fillStyle = 'rgba(255,255,255,0.35)';
-      for (var x = p.x + 6; x < p.x + p.w - 6; x += 14) ctx.fillRect(x, p.y + 2, 7, 2);
-    }
-    if (p.type === 'ice') {
-      ctx.fillStyle = 'rgba(255,255,255,0.22)';
-      ctx.fillRect(p.x, p.y, p.w, 2);
+      ctx.fillStyle = '#ffffff';
+      for (var x = p.x + P; x < p.x + p.w - P * 2; x += P * 4) {
+        ctx.fillRect(Pixel.s(x), Pixel.s(p.y + P), P * 2, P);
+      }
     }
   };
 
@@ -686,24 +710,20 @@
     ctx.save();
     ctx.clearRect(0, 0, VIEW_W, VIEW_H);
     this.drawBackground(ctx);
-    this.drawHaze(ctx);
 
     var sx = 0, sy = 0;
     if (this.shakeAmount > 0.4) {
       sx = U.rand(-this.shakeAmount, this.shakeAmount);
       sy = U.rand(-this.shakeAmount, this.shakeAmount);
     }
-    ctx.translate(-Math.round(this.cam.x) + sx, -Math.round(this.cam.y) + sy);
+    /* scroll in whole pixels, or the whole grid shimmers */
+    ctx.translate(-Pixel.s(this.cam.x) + Pixel.s(sx), -Pixel.s(this.cam.y) + Pixel.s(sy));
 
     /* hints sit behind everything */
     var hints = this.level.hints || [];
-    ctx.font = 'italic 15px "Segoe UI", sans-serif';
-    ctx.textAlign = 'center';
     for (i = 0; i < hints.length; i++) {
-      ctx.fillStyle = 'rgba(0,0,0,0.45)';
-      ctx.fillText(hints[i].text, hints[i].x + 1, hints[i].y + 2);
-      ctx.fillStyle = 'rgba(255,224,150,0.55)';
-      ctx.fillText(hints[i].text, hints[i].x, hints[i].y);
+      Pixel.shadowText(ctx, hints[i].text, hints[i].x, hints[i].y, Pixel.SIZE,
+                       'rgba(255,255,255,0.48)', 'center');
     }
 
     for (i = 0; i < this.checkpoints.length; i++) this.checkpoints[i].draw(ctx);
@@ -740,11 +760,9 @@
     if (this.player.prompt) {
       var o = this.player.prompt.obj;
       var bx = o.x + (o.w || 0) / 2, by = o.y + (o.h || 0) / 2;
-      ctx.strokeStyle = 'rgba(255,194,60,' + (0.45 + Math.sin(this.time * 8) * 0.25) + ')';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(bx, by, 26 + Math.sin(this.time * 6) * 2, 0, 6.2832);
-      ctx.stroke();
+      var r = Pixel.s(24 + (Math.sin(this.time * 6) > 0 ? Pixel.SIZE : 0));
+      Pixel.frame(ctx, bx - r, by - r, r * 2, r * 2,
+                  Math.floor(this.time * 8) % 2 ? '#ffd15c' : '#ffffff');
     }
 
     ctx.restore();
@@ -757,13 +775,6 @@
       ctx.fillStyle = 'rgba(120,10,20,' + U.clamp(this.player.deadTimer * 0.55, 0, 0.45) + ')';
       ctx.fillRect(0, 0, VIEW_W, VIEW_H);
     }
-
-    /* vignette */
-    var vg = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.38, VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.86);
-    vg.addColorStop(0, 'rgba(0,0,0,0)');
-    vg.addColorStop(1, 'rgba(0,0,0,0.42)');
-    ctx.fillStyle = vg;
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
 
     /* off-screen markers */
     this.drawGoalArrow(ctx);
@@ -780,17 +791,21 @@
       var cx = VIEW_W / 2, cy = VIEW_H / 2;
       var a = Math.atan2(sy - cy, sx - cx);
       var r = Math.min(VIEW_W, VIEW_H) * 0.46;
-      ctx.save();
-      ctx.translate(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
-      ctx.rotate(a);
-      ctx.globalAlpha = 0.72;
-      ctx.fillStyle = p.palette.mark;
-      ctx.beginPath();
-      ctx.moveTo(10, 0); ctx.lineTo(-7, -6); ctx.lineTo(-7, 6);
-      ctx.closePath(); ctx.fill();
-      ctx.restore();
-      ctx.globalAlpha = 1;
+      this.drawPixelArrow(ctx, cx + Math.cos(a) * r, cy + Math.sin(a) * r, a, p.palette.mark);
     }
+  };
+
+  /* A stepped triangle, built from rows of blocks so it stays on grid. */
+  World.prototype.drawPixelArrow = function (ctx, x, y, angle, color) {
+    var P = Pixel.SIZE;
+    ctx.save();
+    ctx.translate(Pixel.s(x), Pixel.s(y));
+    ctx.rotate(Math.round(angle / (Math.PI / 4)) * (Math.PI / 4));
+    ctx.fillStyle = color;
+    for (var i = 0; i < 4; i++) {
+      ctx.fillRect(-P * 3 + i * P, -P * (4 - i), P, P * (8 - i * 2));
+    }
+    ctx.restore();
   };
 
   World.prototype.drawGoalArrow = function (ctx) {
@@ -801,14 +816,7 @@
     var a = Math.atan2(gy - cy, gx - cx);
     var r = Math.min(VIEW_W, VIEW_H) * 0.42;
     var px = cx + Math.cos(a) * r, py = cy + Math.sin(a) * r;
-    ctx.save();
-    ctx.translate(px, py);
-    ctx.rotate(a);
-    ctx.fillStyle = 'rgba(87,224,122,0.8)';
-    ctx.beginPath();
-    ctx.moveTo(12, 0); ctx.lineTo(-8, -8); ctx.lineTo(-8, 8);
-    ctx.closePath(); ctx.fill();
-    ctx.restore();
+    this.drawPixelArrow(ctx, px, py, a, '#57e07a');
   };
 
   root.World = World;

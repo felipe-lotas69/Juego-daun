@@ -278,35 +278,20 @@
       this.el.hud.classList.add('hidden');
     },
 
+    toastText: '',
+
     toast: function (msg) {
-      this.el.toast.textContent = msg;
-      this.el.toast.classList.add('show');
+      this.toastText = msg;          /* the canvas HUD renders it */
       this.toastTimer = 1.3;
     },
 
+    /* The readouts live on the pixel canvas now, so this only ticks the
+       timers the canvas HUD reads back. */
     updateHUD: function (world, dt) {
-      this.el.hudLevel.textContent = world.mode === 'versus'
-        ? 'ROUND ' + ((this.game.match ? this.game.match.roundIndex : 0) + 1) + ' \u00b7 ' + world.level.name
-        : 'LEVEL ' + (world.levelIndex + 1) + ' \u00b7 ' + world.level.name;
-      this.el.hudTime.textContent = U.formatTime(world.elapsed);
-      this.el.hudHealth.style.width = U.clamp(world.player.health / world.player.maxHealth * 100, 0, 100) + '%';
+      if (this.toastTimer > 0) this.toastTimer -= dt;
+    },
 
-      var w = world.player.weapon;
-      this.el.hudWeapon.textContent = w ? WEAPONS[w.key].name + '  ' + w.ammo : 'UNARMED';
-      this.el.hudWeapon.style.color = w ? '#ffc23c' : '#8a90a8';
-
-      if (world.prompt) {
-        this.el.promptText.textContent = world.prompt.label;
-        this.el.prompt.classList.remove('hidden');
-      } else {
-        this.el.prompt.classList.add('hidden');
-      }
-
-      if (this.toastTimer > 0) {
-        this.toastTimer -= dt;
-        if (this.toastTimer <= 0) this.el.toast.classList.remove('show');
-      }
-    }
+    updateScoreboard: function () { }
   };
 
   root.UI = UI;

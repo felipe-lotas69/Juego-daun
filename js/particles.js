@@ -99,26 +99,17 @@
       ctx.globalAlpha = p.fade === false ? 1 : U.clamp(1 - t * t, 0, 1);
       ctx.fillStyle = p.color;
       if (p.shape === 'circle') {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size, 0, 6.2832);
-        ctx.fill();
+        /* smoke reads as a block cluster at this resolution */
+        Pixel.rect(ctx, p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
       } else if (p.shape === 'shard') {
         ctx.save();
         ctx.translate(p.x, p.y);
         ctx.rotate(p.rot);
-        ctx.beginPath();
-        ctx.moveTo(-p.size, -p.size * 0.5);
-        ctx.lineTo(p.size * 0.9, -p.size * 0.2);
-        ctx.lineTo(p.size * 0.2, p.size);
-        ctx.closePath();
-        ctx.fill();
+        ctx.fillRect(-p.size, -p.size * 0.5, p.size * 1.6, p.size);
+        ctx.fillRect(-p.size * 0.4, -p.size * 0.5, p.size * 0.8, p.size * 1.6);
         ctx.restore();
       } else {
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(p.rot);
-        ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
-        ctx.restore();
+        Pixel.rect(ctx, p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
       }
     }
     ctx.globalAlpha = 1;

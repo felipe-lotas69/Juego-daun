@@ -6,6 +6,13 @@
 
   var canvas = document.getElementById('game');
   var ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  /* Everything is drawn small and blown up, so a pixel is a pixel. The
+     buffer is the camera's view; the canvas it lands on is 960x540. */
+  var CANVAS_W = 960, CANVAS_H = 540;
+  var pctx = Pixel.init(VIEW_W, VIEW_H);
+  void pctx;
 
   var Game = {
     state: 'menu',        /* menu | playing | paused | complete | roundend | matchend | lan */
@@ -208,14 +215,78 @@
     },
 
     draw: function () {
+      var b = Pixel.begin();
       if (this.world) {
-        this.world.draw(ctx);
-        if (this.state === 'paused' || this.state === 'complete') {
-          ctx.fillStyle = 'rgba(8,10,18,0.55)';
-          ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-        }
+        this.world.draw(b);
+        this.drawHud(b);
       } else {
-        drawMenuBackdrop();
+        drawMenuBackdrop(b);
+      }
+      Pixel.blit(ctx, CANVAS_W, CANVAS_H);
+      if (this.world && (this.state === 'paused' || this.state === 'complete' ||
+                         this.state === 'roundend' || this.state === 'matchend')) {
+        ctx.fillStyle = 'rgba(10,14,22,0.5)';
+        ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+      }
+    },
+
+    /* The HUD belongs on the pixel grid too, or it fights the art. */
+    drawHud: function (b) {
+      if (this.state === 'menu') return;
+      var w = this.world, P = Pixel.SIZE;
+      var pad = P * 3;
+
+      /* left: clock and where you are */
+      Pixel.shadowText(b, U.formatTime(w.elapsed), pad, pad, P * 3, '#ffffff');
+      /* Just the number here - the map announces itself on the toast when
+         the round starts, and the full name does not fit beside the scores. */
+      var label = w.mode === 'versus'
+        ? 'ROUND ' + ((this.match ? this.match.roundIndex : 0) + 1)
+        : 'LEVEL ' + (w.levelIndex + 1);
+      Pixel.shadowText(b, label, pad, pad + P * 18, P * 2, '#eaf6ff');
+
+      /* centre: one colour block and a score per racer, in a row */
+      if (w.mode === 'versus') {
+        var n = w.players.length;
+        var cell = P * 16;
+        var x0 = VIEW_W / 2 - (n * cell) / 2;
+        for (var i = 0; i < n; i++) {
+          var p = w.players[i];
+          var bx = x0 + i * cell;
+          Pixel.rect(b, bx, pad, P * 6, P * 6, p.palette.mark);
+          Pixel.frame(b, bx, pad, P * 6, P * 6, p === w.player ? '#ffffff' : 'rgba(0,0,0,0.35)');
+          Pixel.shadowText(b, String(p.wins), bx + P * 8, pad + P, P * 2, '#ffffff');
+        }
+      }
+
+      /* right: condition and what you are holding */
+      var hp = U.clamp(w.player.health / w.player.maxHealth, 0, 1);
+      var barW = P * 24;
+      Pixel.rect(b, VIEW_W - pad - barW, pad, barW, P * 4, 'rgba(0,0,0,0.45)');
+      if (hp > 0) {
+        Pixel.rect(b, VIEW_W - pad - barW, pad, barW * hp, P * 4, hp > 0.35 ? '#ff4d5e' : '#ff8a3c');
+      }
+      Pixel.frame(b, VIEW_W - pad - barW, pad, barW, P * 4, '#ffffff');
+
+      var wep = w.player.weapon;
+      Pixel.shadowText(b, wep ? WEAPONS[wep.key].short + ' ' + wep.ammo : 'UNARMED',
+                       VIEW_W - pad, pad + P * 7, P, wep ? '#ffd15c' : '#eaf6ff', 'right');
+
+      /* context prompt, just above the floor of the frame */
+      if (w.player.prompt) {
+        var t = w.player.prompt.label;
+        var tw = Pixel.textWidth(t, P);
+        var pw = tw + P * 12;
+        var px = VIEW_W / 2 - pw / 2;
+        var py = VIEW_H - P * 16;
+        Pixel.rect(b, px, py, pw, P * 8, 'rgba(10,20,30,0.7)');
+        Pixel.frame(b, px, py, pw, P * 8, '#ffd15c');
+        Pixel.text(b, 'R', px + P * 3, py + P * 2, P * 2, '#ffd15c');
+        Pixel.text(b, t, px + P * 9, py + P * 3, P, '#ffffff');
+      }
+
+      if (UI.toastTimer > 0) {
+        Pixel.shadowText(b, UI.toastText || '', VIEW_W / 2, VIEW_H * 0.30, P * 2, '#ffd15c', 'center');
       }
     }
   };
@@ -226,56 +297,60 @@
   (function () {
     var seed = 7;
     function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
-    for (var i = 0; i < 46; i++) {
-      skyline.push({ x: rnd() * 1100 - 60, w: 50 + rnd() * 130, h: 110 + rnd() * 330, layer: i % 2, lit: rnd() });
+    for (var i = 0; i < 40; i++) {
+      var layer = i % 2;
+      skyline.push({
+        x: rnd() * 820 - 60,
+        w: 42 + rnd() * 96,
+        /* low horizon, same as in the maps, so the sky carries the frame */
+        h: layer === 0 ? 45 + rnd() * 90 : 66 + rnd() * 132,
+        layer: layer,
+        lit: rnd()
+      });
     }
   })();
 
-  function drawMenuBackdrop() {
-    var g = ctx.createLinearGradient(0, 0, 0, VIEW_H);
-    g.addColorStop(0, '#161d38');
-    g.addColorStop(0.55, '#3a2748');
-    g.addColorStop(1, '#8a4a4a');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-
-    ctx.fillStyle = 'rgba(255,255,255,0.10)';
-    ctx.beginPath();
-    ctx.arc(760, 110, 52, 0, 6.2832);
-    ctx.fill();
+  function drawMenuBackdrop(b) {
+    var P = Pixel.SIZE;
+    b.fillStyle = '#2fb6ea';
+    b.fillRect(0, 0, VIEW_W, VIEW_H);
+    Pixel.disc(b, 770, 104, 36, 'rgba(255,255,255,0.22)');
 
     var drift = Math.sin(menuT * 0.12) * 18;
-    [{ p: 0.4, c: 'rgba(14,18,34,0.7)', o: 40 }, { p: 1, c: 'rgba(9,12,24,0.95)', o: 0 }].forEach(function (lay, li) {
-      ctx.fillStyle = lay.c;
-      skyline.forEach(function (b) {
-        if (b.layer !== li) return;
-        var bx = b.x + drift * lay.p;
-        var by = VIEW_H - b.h + lay.o;
-        ctx.fillRect(bx, by, b.w, b.h + 200);
-        if (li === 1 && b.lit > 0.4) {
-          ctx.fillStyle = 'rgba(255,205,110,0.12)';
-          for (var wy = by + 14; wy < by + b.h - 10; wy += 24) {
-            for (var wx = bx + 9; wx < bx + b.w - 12; wx += 20) {
-              if (((wx * 7 + wy * 13 + Math.floor(menuT * 0.6)) % 7) < 2) ctx.fillRect(wx, wy, 8, 11);
+    [{ p: 0.4, c: '#86d4f0', o: 0, win: null },
+     { p: 1.0, c: '#d5c9a2', o: 0, win: 'rgba(92,80,58,0.30)' }].forEach(function (lay, li) {
+      skyline.forEach(function (bd) {
+        if (bd.layer !== li) return;
+        var bx = Pixel.s(bd.x + drift * lay.p);
+        var by = Pixel.s(VIEW_H - bd.h + lay.o);
+        Pixel.rect(b, bx, by, bd.w, bd.h + 300, lay.c);
+        if (lay.win && bd.lit > 0.35) {
+          b.fillStyle = lay.win;
+          var cols = Math.max(1, Math.floor((bd.w - P * 4) / (P * 5)));
+          for (var wy = by + P * 4; wy < by + bd.h - P * 4; wy += P * 6) {
+            for (var c3 = 0; c3 < cols; c3++) {
+              var wx = bx + P * 3 + c3 * P * 5;
+              if (((c3 * 3 + Math.round(wy / P)) % 7) < 5) b.fillRect(Pixel.s(wx), Pixel.s(wy), P * 2, P * 3);
             }
           }
-          ctx.fillStyle = lay.c;
         }
       });
     });
 
-    var vg = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, 140, VIEW_W / 2, VIEW_H / 2, 520);
-    vg.addColorStop(0, 'rgba(0,0,0,0)');
-    vg.addColorStop(1, 'rgba(0,0,0,0.55)');
-    ctx.fillStyle = vg;
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    b.fillStyle = 'rgba(255,255,255,0.8)';
+    for (var c = 0; c < 6; c++) {
+      var cx = Pixel.s(((c * 190 + menuT * 7) % (VIEW_W + 300)) - 150);
+      var cy = Pixel.s(50 + (c % 3) * 52);
+      Pixel.rect(b, cx, cy, P * 14, P * 3);
+      Pixel.rect(b, cx + P * 3, cy - P * 3, P * 8, P * 3);
+    }
   }
 
   /* -------------------------------------------------- scaling */
   function resize() {
     var shell = document.getElementById('shell');
     var pad = 24;
-    var s = Math.min((root.innerWidth - pad) / VIEW_W, (root.innerHeight - pad) / VIEW_H);
+    var s = Math.min((root.innerWidth - pad) / CANVAS_W, (root.innerHeight - pad) / CANVAS_H);
     s = Math.max(0.35, Math.min(s, 2.2));
     shell.style.transform = 'scale(' + s + ')';
   }
