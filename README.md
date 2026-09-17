@@ -96,18 +96,23 @@ directly, so `node server/server.js` is the whole setup.
 
 ## Hosting
 
-`.github/workflows/pages.yml` syntax-checks every script and then publishes the
-repository root to GitHub Pages on each push. It needs Pages turned on once, by
-hand, because a workflow token is not allowed to create the Pages site itself:
+The site is plain static files at the repository root, so GitHub Pages can
+serve it straight from the branch — no build, no deploy workflow:
 
-1. The repository has to be **public** — Pages on a private repository requires
-   GitHub Pro or higher. Settings → General → Danger Zone → *Change visibility*.
-2. Settings → **Pages** → *Build and deployment* → Source: **GitHub Actions**.
-3. Re-run the workflow (Actions → *Deploy to GitHub Pages* → *Run workflow*), or
-   just push again.
+**Settings → Pages → Build and deployment → Source: `Deploy from a branch`,
+Branch: `claude/getaway-shootout-game-x4v0bp` / `(root)` → Save.**
 
-Pages serves the campaign and local versus. LAN play needs the Node host above,
-since GitHub Pages only serves static files.
+Give it a minute and it appears at
+`https://felipe-lotas69.github.io/Juego-daun/`. Every later push republishes
+automatically.
+
+(There is a *Deploy from GitHub Actions* option too, but the workflow token
+here is not allowed to create the Pages site, so branch mode is the one that
+works. The workflow that remains only syntax-checks the scripts and verifies
+the level geometry.)
+
+Pages serves the campaign and local versus. LAN play needs the Node host
+above, since Pages only serves static files.
 
 ## Running locally
 

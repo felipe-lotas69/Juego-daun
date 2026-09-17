@@ -1,4 +1,4 @@
-name: Deploy to GitHub Pages
+name: Check
 
 on:
   push:
@@ -6,16 +6,11 @@ on:
       - main
       - master
       - claude/getaway-shootout-game-x4v0bp
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
 
 jobs:
   check:
@@ -26,22 +21,9 @@ jobs:
         with:
           node-version: '22'
       - name: Syntax-check every script
-        run: for f in js/*.js; do node --check "$f" || exit 1; done
-
-  deploy:
-    needs: check
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-        with:
-          # turn Pages on for the repo the first time this runs
-          enablement: true
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: '.'
-      - id: deployment
-        uses: actions/deploy-pages@v4
+        run: |
+          for f in js/*.js server/*.js; do
+            node --check "$f" || exit 1
+          done
+      - name: Levels are completable and nothing respawns inside a hazard
+        run: node tools/verify-levels.js
