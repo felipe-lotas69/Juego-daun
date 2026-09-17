@@ -7,7 +7,7 @@
   /* The logical view the camera frames, in world units. Smaller than the
      canvas: it renders into a 240x135 buffer and is blown up 4x, which is
      what makes a character read as ~15 pixels tall instead of 45. */
-  var VIEW_W = 576, VIEW_H = 324;
+  var VIEW_W = 480, VIEW_H = 270;
 
   var NO = function () { return false; };
   var NULL_INPUT = {
@@ -677,9 +677,9 @@
 
   World.prototype.updateCamera = function (dt) {
     var p = this.player;
-    var look = U.clamp(p.vx * 0.22, -110, 110);
+    var look = U.clamp(p.vx * 0.30, -150, 150);
     this.camTarget.x = p.x + p.w / 2 - VIEW_W / 2 + look;
-    this.camTarget.y = p.y + p.h / 2 - VIEW_H / 2 + U.clamp(p.vy * 0.12, -80, 120);
+    this.camTarget.y = p.y + p.h / 2 - VIEW_H / 2 + U.clamp(p.vy * 0.15, -90, 130);
     this.clampCam(this.camTarget);
     var k = 1 - U.damp(7.5, dt);
     this.cam.x += (this.camTarget.x - this.cam.x) * k;
@@ -788,8 +788,13 @@
     /* hints sit behind everything */
     var hints = this.level.hints || [];
     for (i = 0; i < hints.length; i++) {
-      Pixel.shadowText(ctx, hints[i].text, hints[i].x, hints[i].y, Pixel.SIZE,
-                       'rgba(255,255,255,0.48)', 'center');
+      /* The frame shows less world than it used to, so a hint covers more of
+         it. shadowText's drop shadow is fixed at 0.45 black, which would read
+         darker than a faded fill - so lay a lighter shadow by hand. */
+      Pixel.text(ctx, hints[i].text, hints[i].x + Pixel.SIZE, hints[i].y + Pixel.SIZE,
+                 Pixel.SIZE, 'rgba(0,0,0,0.20)', 'center');
+      Pixel.text(ctx, hints[i].text, hints[i].x, hints[i].y, Pixel.SIZE,
+                 'rgba(255,255,255,0.52)', 'center');
     }
 
     for (i = 0; i < this.checkpoints.length; i++) this.checkpoints[i].draw(ctx);

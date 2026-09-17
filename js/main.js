@@ -237,56 +237,59 @@
       var pad = P * 3;
 
       /* left: clock and where you are */
-      Pixel.shadowText(b, U.formatTime(w.elapsed), pad, pad, P * 3, '#ffffff');
-      /* Just the number here - the map announces itself on the toast when
-         the round starts, and the full name does not fit beside the scores. */
+      Pixel.shadowText(b, U.formatTime(w.elapsed), pad, pad, P * 2, '#ffffff');
       var label = w.mode === 'versus'
         ? 'ROUND ' + ((this.match ? this.match.roundIndex : 0) + 1)
         : 'LEVEL ' + (w.levelIndex + 1);
-      Pixel.shadowText(b, label, pad, pad + P * 18, P * 2, '#eaf6ff');
+      Pixel.shadowText(b, label, pad, pad + P * 12, P, '#eaf6ff');
 
-      /* centre: one colour block and a score per racer, in a row */
+      /* centre: one colour block and a score per racer */
       if (w.mode === 'versus') {
         var n = w.players.length;
-        var cell = P * 16;
+        /* block, then digit, then a gap - the cell has to clear all three or
+           the next racer's block lands on the last one's score. */
+        var cell = P * 14;
         var x0 = VIEW_W / 2 - (n * cell) / 2;
         for (var i = 0; i < n; i++) {
           var p = w.players[i];
           var bx = x0 + i * cell;
-          Pixel.rect(b, bx, pad, P * 6, P * 6, p.palette.mark);
-          Pixel.frame(b, bx, pad, P * 6, P * 6, p === w.player ? '#ffffff' : 'rgba(0,0,0,0.35)');
-          Pixel.shadowText(b, String(p.wins), bx + P * 8, pad + P, P * 2, '#ffffff');
+          Pixel.rect(b, bx, pad, P * 4, P * 4, p.palette.mark);
+          Pixel.frame(b, bx, pad, P * 4, P * 4, p === w.player ? '#ffffff' : 'rgba(0,0,0,0.4)');
+          Pixel.shadowText(b, String(p.wins), bx + P * 6, pad + P * 0.5, P * 2, '#ffffff');
         }
       }
 
       /* right: condition and what you are holding */
       var hp = U.clamp(w.player.health / w.player.maxHealth, 0, 1);
-      var barW = P * 24;
-      Pixel.rect(b, VIEW_W - pad - barW, pad, barW, P * 4, 'rgba(0,0,0,0.45)');
+      var barW = P * 18;
+      Pixel.rect(b, VIEW_W - pad - barW, pad, barW, P * 3, 'rgba(0,0,0,0.45)');
       if (hp > 0) {
-        Pixel.rect(b, VIEW_W - pad - barW, pad, barW * hp, P * 4, hp > 0.35 ? '#ff4d5e' : '#ff8a3c');
+        Pixel.rect(b, VIEW_W - pad - barW, pad, barW * hp, P * 3, hp > 0.35 ? '#ff4d5e' : '#ff8a3c');
       }
-      Pixel.frame(b, VIEW_W - pad - barW, pad, barW, P * 4, '#ffffff');
+      Pixel.frame(b, VIEW_W - pad - barW, pad, barW, P * 3, '#ffffff');
 
       var wep = w.player.weapon;
       Pixel.shadowText(b, wep ? WEAPONS[wep.key].short + ' ' + wep.ammo : 'UNARMED',
-                       VIEW_W - pad, pad + P * 7, P, wep ? '#ffd15c' : '#eaf6ff', 'right');
+                       VIEW_W - pad, pad + P * 5, P, wep ? '#ffd15c' : '#eaf6ff', 'right');
 
       /* context prompt, just above the floor of the frame */
       if (w.player.prompt) {
         var t = w.player.prompt.label;
         var tw = Pixel.textWidth(t, P);
-        var pw = tw + P * 12;
+        var pw = tw + P * 10;
         var px = VIEW_W / 2 - pw / 2;
-        var py = VIEW_H - P * 16;
-        Pixel.rect(b, px, py, pw, P * 8, 'rgba(10,20,30,0.7)');
-        Pixel.frame(b, px, py, pw, P * 8, '#ffd15c');
-        Pixel.text(b, 'R', px + P * 3, py + P * 2, P * 2, '#ffd15c');
-        Pixel.text(b, t, px + P * 9, py + P * 3, P, '#ffffff');
+        var py = VIEW_H - P * 13;
+        Pixel.rect(b, px, py, pw, P * 7, 'rgba(10,20,30,0.72)');
+        Pixel.frame(b, px, py, pw, P * 7, '#ffd15c');
+        Pixel.text(b, 'R', px + P * 3, py + P * 2, P, '#ffd15c');
+        Pixel.text(b, t, px + P * 7, py + P * 2, P, '#ffffff');
       }
 
+      /* The camera keeps the player near the middle of the frame, so a toast
+         anywhere in the middle third lands on top of them. Tuck it just under
+         the HUD band instead, which the top row of the frame leaves free. */
       if (UI.toastTimer > 0) {
-        Pixel.shadowText(b, UI.toastText || '', VIEW_W / 2, VIEW_H * 0.30, P * 2, '#ffd15c', 'center');
+        Pixel.shadowText(b, UI.toastText || '', VIEW_W / 2, VIEW_H * 0.26, P * 2, '#ffd15c', 'center');
       }
     }
   };
@@ -297,13 +300,17 @@
   (function () {
     var seed = 7;
     function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+    /* Everything here is a fraction of the frame. The backdrop was laid out
+       by hand once, against a wider view, and every number had to be found
+       again when the view tightened - derive them instead. */
     for (var i = 0; i < 40; i++) {
       var layer = i % 2;
       skyline.push({
-        x: rnd() * 820 - 60,
-        w: 42 + rnd() * 96,
+        x: rnd() * (VIEW_W + VIEW_W * 0.12) - VIEW_W * 0.06,
+        w: VIEW_W * 0.06 + rnd() * VIEW_W * 0.13,
         /* low horizon, same as in the maps, so the sky carries the frame */
-        h: layer === 0 ? 45 + rnd() * 90 : 66 + rnd() * 132,
+        h: layer === 0 ? VIEW_H * 0.08 + rnd() * VIEW_H * 0.17
+                       : VIEW_H * 0.12 + rnd() * VIEW_H * 0.25,
         layer: layer,
         lit: rnd()
       });
@@ -314,9 +321,9 @@
     var P = Pixel.SIZE;
     b.fillStyle = '#2fb6ea';
     b.fillRect(0, 0, VIEW_W, VIEW_H);
-    Pixel.disc(b, 770, 104, 36, 'rgba(255,255,255,0.22)');
+    Pixel.disc(b, VIEW_W * 0.80, VIEW_H * 0.19, VIEW_H * 0.067, 'rgba(255,255,255,0.22)');
 
-    var drift = Math.sin(menuT * 0.12) * 18;
+    var drift = Math.sin(menuT * 0.12) * VIEW_W * 0.019;
     [{ p: 0.4, c: '#86d4f0', o: 0, win: null },
      { p: 1.0, c: '#d5c9a2', o: 0, win: 'rgba(92,80,58,0.30)' }].forEach(function (lay, li) {
       skyline.forEach(function (bd) {
@@ -339,8 +346,8 @@
 
     b.fillStyle = 'rgba(255,255,255,0.8)';
     for (var c = 0; c < 6; c++) {
-      var cx = Pixel.s(((c * 190 + menuT * 7) % (VIEW_W + 300)) - 150);
-      var cy = Pixel.s(50 + (c % 3) * 52);
+      var cx = Pixel.s(((c * VIEW_W * 0.198 + menuT * 7) % (VIEW_W * 1.31)) - VIEW_W * 0.156);
+      var cy = Pixel.s(VIEW_H * 0.093 + (c % 3) * VIEW_H * 0.096);
       Pixel.rect(b, cx, cy, P * 14, P * 3);
       Pixel.rect(b, cx + P * 3, cy - P * 3, P * 8, P * 3);
     }
@@ -350,8 +357,14 @@
   function resize() {
     var shell = document.getElementById('shell');
     var pad = 8;
-    var s = Math.min((root.innerWidth - pad) / CANVAS_W, (root.innerHeight - pad) / CANVAS_H);
-    s = Math.max(0.35, Math.min(s, 4));
+    var fit = Math.min((root.innerWidth - pad) / CANVAS_W, (root.innerHeight - pad) / CANVAS_H);
+    /* At a fractional scale some art pixels come out a row wider than their
+       neighbours and the grid stops reading as a grid, so snap. The step is
+       one over the upscale factor: the canvas blows the buffer up by `up`,
+       so a scale of k/up puts every art pixel on exactly k screen pixels.
+       Snapping to halves instead would throw away a third of a small window. */
+    var up = CANVAS_W / (VIEW_W / Pixel.SIZE);
+    var s = Math.max(2 / up, Math.min(Math.floor(fit * up) / up, 6));
     shell.style.transform = 'scale(' + s + ')';
   }
 
