@@ -5,7 +5,8 @@ You can't walk — you **lean** and **hop** your way through collapsing rooftops
 elevator shafts and glass office towers, grabbing guns along the way, trying to
 reach the getaway van at the end of each level.
 
-**Play it here:** https://felipe-lotas69.github.io/Juego-daun/
+**Play it here:** https://felipe-lotas69.github.io/Juego-daun/ — once Pages is
+switched on, see [Hosting](#hosting) below.
 
 ## Controls
 
@@ -34,6 +35,23 @@ backwards — that's a movement tool, not a bug.
 - Enemy goons that patrol, take cover-ish potshots and ragdoll when dropped
 - Hazards: spikes, saw blades, lava, and a long way down
 - Checkpoints, screen shake, particles, and fully synthesized sound (no audio files)
+
+## Hosting
+
+`.github/workflows/pages.yml` syntax-checks every script and then publishes the
+repository root to GitHub Pages on each push. It needs Pages turned on once, by
+hand, because a workflow token is not allowed to create the Pages site itself:
+
+1. The repository has to be **public** — Pages on a private repository requires
+   GitHub Pro or higher. Settings → General → Danger Zone → *Change visibility*.
+2. Settings → **Pages** → *Build and deployment* → Source: **GitHub Actions**.
+3. Re-run the workflow (Actions → *Deploy to GitHub Pages* → *Run workflow*), or
+   just push again.
+
+The site then lands at `https://felipe-lotas69.github.io/Juego-daun/`.
+
+Any other static host works just as well — there is nothing to build, so
+dropping the repository contents on a web server is enough.
 
 ## Running locally
 
