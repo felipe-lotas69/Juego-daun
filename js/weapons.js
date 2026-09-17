@@ -95,12 +95,12 @@
     var d = this.def;
 
     if (d.explosive) {
-      world.explode(this.x, this.y, d.blast, d.blastDamage, d.blastForce, this.owner);
+      world.explode(this.x, this.y, d.blast, d.blastDamage, d.blastForce, this.owner, this.ownerRef);
       return;
     }
 
     if (d.teleport) {
-      world.teleportPlayer(this.x, this.y, hit);
+      world.teleportPlayer(this.x, this.y, hit, this.ownerRef);
       return;
     }
 
@@ -109,7 +109,11 @@
       world.fx.burst(this.x, this.y, 8, { colors: ['#ff4d5e', '#c1232f'], speedMax: 200, lifeMax: 0.5, sizeMax: 4 });
       Sound.hit();
     } else if (hit.type === 'player') {
-      hit.obj.damage(d.damage, U.sign(this.vx) * 190, -120, world);
+      hit.obj.damage(d.damage, U.sign(this.vx) * 190, -120, world, this.ownerRef);
+      if (world.gore) {
+        world.gore.splash(this.x, this.y, 7, U.sign(this.vx), -0.3, 1.1);
+      }
+      Sound.hit();
     } else if (hit.type === 'glass') {
       hit.obj.shatter(world, this.vx, this.vy);
     } else if (hit.type === 'crate') {
@@ -182,4 +186,4 @@
   root.WEAPONS = WEAPONS;
   root.Bullet = Bullet;
   root.fireWeapon = fire;
-})(window);
+})(typeof window !== 'undefined' ? window : globalThis);

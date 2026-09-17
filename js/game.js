@@ -6,6 +6,13 @@
 
   var VIEW_W = 960, VIEW_H = 540;
 
+  var NO = function () { return false; };
+  var NULL_INPUT = {
+    left: NO, right: NO, jump: NO, jumpPressed: NO, interactPressed: NO,
+    interactHeld: NO, firePressed: NO, fireHeld: NO, dropPressed: NO, pressed: NO,
+    mouse: { down: false, pressed: false }
+  };
+
   var PLATFORM_STYLE = {
     solid:  { top: '#8892b5', body: '#4b5575', edge: '#222939' },
     metal:  { top: '#a3adc4', body: '#626d88', edge: '#2e3446' },
@@ -15,18 +22,48 @@
     grass:  { top: '#86d986', body: '#4d9055', edge: '#2a5230' }
   };
 
-  function World(levelIndex, hooks) {
+  function World(levelIndex, hooks, opts) {
+    opts = opts || {};
+    this.mode = opts.mode || 'campaign';          /* campaign | versus */
+    this.levelSet = opts.levels || LEVELS;
     this.levelIndex = levelIndex;
-    this.level = LEVELS[levelIndex];
+    this.level = this.levelSet[levelIndex];
     this.hooks = hooks || {};
+    this.playerDefs = opts.players || [{ name: 'PLAYER' }];
+    this.localIndex = opts.localIndex == null ? 0 : opts.localIndex;
+    this.headless = !!opts.headless;
+    this.goreLevel = opts.goreLevel == null ? 1 : opts.goreLevel;
     this.reset();
   }
 
   World.prototype.reset = function () {
     var L = this.level, i;
+    var spawns = L.spawns || [L.spawn];
 
-    this.player = new Player(L.spawn.x, L.spawn.y);
-    this.checkpoint = { x: L.spawn.x, y: L.spawn.y };
+    this.players = [];
+    for (i = 0; i < this.playerDefs.length; i++) {
+      var def = this.playerDefs[i];
+      var sp = spawns[i % spawns.length];
+      var pl = new Player(sp.x, sp.y, {
+        index: i,
+        name: def.name,
+        isBot: def.isBot,
+        personality: def.personality,
+        showTag: this.mode === 'versus'
+      });
+      pl.wins = def.wins || 0;
+      if (def.isBot && typeof Bot !== 'undefined') {
+        pl.brain = new Bot(def.personality, i);
+      }
+      this.players.push(pl);
+    }
+    this.player = this.players[U.clamp(this.localIndex, 0, this.players.length - 1)];
+
+    this.gore = new Gore();
+    this.gore.setLevel(this.goreLevel);
+    this.roundOver = false;
+    this.roundWinner = null;
+    this.standings = [];
 
     this.platforms = (L.platforms || []).map(function (p) {
       return { x: p.x, y: p.y, w: p.w, h: p.h, type: p.type, dx: 0, dy: 0,
@@ -38,7 +75,7 @@
     this.hazards = (L.hazards || []).map(function (h) { return new Hazard(h); });
     this.doors = (L.doors || []).map(function (d) { return new Door(d); });
     this.buttons = (L.buttons || []).map(function (b) { return new Button(b); });
-    this.checkpoints = (L.checkpoints || []).map(function (c) { return new Checkpoint(c); });
+    this.checkpoints = (L.checkpoints || []).map(function (c, ci) { return new Checkpoint(c, ci); });
     this.enemies = (L.enemies || []).map(function (e) { return new Enemy(e); });
     this.pickups = (L.pickups || []).map(function (p) {
       return new Pickup(p.x, p.y, p.key, p.ammo != null ? p.ammo : (WEAPONS[p.key] ? WEAPONS[p.key].ammo : 0));
@@ -65,6 +102,10 @@
     this.centerCameraOnPlayer();
     this.buildSolids();
 
+    /* the route graph bots path over - static geometry only, so it stays
+       valid even after the glass they were standing on gives way */
+    this.nav = (typeof NavGraph !== 'undefined') ? new NavGraph(this) : null;
+
     /* parallax skyline, seeded per level so it doesn't dance around */
     this.sky = [];
     var seed = 1337 + this.levelIndex * 91;
@@ -78,6 +119,34 @@
         lit: rnd()
       });
     }
+  };
+
+  /* ---------------------------------------------------------- players */
+  World.prototype.localPlayer = function () { return this.player; };
+
+  World.prototype.eachPlayer = function (fn) {
+    for (var i = 0; i < this.players.length; i++) fn(this.players[i], i);
+  };
+
+  /* first player for which fn is true; `self` becomes fn's `this` */
+  World.prototype.anyPlayer = function (fn, self) {
+    for (var i = 0; i < this.players.length; i++) {
+      if (fn.call(self, this.players[i], i)) return this.players[i];
+    }
+    return null;
+  };
+
+  World.prototype.nearestPlayer = function (x, y, aliveOnly, exclude) {
+    var best = null, bd = 1e18;
+    for (var i = 0; i < this.players.length; i++) {
+      var p = this.players[i];
+      if (p === exclude) continue;
+      if (aliveOnly && (p.dead || p.finished)) continue;
+      var c = p.center();
+      var d = U.dist2(x, y, c.x, c.y);
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best;
   };
 
   /* ---------------------------------------------------------- solids */
@@ -141,15 +210,17 @@
         if (t >= 0 && (!best || t < best.t)) best = { t: t, type: 'enemy', obj: e };
       }
     }
-    if (owner !== 'player' && !this.player.dead) {
-      t = U.segRect(x0, y0, x1, y1, this.player);
-      if (t >= 0 && (!best || t < best.t)) best = { t: t, type: 'player', obj: this.player };
+    for (i = 0; i < this.players.length; i++) {
+      var pl = this.players[i];
+      if (pl === ownerRef || pl.dead || pl.finished) continue;
+      t = U.segRect(x0, y0, x1, y1, pl);
+      if (t >= 0 && (!best || t < best.t)) best = { t: t, type: 'player', obj: pl };
     }
     return best;
   };
 
   /* ---------------------------------------------------------- explosions */
-  World.prototype.explode = function (x, y, radius, damage, force, owner) {
+  World.prototype.explode = function (x, y, radius, damage, force, owner, ownerRef) {
     Sound.explode();
     this.shake(12);
     this.flash = 0.5;
@@ -171,24 +242,24 @@
       e.damage(damage * f, Math.cos(a) * force * f * 0.6, Math.sin(a) * force * f - 120, this);
     }
 
-    var p = this.player;
-    if (!p.dead) {
+    for (i = 0; i < this.players.length; i++) {
+      var p = this.players[i];
+      if (p.dead || p.finished) continue;
       var pc = p.center();
       d = U.dist(x, y, pc.x, pc.y);
-      if (d < radius) {
-        f = 1 - d / radius;
-        var pa = Math.atan2(pc.y - y, pc.x - x);
-        p.vx = U.clamp(p.vx + Math.cos(pa) * force * f, -1100, 1100);
-        p.vy = U.clamp(p.vy + Math.sin(pa) * force * f - 80, -1100, 1100);
-        p.grounded = false;
-        p.stumble = Math.max(p.stumble, 0.18);
-        /* self-damage is heavily reduced so rocket jumping stays viable */
-        var selfHit = owner === 'player' ? 0.22 : 0.85;
-        if (damage * f * selfHit > 1) {
-          var inv = p.invuln; p.invuln = 0;
-          p.damage(damage * f * selfHit, 0, 0, this);
-          p.invuln = Math.max(p.invuln, inv);
-        }
+      if (d >= radius) continue;
+      f = 1 - d / radius;
+      var pa = Math.atan2(pc.y - y, pc.x - x);
+      p.vx = U.clamp(p.vx + Math.cos(pa) * force * f, -1100, 1100);
+      p.vy = U.clamp(p.vy + Math.sin(pa) * force * f - 80, -1100, 1100);
+      p.grounded = false;
+      p.stumble = Math.max(p.stumble, 0.18);
+      /* your own blast barely scratches you, so rocket jumping stays viable */
+      var selfHit = (ownerRef && ownerRef === p) ? 0.22 : 0.85;
+      if (damage * f * selfHit > 1) {
+        var inv = p.invuln; p.invuln = 0;
+        p.damage(damage * f * selfHit, 0, 0, this, ownerRef);
+        p.invuln = Math.max(p.invuln, inv);
       }
     }
 
@@ -208,8 +279,8 @@
   };
 
   /* ---------------------------------------------------------- teleport gun */
-  World.prototype.teleportPlayer = function (x, y, hit) {
-    var p = this.player;
+  World.prototype.teleportPlayer = function (x, y, hit, who) {
+    var p = who || this.player;
     Sound.teleport();
     this.fx.burst(p.x + p.w / 2, p.y + p.h / 2, 24, {
       colors: ['#49e0e8', '#a8f4ff', '#ffffff'], speedMax: 260, lifeMax: 0.6, g: 0
@@ -243,7 +314,11 @@
   World.prototype.toast = function (m) { if (this.hooks.toast) this.hooks.toast(m); };
   World.prototype.onEnemyKilled = function () { this.kills++; };
   World.prototype.onGlassBroken = function () { this.glassBroken++; this.buildSolids(); };
-  World.prototype.setCheckpoint = function (x, y) { this.checkpoint = { x: x, y: y }; };
+
+  World.prototype.onPlayerDied = function (p, cause) {
+    if (p.lastAttacker && p.lastAttacker !== p && p.lastAttacker.frags != null) p.lastAttacker.frags++;
+    if (this.hooks.died) this.hooks.died(p, cause);
+  };
 
   World.prototype.fireTarget = function (id) {
     var i;
@@ -253,8 +328,8 @@
   };
 
   /* ---------------------------------------------------------- interaction */
-  World.prototype.findInteractable = function () {
-    var p = this.player;
+  World.prototype.findInteractable = function (p) {
+    p = p || this.player;
     var pc = p.center();
     var best = null, bd = 1e9, i, d;
 
@@ -262,7 +337,7 @@
       var pk = this.pickups[i];
       if (pk.taken || pk.cooldown > 0) continue;
       d = U.dist(pc.x, pc.y, pk.x + pk.w / 2, pk.y + pk.h / 2);
-      if (d < 52 && d < bd) {
+      if (d < 74 && d < bd) {
         bd = d;
         best = { type: 'pickup', obj: pk, label: pk.key === 'medkit' ? 'TAKE MEDKIT' : 'TAKE ' + WEAPONS[pk.key].name };
       }
@@ -287,17 +362,18 @@
     return best;
   };
 
-  World.prototype.interact = function () {
-    var it = this.prompt;
+  World.prototype.interact = function (p) {
+    p = p || this.player;
+    var it = p.prompt;
     if (!it) return false;
     if (it.type === 'pickup') {
       var pk = it.obj;
+      if (pk.taken) return false;
       if (pk.key === 'medkit') {
-        this.player.health = Math.min(this.player.maxHealth, this.player.health + 55);
-        Sound.ding();
-        this.toast('PATCHED UP');
+        p.health = Math.min(p.maxHealth, p.health + 55);
+        if (p === this.player) { Sound.ding(); this.toast('PATCHED UP'); }
       } else {
-        this.player.takeWeapon(pk.key, pk.ammo, this);
+        p.takeWeapon(pk.key, pk.ammo, this);
       }
       pk.taken = true;
       return true;
@@ -308,10 +384,15 @@
   };
 
   /* ---------------------------------------------------------- update */
-  World.prototype.update = function (dt, input) {
-    var i, p = this.player;
+  World.prototype.update = function (dt, inputs) {
+    var i, j, p;
     this.time += dt;
-    if (!this.finished && !p.dead) this.elapsed += dt;
+
+    /* One input source per player. A plain object means "the local player
+       reads this", which keeps the single-player call signature untouched. */
+    if (!Array.isArray(inputs)) { var one = inputs; inputs = []; inputs[this.localIndex] = one; }
+
+    if (!this.finished && !this.roundOver) this.elapsed += dt;
 
     this.shakeAmount *= U.damp(6, dt);
     this.flash = Math.max(0, this.flash - dt * 2.2);
@@ -324,14 +405,22 @@
 
     for (i = 0; i < this.buttons.length; i++) this.buttons[i].update(dt, this);
 
-    /* ---- player ---- */
-    this.prompt = p.dead ? null : this.findInteractable();
-    if (!p.dead) {
-      if (input.interactPressed()) {
-        if (!this.interact() && p.weapon) p.shoot(this);
+    /* ---- players ---- */
+    for (i = 0; i < this.players.length; i++) {
+      p = this.players[i];
+      if (p.finished) continue;
+
+      var input = p.brain ? p.brain.think(dt, this, p) : (inputs[i] || NULL_INPUT);
+
+      p.prompt = p.dead ? null : this.findInteractable(p);
+      if (!p.dead && input.interactPressed()) {
+        if (!this.interact(p) && p.weapon) p.shoot(this);
       }
+      p.update(dt, this, input);
     }
-    p.update(dt, this, input);
+
+    /* ---- squashed between a mover and the world ---- */
+    this.resolveCrush();
 
     /* ---- enemies ---- */
     for (i = 0; i < this.enemies.length; i++) this.enemies[i].update(dt, this);
@@ -352,60 +441,140 @@
     for (i = 0; i < this.checkpoints.length; i++) this.checkpoints[i].update(dt, this);
     this.goal.update(dt);
     this.fx.update(dt, this);
+    this.gore.update(dt, this);
 
-    /* ---- hazards hurt ---- */
-    if (!p.dead) {
-      for (i = 0; i < this.hazards.length; i++) {
-        if (U.aabb(p, this.hazards[i].hitbox())) { p.kill(this); break; }
-      }
-      for (i = 0; i < this.enemies.length; i++) {
-        var en = this.enemies[i];
-        if (en.dead) continue;
-        for (var j = 0; j < this.hazards.length; j++) {
-          if (U.aabb(en, this.hazards[j].hitbox())) { en.die(this, 0); break; }
+    /* ---- hazards, falls, the finish line, respawns ---- */
+    for (i = 0; i < this.players.length; i++) {
+      p = this.players[i];
+      if (p.finished) continue;
+
+      if (!p.dead) {
+        for (j = 0; j < this.hazards.length; j++) {
+          if (U.aabb(p, this.hazards[j].hitbox())) {
+            p.kill(this, this.hazards[j].type === 'lava' ? 'burned' : 'shredded');
+            break;
+          }
         }
       }
+      if (!p.dead && p.y > this.level.height + 60) p.kill(this, 'fell');
+      if (!p.dead && U.aabb(p, this.goal)) this.reachGoal(p);
+
+      if (p.dead) {
+        p.respawnTimer += dt;
+        if (p.respawnTimer > 1.05) this.respawn(p);
+      }
     }
 
-    /* ---- fell out of the world ---- */
-    if (!p.dead && p.y > this.level.height + 60) p.kill(this);
-
-    /* ---- reached the van ---- */
-    if (!this.finished && !p.dead && U.aabb(p, this.goal)) {
-      this.finished = true;
-      Sound.win();
-      this.fx.burst(p.x + p.w / 2, p.y + p.h / 2, 40, {
-        colors: ['#ffc23c', '#57e07a', '#ffffff'], speedMax: 380, lifeMax: 1.2, sizeMax: 6
-      });
-      if (this.hooks.complete) this.hooks.complete(this.elapsed);
-    }
-
-    /* ---- respawn ---- */
-    if (p.dead) {
-      this.respawnTimer += dt;
-      if (this.respawnTimer > 1.05) this.respawn();
+    for (i = 0; i < this.enemies.length; i++) {
+      var en = this.enemies[i];
+      if (en.dead) continue;
+      for (j = 0; j < this.hazards.length; j++) {
+        if (U.aabb(en, this.hazards[j].hitbox())) { en.die(this, 0); break; }
+      }
     }
 
     this.updateCamera(dt);
   };
 
-  World.prototype.respawn = function () {
-    var p = this.player;
-    this.respawnTimer = 0;
+  /* Somebody made it to the van. */
+  World.prototype.reachGoal = function (p) {
+    if (p.finished) return;
+    p.finished = true;
+    p.finishTime = this.elapsed;
+    this.standings.push(p);
+    this.fx.burst(p.x + p.w / 2, p.y + p.h / 2, 40, {
+      colors: ['#ffc23c', '#57e07a', '#ffffff'], speedMax: 380, lifeMax: 1.2, sizeMax: 6
+    });
+
+    if (this.mode === 'versus') {
+      if (!this.roundOver) {
+        this.roundOver = true;
+        this.roundWinner = p;
+        p.wins++;
+        Sound.win();
+        if (this.hooks.roundWin) this.hooks.roundWin(p, this);
+      }
+    } else if (!this.finished) {
+      this.finished = true;
+      Sound.win();
+      if (this.hooks.complete) this.hooks.complete(this.elapsed);
+    }
+  };
+
+  /* ------------------------------------------------- crushing
+     A mover that closes on you shoves you along its travel. If the far
+     side is solid too, there is nowhere left to be. */
+  World.prototype.overlapsSolid = function (box, ignore) {
+    for (var i = 0; i < this.solids.length; i++) {
+      var sd = this.solids[i];
+      if (sd === ignore || (ignore && sd.ref && sd.ref === ignore.ref)) continue;
+      if (U.aabb(box, sd)) return true;
+    }
+    return false;
+  };
+
+  World.prototype.resolveCrush = function () {
+    var movers = [], i, k;
+    for (i = 0; i < this.solids.length; i++) {
+      if (this.solids[i].dx || this.solids[i].dy) movers.push(this.solids[i]);
+    }
+    if (!movers.length) return;
+
+    for (k = 0; k < this.players.length; k++) {
+      var p = this.players[k];
+      if (p.dead || p.finished) continue;
+      for (i = 0; i < movers.length; i++) {
+        var m = movers[i];
+        if (!U.aabb(p, m)) continue;
+
+        /* a piston does not negotiate */
+        if (m.ref && m.ref.crusher) {
+          p.kill(this, 'crushed');
+          this.shake(12);
+          break;
+        }
+
+        /* shove the way the mover is going, then try the other side */
+        var first = m.dy > 0 ? m.y + m.h : m.y - p.h;
+        var other = m.dy > 0 ? m.y - p.h : m.y + m.h;
+        var box = { x: p.x, y: first, w: p.w, h: p.h };
+        if (!this.overlapsSolid(box, m)) { p.y = first; p.vy = m.dy > 0 ? Math.max(p.vy, 0) : 0; continue; }
+        box.y = other;
+        if (!this.overlapsSolid(box, m)) { p.y = other; p.vy = 0; continue; }
+
+        /* sideways is the last way out */
+        box.y = p.y;
+        box.x = m.x - p.w - 1;
+        if (!this.overlapsSolid(box, m)) { p.x = box.x; continue; }
+        box.x = m.x + m.w + 1;
+        if (!this.overlapsSolid(box, m)) { p.x = box.x; continue; }
+
+        p.kill(this, 'crushed');
+        this.shake(10);
+        break;
+      }
+    }
+  };
+
+  World.prototype.respawn = function (p) {
+    p = p || this.player;
+    p.respawnTimer = 0;
     p.dead = false;
     p.deadTimer = 0;
     p.health = p.maxHealth;
-    p.x = this.checkpoint.x - p.w / 2;
-    p.y = this.checkpoint.y - p.h;
+    p.x = p.checkpoint.x - p.w / 2;
+    p.y = p.checkpoint.y - p.h;
     p.vx = 0; p.vy = 0;
     p.angle = 0;
-    p.invuln = 1.2;
+    p.invuln = 1.4;
     p.stumble = 0;
-    this.bullets.length = 0;
-    this.fx.burst(this.checkpoint.x, this.checkpoint.y - 20, 18, {
+    p.deathCause = null;
+    if (p.brain) p.brain.reset();
+    if (p === this.player) this.bullets.length = 0;
+    this.fx.burst(p.checkpoint.x, p.checkpoint.y - 20, 18, {
       colors: ['#57e07a', '#a8f4b8'], speedMax: 220, lifeMax: 0.6
     });
-    if (this.hooks.respawn) this.hooks.respawn();
+    if (this.hooks.respawn) this.hooks.respawn(p);
   };
 
   /* ---------------------------------------------------------- camera */
@@ -541,6 +710,7 @@
     this.goal.draw(ctx);
 
     for (i = 0; i < this.platforms.length; i++) this.drawPlatform(ctx, this.platforms[i]);
+    this.gore.drawDecals(ctx);
     for (i = 0; i < this.doors.length; i++) this.doors[i].draw(ctx);
     for (i = 0; i < this.elevators.length; i++) this.elevators[i].draw(ctx);
     for (i = 0; i < this.crates.length; i++) this.crates[i].draw(ctx);
@@ -552,8 +722,14 @@
     for (i = 0; i < this.enemies.length; i++) if (this.enemies[i].dead) this.enemies[i].draw(ctx);
     for (i = 0; i < this.enemies.length; i++) if (!this.enemies[i].dead) this.enemies[i].draw(ctx);
 
-    if (!this.player.dead) this.player.draw(ctx);
+    for (i = 0; i < this.players.length; i++) {
+      var pl = this.players[i];
+      if (pl === this.player || pl.dead || pl.finished) continue;
+      pl.draw(ctx);
+    }
+    if (!this.player.dead && !this.player.finished) this.player.draw(ctx);
 
+    this.gore.drawGibs(ctx);
     for (i = 0; i < this.bullets.length; i++) this.bullets[i].draw(ctx);
     this.fx.draw(ctx);
 
@@ -561,8 +737,8 @@
     for (i = 0; i < this.glass.length; i++) this.glass[i].draw(ctx, this.time);
 
     /* interaction highlight */
-    if (this.prompt) {
-      var o = this.prompt.obj;
+    if (this.player.prompt) {
+      var o = this.player.prompt.obj;
       var bx = o.x + (o.w || 0) / 2, by = o.y + (o.h || 0) / 2;
       ctx.strokeStyle = 'rgba(255,194,60,' + (0.45 + Math.sin(this.time * 8) * 0.25) + ')';
       ctx.lineWidth = 2;
@@ -589,8 +765,32 @@
     ctx.fillStyle = vg;
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
 
-    /* off-screen goal marker */
+    /* off-screen markers */
     this.drawGoalArrow(ctx);
+    if (this.mode === 'versus') this.drawRivalArrows(ctx);
+  };
+
+  World.prototype.drawRivalArrows = function (ctx) {
+    for (var i = 0; i < this.players.length; i++) {
+      var p = this.players[i];
+      if (p === this.player || p.dead || p.finished) continue;
+      var sx = p.x + p.w / 2 - this.cam.x;
+      var sy = p.y + p.h / 2 - this.cam.y;
+      if (sx > 16 && sx < VIEW_W - 16 && sy > 16 && sy < VIEW_H - 16) continue;
+      var cx = VIEW_W / 2, cy = VIEW_H / 2;
+      var a = Math.atan2(sy - cy, sx - cx);
+      var r = Math.min(VIEW_W, VIEW_H) * 0.46;
+      ctx.save();
+      ctx.translate(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      ctx.rotate(a);
+      ctx.globalAlpha = 0.72;
+      ctx.fillStyle = p.palette.mark;
+      ctx.beginPath();
+      ctx.moveTo(10, 0); ctx.lineTo(-7, -6); ctx.lineTo(-7, 6);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
   };
 
   World.prototype.drawGoalArrow = function (ctx) {
@@ -614,4 +814,4 @@
   root.World = World;
   root.VIEW_W = VIEW_W;
   root.VIEW_H = VIEW_H;
-})(window);
+})(typeof window !== 'undefined' ? window : globalThis);

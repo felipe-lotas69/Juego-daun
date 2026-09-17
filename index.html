@@ -19,9 +19,13 @@
       <h1 class="logo">GETAWAY <span>DAUN</span></h1>
       <p class="tag">You can't walk. You lean, you hop, you pray.</p>
       <div class="btnrow">
-        <button id="btn-play" class="btn primary">PLAY</button>
+        <button id="btn-play" class="btn primary">CAMPAIGN</button>
+        <button id="btn-versus" class="btn primary">VERSUS</button>
+      </div>
+      <div class="btnrow">
         <button id="btn-levels" class="btn">LEVELS</button>
         <button id="btn-howto" class="btn">CONTROLS</button>
+        <button id="btn-options" class="btn">OPTIONS</button>
       </div>
       <p class="foot">A · D lean &nbsp;·&nbsp; W jump &nbsp;·&nbsp; R interact / shoot</p>
     </div>
@@ -38,9 +42,12 @@
         <div class="keyrow"><kbd>SPACE</kbd><span>Fire. Recoil pushes you — shotguns and rockets are movement tools.</span></div>
         <div class="keyrow"><kbd>Q</kbd><span>Drop the weapon you're holding.</span></div>
         <div class="keyrow"><kbd>P</kbd><kbd>ESC</kbd><span>Pause.</span></div>
-        <div class="keyrow"><kbd>ENTER</kbd><span>Restart the level from the last checkpoint-free start.</span></div>
+        <div class="keyrow"><kbd>ENTER</kbd><span>Restart the level (campaign), or start the next round (versus).</span></div>
+        <div class="keyrow"><kbd>&uarr;</kbd><kbd>&larr;</kbd><kbd>&rarr;</kbd><kbd>&crarr;</kbd><span>Player two, when two of you share a keyboard in versus.</span></div>
       </div>
-      <p class="hint">Glass breaks when you shoot it or land on it hard. Lava, spikes and saws do not negotiate. Reach the van.</p>
+      <p class="hint">Glass breaks when you shoot it or land on it hard. Lava, spikes, saws and the
+        elevator pistons do not negotiate &mdash; and neither does a long drop. Die and you restart from the
+        last checkpoint you crossed, which you will not have noticed crossing.</p>
       <div class="btnrow"><button class="btn back">BACK</button></div>
     </div>
   </div>
@@ -51,6 +58,104 @@
       <h2>LEVEL SELECT</h2>
       <div id="level-grid" class="grid"></div>
       <div class="btnrow"><button class="btn back">BACK</button></div>
+    </div>
+  </div>
+
+  <!-- ================= VERSUS SETUP ================= -->
+  <div id="versus" class="screen hidden">
+    <div class="panel wide">
+      <h2>VERSUS</h2>
+      <p class="hint" style="margin-top:0">Three maps in rotation. First to the van wins the round.
+        Empty seats are filled with bots, and every bot plays differently.</p>
+
+      <div class="setuprow">
+        <span class="lbl">FIRST TO</span>
+        <div class="seg" id="seg-target">
+          <button data-v="2">2</button><button data-v="3" class="on">3</button><button data-v="5">5</button>
+        </div>
+      </div>
+      <div class="setuprow">
+        <span class="lbl">HUMANS</span>
+        <div class="seg" id="seg-humans">
+          <button data-v="1" class="on">1</button><button data-v="2">2</button>
+        </div>
+        <span class="tiny">two humans share one keyboard: P2 uses &larr; &darr; &rarr; and &crarr;</span>
+      </div>
+
+      <div id="slot-list" class="slots"></div>
+
+      <div class="btnrow">
+        <button id="btn-versus-start" class="btn primary">START MATCH</button>
+        <button id="btn-lan" class="btn">PLAY OVER LAN</button>
+        <button class="btn back">BACK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= LAN ================= -->
+  <div id="lan" class="screen hidden">
+    <div class="panel wide">
+      <h2>LAN GAME</h2>
+      <p class="hint" style="margin-top:0">One machine hosts and everyone else points a browser at it.
+        Up to four players; empty seats become bots.</p>
+      <div class="lanbox">
+        <div class="lanhead">TO HOST</div>
+        <code>node server/server.js --port 8080</code>
+        <p class="tiny">It prints the address to share. Everyone on the same network opens that
+          address in a browser &mdash; there is nothing to install.</p>
+      </div>
+      <div class="lanbox">
+        <div class="lanhead">TO JOIN</div>
+        <div class="joinrow">
+          <input id="lan-host" type="text" placeholder="192.168.1.20:8080" autocomplete="off" spellcheck="false">
+          <button id="btn-lan-join" class="btn primary">JOIN</button>
+        </div>
+        <p id="lan-status" class="tiny"></p>
+      </div>
+      <div class="btnrow"><button class="btn back">BACK</button></div>
+    </div>
+  </div>
+
+  <!-- ================= OPTIONS ================= -->
+  <div id="options" class="screen hidden">
+    <div class="panel">
+      <h2>OPTIONS</h2>
+      <div class="setuprow">
+        <span class="lbl">BLOOD</span>
+        <div class="seg" id="seg-gore">
+          <button data-v="0">OFF</button><button data-v="1" class="on">ON</button><button data-v="2">LOTS</button>
+        </div>
+      </div>
+      <div class="setuprow">
+        <span class="lbl">SOUND</span>
+        <div class="seg" id="seg-sound">
+          <button data-v="0">OFF</button><button data-v="1" class="on">ON</button>
+        </div>
+      </div>
+      <div class="btnrow"><button class="btn back">BACK</button></div>
+    </div>
+  </div>
+
+  <!-- ================= ROUND OVER ================= -->
+  <div id="roundend" class="screen hidden">
+    <div class="panel">
+      <h2 id="round-title">ROUND OVER</h2>
+      <p id="round-sub" class="hint" style="margin-top:0"></p>
+      <div id="round-board" class="board"></div>
+      <p id="round-next" class="tiny"></p>
+      <div class="btnrow"><button id="btn-round-next" class="btn primary">NEXT MAP</button></div>
+    </div>
+  </div>
+
+  <!-- ================= MATCH OVER ================= -->
+  <div id="matchend" class="screen hidden">
+    <div class="panel">
+      <h2 id="match-title">MATCH OVER</h2>
+      <div id="match-board" class="board"></div>
+      <div class="btnrow col">
+        <button id="btn-rematch" class="btn primary">REMATCH</button>
+        <button id="btn-match-menu" class="btn">MENU</button>
+      </div>
     </div>
   </div>
 
@@ -93,6 +198,7 @@
       <div id="hud-health" class="bar"><i style="width:100%"></i></div>
       <div id="hud-weapon">UNARMED</div>
     </div>
+    <div id="hud-score" class="hidden"></div>
     <div id="hud-prompt" class="hidden"><kbd>R</kbd> <span></span></div>
     <div id="hud-toast"></div>
   </div>
@@ -103,8 +209,14 @@
 <script src="js/audio.js"></script>
 <script src="js/particles.js"></script>
 <script src="js/weapons.js"></script>
+<script src="js/gore.js"></script>
 <script src="js/entities.js"></script>
 <script src="js/levels.js"></script>
+<script src="js/versusmaps.js"></script>
+<script src="js/navgraph.js"></script>
+<script src="js/bots.js"></script>
+<script src="js/match.js"></script>
+<script src="js/net.js"></script>
 <script src="js/game.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/main.js"></script>

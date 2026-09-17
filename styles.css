@@ -133,3 +133,58 @@ kbd{
   .panel.wide{min-width:0;width:92%}
   .logo{font-size:40px}
 }
+
+/* ---------- versus setup / options ---------- */
+.setuprow{display:flex;align-items:center;gap:14px;margin:12px 0}
+.setuprow .lbl{min-width:74px;text-align:right}
+.tiny{font-size:11px;color:var(--dim);line-height:1.5}
+.seg{display:flex;border:2px solid rgba(255,255,255,.18);border-radius:4px;overflow:hidden}
+.seg button{
+  font:700 13px/1 monospace;letter-spacing:1px;padding:9px 16px;cursor:pointer;
+  background:rgba(255,255,255,.05);color:var(--paper);border:0;border-right:1px solid rgba(255,255,255,.12);
+}
+.seg button:last-child{border-right:0}
+.seg button:hover{background:rgba(255,255,255,.13)}
+.seg button.on{background:var(--gold);color:var(--ink)}
+
+.slots{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:18px 0 4px}
+.slot{
+  display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:5px;
+  background:rgba(255,255,255,.05);border:2px solid rgba(255,255,255,.12);
+}
+.slot .pip{width:14px;height:14px;border-radius:3px;flex:0 0 auto}
+.slot .who{font-weight:700;font-size:14px}
+.slot .blurb{font-size:11px;color:var(--dim);line-height:1.4}
+.slot .swap{
+  margin-left:auto;font:700 10px/1 monospace;letter-spacing:1px;cursor:pointer;
+  padding:6px 9px;border-radius:3px;background:rgba(255,255,255,.08);
+  border:1px solid rgba(255,255,255,.2);color:var(--paper);
+}
+.slot .swap:hover{background:rgba(255,194,60,.25);border-color:var(--gold)}
+
+.lanbox{margin:14px 0;padding:13px 15px;border-radius:5px;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.12)}
+.lanhead{font:700 11px/1 monospace;letter-spacing:2px;color:var(--gold);margin-bottom:8px}
+.lanbox code{display:block;font:13px/1.5 monospace;color:#a8f4b8;background:rgba(0,0,0,.4);padding:8px 10px;border-radius:3px;margin-bottom:8px}
+.joinrow{display:flex;gap:8px}
+.joinrow input{
+  flex:1;font:13px/1 monospace;padding:11px 12px;border-radius:4px;
+  background:rgba(0,0,0,.4);border:2px solid rgba(255,255,255,.2);color:var(--paper);
+}
+.joinrow input:focus{outline:0;border-color:var(--gold)}
+
+/* ---------- scoreboards ---------- */
+.board{display:flex;flex-direction:column;gap:7px;margin:14px 0}
+.brow{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:4px;background:rgba(255,255,255,.05)}
+.brow.win{background:rgba(255,194,60,.18);border:1px solid rgba(255,194,60,.5)}
+.brow .pip{width:12px;height:12px;border-radius:3px}
+.brow .nm{font-weight:700;font-size:14px}
+.brow .tag{font-size:10px;color:var(--dim);letter-spacing:1px}
+.brow .pts{margin-left:auto;font:900 18px/1 monospace;color:var(--gold)}
+
+#hud-score{position:absolute;top:70px;left:16px;display:flex;flex-direction:column;gap:3px}
+#hud-score.hidden{display:none}
+.srow{display:flex;align-items:center;gap:6px;font:700 11px/1 monospace;text-shadow:0 2px 4px #000}
+.srow .pip{width:9px;height:9px;border-radius:2px}
+.srow .pts{color:var(--gold)}
+.srow.me .nm{color:var(--paper)}
+.srow .nm{color:#b9bfd4}

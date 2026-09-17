@@ -125,4 +125,4 @@
   };
 
   root.Particles = Particles;
-})(window);
+})(typeof window !== 'undefined' ? window : globalThis);

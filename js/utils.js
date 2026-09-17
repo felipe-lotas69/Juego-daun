@@ -103,4 +103,4 @@
   };
 
   root.U = U;
-})(window);
+})(typeof window !== 'undefined' ? window : globalThis);

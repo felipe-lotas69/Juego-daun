@@ -115,4 +115,4 @@
   };
 
   root.Sound = Sound;
-})(window);
+})(typeof window !== 'undefined' ? window : globalThis);

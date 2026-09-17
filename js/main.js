@@ -8,20 +8,127 @@
   var ctx = canvas.getContext('2d');
 
   var Game = {
-    state: 'menu',        /* menu | playing | paused | complete */
+    state: 'menu',        /* menu | playing | paused | complete | roundend | matchend | lan */
+    mode: 'campaign',     /* campaign | versus | lan */
     world: null,
+    match: null,
+    net: null,
     levelIndex: 0,
+    humans: 1,
 
     start: function (index) {
       Sound.unlock();
+      this.mode = 'campaign';
+      this.match = null;
+      this.closeNet();
       this.levelIndex = U.clamp(index, 0, LEVELS.length - 1);
       this.world = new World(this.levelIndex, {
         toast: function (m) { UI.toast(m); },
         complete: function (t) { Game.onComplete(t); }
-      });
+      }, { goreLevel: UI.save.gore });
       this.state = 'playing';
       Input.clearAll();
       UI.showGame();
+    },
+
+    /* ------------------------------------------------------ versus */
+    startVersus: function (cfg) {
+      Sound.unlock();
+      this.mode = 'versus';
+      this.closeNet();
+      this.humans = cfg.humans;
+      this.match = new Match({ target: cfg.target, slots: cfg.slots, rotation: [0, 1, 2] });
+      this.startRound();
+    },
+
+    startRound: function () {
+      var m = this.match;
+      this.world = new World(m.mapIndex(), {
+        toast: function (t) { UI.toast(t); },
+        roundWin: function (p, w) { Game.onRoundWin(p, w); }
+      }, {
+        mode: 'versus',
+        levels: VERSUS_MAPS,
+        players: m.playerDefs(),
+        localIndex: 0,
+        goreLevel: UI.save.gore
+      });
+      this.state = 'playing';
+      this.roundHold = 0;
+      Input.clearAll();
+      UI.showGame();
+      UI.toast(m.mapName());
+    },
+
+    onRoundWin: function (p) {
+      this.roundHold = 2.2;      /* let the celebration land before the board */
+    },
+
+    finishRound: function () {
+      var winner = this.world.roundWinner;
+      this.match.recordRound(winner ? winner.index : -1, this.world);
+      if (this.match.champion() >= 0) {
+        this.state = 'matchend';
+        UI.showMatchEnd(this.match);
+      } else {
+        this.state = 'roundend';
+        UI.showRoundEnd(this.match, this.world);
+      }
+    },
+
+    nextRound: function () {
+      if (!this.match) { this.toMenu(); return; }
+      this.startRound();
+    },
+
+    /* ------------------------------------------------------ LAN */
+    joinLan: function (host) {
+      var self = this;
+      this.closeNet();
+      this.mode = 'lan';
+      UI.lanStatus('Connecting to ' + host + '…');
+      this.net = new NetClient({
+        open: function () { UI.lanStatus('Connected. Waiting for the first round…'); },
+        error: function () { UI.lanStatus('Could not reach ' + host + '. Is the host running?'); },
+        close: function () {
+          UI.lanStatus('Disconnected.');
+          if (self.mode === 'lan') { self.mode = 'campaign'; self.world = null; self.state = 'menu'; UI.show('lan'); }
+        },
+        round: function (msg) { self.onNetRound(msg); },
+        match: function (msg) { self.onNetMatch(msg); }
+      });
+      this.net.connect(host);
+    },
+
+    onNetRound: function (msg) {
+      var defs = msg.slots.map(function (s) {
+        return { name: s.name, isBot: false, wins: s.wins };   /* the host drives everyone */
+      });
+      this.world = new World(msg.map, { toast: function (t) { UI.toast(t); } }, {
+        mode: 'versus', levels: VERSUS_MAPS, players: defs,
+        localIndex: this.net.slot < 0 ? 0 : this.net.slot,
+        goreLevel: UI.save.gore
+      });
+      this.world.players.forEach(function (p) { p.brain = null; p.netInit = false; });
+      this.state = 'playing';
+      Input.clearAll();
+      UI.showGame();
+      UI.toast(msg.name);
+    },
+
+    onNetMatch: function (msg) {
+      this.state = 'matchend';
+      var fake = { slots: msg.slots, target: 99, champion: function () { return msg.champion; },
+                   standings: function () {
+                     return msg.slots.map(function (s, i) { return { index: i, name: s.name, wins: s.wins, isBot: false }; })
+                       .sort(function (a, b) { return b.wins - a.wins; });
+                   } };
+      fake.target = Math.max.apply(null, msg.slots.map(function (s) { return s.wins; }));
+      UI.showMatchEnd(fake);
+    },
+
+    closeNet: function () {
+      if (this.net) { this.net.close(); this.net = null; }
     },
 
     resume: function () {
@@ -39,7 +146,10 @@
 
     toMenu: function () {
       this.state = 'menu';
+      this.mode = 'campaign';
       this.world = null;
+      this.match = null;
+      this.closeNet();
       UI.show('menu');
     },
 
@@ -51,9 +161,40 @@
     update: function (dt) {
       if (this.state === 'playing') {
         if (Input.pressed('KeyP') || Input.pressed('Escape')) { this.pause(); return; }
+
+        if (this.mode === 'lan') {
+          this.net.sendInput(Input.pads()[0]);
+          this.net.apply(this.world, dt);
+          this.world.fx.update(dt, this.world);
+          this.world.gore.update(dt, this.world);
+          this.world.goal.update(dt);
+          this.world.time += dt;
+          this.world.updateCamera(dt);
+          UI.updateHUD(this.world, dt);
+          UI.updateScoreboard(this.world, this.match);
+          return;
+        }
+
+        if (this.mode === 'versus') {
+          var pads = Input.pads();
+          var inputs = [];
+          for (var i = 0; i < this.humans; i++) inputs[i] = pads[i] || pads[0];
+          this.world.update(dt, inputs);
+          UI.updateHUD(this.world, dt);
+          UI.updateScoreboard(this.world, this.match);
+          if (this.roundHold > 0) {
+            this.roundHold -= dt;
+            if (this.roundHold <= 0) this.finishRound();
+          }
+          return;
+        }
+
         if (Input.pressed('Enter')) { this.start(this.levelIndex); return; }
         this.world.update(dt, Input);
         UI.updateHUD(this.world, dt);
+        UI.updateScoreboard(this.world, null);
+      } else if (this.state === 'roundend') {
+        if (Input.pressed('Enter') || Input.pressed('Space')) this.nextRound();
       } else if (this.state === 'paused') {
         if (Input.pressed('KeyP') || Input.pressed('Escape')) this.resume();
       } else if (this.state === 'complete') {

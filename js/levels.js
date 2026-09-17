@@ -82,12 +82,12 @@
 
         P(200, 1706, 230, 18, 'metal'),
         P(540, 1632, 220, 18, 'metal'),
-        P(880, 1558, 220, 18, 'metal'),
+        P(880, 1570, 220, 18, 'metal'),
         P(1230, 1558, 200, 18, 'metal'),
 
         P(1430, 1470, 330, 18, 'metal'),
         P(1040, 1396, 240, 18, 'metal'),
-        P(700, 1322, 220, 18, 'metal'),
+        P(700, 1334, 220, 18, 'metal'),
         P(330, 1322, 220, 18, 'metal'),
 
         P(60, 1240, 240, 18, 'metal'),
@@ -98,10 +98,10 @@
         P(1180, 950, 260, 18, 'metal'),
         P(1500, 870, 260, 18, 'metal'),
         P(1180, 790, 220, 18, 'metal'),
-        P(830, 716, 220, 18, 'metal'),
+        P(830, 730, 220, 18, 'metal'),
 
-        P(430, 640, 260, 18, 'metal'),
-        P(280, 560, 300, 18, 'metal'),
+        P(430, 670, 260, 18, 'metal'),
+        P(280, 580, 300, 18, 'metal'),
 
         P(280, 300, 400, 30, 'solid'),
         P(760, 300, 1000, 30, 'solid')
@@ -132,17 +132,17 @@
       enemies: [
         { x: 1300, y: 1558, weapon: 'pistol', patrol: 60, facing: -1 },
         { x: 1250, y: 950, weapon: 'pistol', patrol: 80, facing: -1 },
-        { x: 900, y: 716, weapon: 'smg', patrol: 60, facing: 1 },
-        { x: 520, y: 640, weapon: 'pistol', patrol: 70, facing: -1 }
+        { x: 900, y: 730, weapon: 'smg', patrol: 60, facing: 1 },
+        { x: 520, y: 670, weapon: 'pistol', patrol: 70, facing: -1 }
       ],
       hazards: [],
       checkpoints: [
-        { x: 1300, y: 1470 }, { x: 320, y: 1100 }, { x: 1250, y: 790 }, { x: 330, y: 560 }
+        { x: 1520, y: 1470 }, { x: 320, y: 1100 }, { x: 1250, y: 790 }, { x: 330, y: 580 }
       ],
       hints: [
         { x: 130, y: 1700, text: 'up we go' },
         { x: 470, y: 1270, text: 'shoot the glass, or trust it' },
-        { x: 150, y: 500, text: 'R at the lift' }
+        { x: 150, y: 520, text: 'R at the lift' }
       ],
       goal: { x: 1500, y: 232 }
     },
@@ -169,9 +169,9 @@
         P(2120, 1120, 260, 20, 'metal'),
 
         P(1700, 900, 680, 20, 'metal'),
-        P(1230, 830, 300, 20, 'metal'),
-        P(760, 760, 300, 20, 'metal'),
-        P(300, 690, 320, 20, 'metal'),
+        P(1280, 845, 300, 20, 'metal'),
+        P(880, 790, 300, 20, 'metal'),
+        P(440, 735, 320, 20, 'metal'),
 
         P(300, 420, 460, 24, 'solid'),
         P(1000, 420, 300, 24, 'solid'),
@@ -188,7 +188,7 @@
       elevators: [
         { x: 2380, y: 1104, w: 150, h: 16, by: 884, mode: 'call', speed: 120, id: 'lift2' },
         { x: 1560, y: 1048, w: 140, h: 16, bx: 2120, by: 1048, mode: 'auto', speed: 115, wait: 0.7 },
-        { x: 120, y: 670, w: 160, h: 18, by: 444, mode: 'call', speed: 125, id: 'lift3' },
+        { x: 120, y: 690, w: 160, h: 18, by: 444, mode: 'call', speed: 125, id: 'lift3' },
         { x: 760, y: 420, w: 240, h: 18, bx: 1000, by: 420, mode: 'auto', speed: 95, wait: 0.9 }
       ],
       doors: [
@@ -201,8 +201,8 @@
       ],
       crates: [
         { x: 2280, y: 1086, w: 34, h: 34 },
-        { x: 1300, y: 796, w: 34, h: 34 },
-        { x: 1334, y: 796, w: 34, h: 34, explosive: true }
+        { x: 1350, y: 811, w: 34, h: 34 },
+        { x: 1384, y: 811, w: 34, h: 34, explosive: true }
       ],
       pickups: [
         { x: 400, y: 1316, key: 'pistol' },
@@ -227,7 +227,7 @@
       ],
       hints: [
         { x: 1920, y: 1050, text: 'R the switch' },
-        { x: 180, y: 620, text: 'R calls the lift' },
+        { x: 200, y: 640, text: 'R calls the lift' },
         { x: 2400, y: 240, text: 'stand here' }
       ],
       goal: { x: 2800, y: 232 }
@@ -295,7 +295,7 @@
         { x: 3200, y: 660, weapon: 'smg', patrol: 80, facing: -1 }
       ],
       checkpoints: [
-        { x: 700, y: 1000 }, { x: 1500, y: 940 }, { x: 2000, y: 870 }, { x: 2860, y: 730 }
+        { x: 700, y: 1000 }, { x: 1500, y: 940 }, { x: 1750, y: 870 }, { x: 2830, y: 730 }
       ],
       hints: [
         { x: 660, y: 940, text: 'ice keeps your momentum' },
@@ -484,4 +484,4 @@
   ];
 
   root.LEVELS = LEVELS;
-})(window);
+})(typeof window !== 'undefined' ? window : globalThis);

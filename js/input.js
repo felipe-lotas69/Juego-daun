@@ -27,6 +27,41 @@
     fireHeld: function () { return down['Space'] || this.mouse.down; },
     dropPressed: function () { return pressedSet['KeyQ']; },
 
+    /* A pad is one player's key mapping. Pad 0 is WASD (plus the arrows,
+       which is what a single player expects); pad 1 is the arrows only, so
+       two people can share a keyboard. */
+    makePad: function (keys) {
+      var I = this;
+      function held(list) { for (var i = 0; i < list.length; i++) if (down[list[i]]) return true; return false; }
+      function hit(list) { for (var i = 0; i < list.length; i++) if (pressedSet[list[i]]) return true; return false; }
+      return {
+        left: function () { return held(keys.left); },
+        right: function () { return held(keys.right); },
+        jump: function () { return held(keys.jump); },
+        jumpPressed: function () { return hit(keys.jump); },
+        interactPressed: function () { return hit(keys.use); },
+        interactHeld: function () { return held(keys.use); },
+        firePressed: function () { return hit(keys.fire) || (keys.mouse && I.mouse.pressed); },
+        fireHeld: function () { return held(keys.fire) || (keys.mouse && I.mouse.down); },
+        dropPressed: function () { return hit(keys.drop); },
+        pressed: function (code) { return !!pressedSet[code]; },
+        mouse: I.mouse
+      };
+    },
+
+    pads: function () {
+      if (!this._pads) {
+        this._pads = [
+          this.makePad({ left: ['KeyA'], right: ['KeyD'], jump: ['KeyW'],
+                         use: ['KeyR', 'KeyE'], fire: ['Space'], drop: ['KeyQ'], mouse: true }),
+          this.makePad({ left: ['ArrowLeft'], right: ['ArrowRight'], jump: ['ArrowUp'],
+                         use: ['Enter', 'NumpadEnter'], fire: ['ShiftRight', 'Numpad0'],
+                         drop: ['ArrowDown'], mouse: false })
+        ];
+      }
+      return this._pads;
+    },
+
     clearFrame: function () { pressedSet = {}; this.mouse.pressed = false; },
     clearAll: function () { down = {}; pressedSet = {}; this.mouse.down = false; this.mouse.pressed = false; },
 
