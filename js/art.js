@@ -1078,14 +1078,10 @@
 
   /* Built walls take their look from what they are built out of, which
      is exactly what a player expects when they pick the material. */
-  function paintBuiltWall(g, rnd, mask, base, stuffId, w, h) {
-    if (stuffId === 'wood' || (!stuffId && base === P.wood)) {
-      paintPlankWall(g, rnd, mask, base, w, h);
-    } else if (stuffId === 'steel' || stuffId === 'silver' || stuffId === 'components') {
-      paintPlateWall(g, rnd, mask, base, w, h);
-    } else {
-      paintStoneWall(g, rnd, mask, base, w, h);
-    }
+  function paintBuiltWall(g, rnd, mask, base, material, w, h) {
+    if (material === 'wood') paintPlankWall(g, rnd, mask, base, w, h);
+    else if (material === 'metal') paintPlateWall(g, rnd, mask, base, w, h);
+    else paintStoneWall(g, rnd, mask, base, w, h);
   }
 
   /* ------------------------------------------------------------------
@@ -1122,6 +1118,23 @@
     rrectLine(g, x, y, w, h, r, rgba('#000000', 0.45), 1.2);
   }
 
+  /* What a stuffable thing is actually made of. Defs name their stuff
+     by thing id, and the look splits three ways: boards, plate, block.
+     A def with no stuff chosen yet falls back to the first material in
+     its buildCost, which is the one the architect offers by default. */
+  function materialKind(stuffId) {
+    if (stuffId === 'wood') return 'wood';
+    if (stuffId === 'steel' || stuffId === 'silver' || stuffId === 'components') return 'metal';
+    if (stuffId === 'stoneBlocks' || stuffId === 'stoneChunk') return 'stone';
+    return null;
+  }
+
+  function defaultStuff(def) {
+    if (!def.stuffable || !def.buildCost) return null;
+    for (var k in def.buildCost) return k;
+    return null;
+  }
+
   /* Wood grain inside whatever path is currently clipped. */
   function woodGrain(g, rnd, x, y, w, h, c, n, vertical) {
     for (var i = 0; i < n; i++) {
@@ -1136,6 +1149,27 @@
           rgba(rnd() < 0.4 ? shade(c, 0.2) : shade(c, -0.26), rr(rnd, 0.18, 0.4)),
           rr(rnd, 0.7, 1.6));
       }
+    }
+  }
+
+  /* The texture a finished surface carries, chosen by what it is made
+     of, so a steel table does not come out of the shop with wood grain
+     on it. Expects the caller to have clipped to the surface already. */
+  function surfaceTexture(g, a, x, y, w, h, vertical, n) {
+    if (a.material === 'metal') {
+      sheen(g, x, y, w, h, 0.14, 0.8);
+      for (var i = 0; i < 26; i++) {
+        var ly = y + a.rnd() * h;
+        fill(g, x, ly, w, rr(a.rnd, 0.6, 1.2),
+          rgba(a.rnd() < 0.5 ? '#ffffff' : '#000000', rr(a.rnd, 0.03, 0.09)));
+      }
+      grain(g, a.rnd, x, y, w, h, 0.1, 'overlay');
+    } else if (a.material === 'stone') {
+      flecks(g, a.rnd, Math.round(w * h / 90), x, y, w, h,
+        [shade(a.c1, 0.2), shade(a.c1, -0.22), a.c2], 0.8, 2.6, 0.5);
+      grain(g, a.rnd, x, y, w, h, 0.22, 'overlay');
+    } else {
+      woodGrain(g, a.rnd, x, y, w, h, a.c1, n || 9, vertical);
     }
   }
 
@@ -1159,7 +1193,7 @@
     slab(g, 3, 3, w - 6, h - 6, 4, a.c1, 5);
     rrectPath(g, 3, 3, w - 6, h - 6, 4);
     g.save(); g.clip();
-    woodGrain(g, a.rnd, 3, 3, w - 6, h - 6, a.c1, 9, false);
+    surfaceTexture(g, a, 3, 3, w - 6, h - 6, false, 9);
     g.restore();
     var tx = 7, ty = 7, tw = w - 14, th = h - 16;
     slab(g, tx, ty, tw, th, 3, topCol || shade(a.c1, -0.16), 3);
@@ -1206,7 +1240,7 @@
   var SPRITE = {
 
     wall: function (g, a) {
-      paintBuiltWall(g, a.rnd, a.variant, a.c1, a.stuffId, a.w, a.h);
+      paintBuiltWall(g, a.rnd, a.variant, a.c1, a.material, a.w, a.h);
     },
     rockWall: function (g, a) { paintRockWall(g, a.rnd, a.variant, a.c1, null, a.w, a.h); },
     oreWall: function (g, a) { paintRockWall(g, a.rnd, a.variant, a.c1, a.c2, a.w, a.h); },
@@ -1216,14 +1250,13 @@
     door: function (g, a) {
       var horiz = !!(a.variant & 10);
       var w = a.w, h = a.h, jamb = shade(a.c1, -0.45);
-      var leaf = a.c1, wood = a.stuffId !== 'steel';
+      var leaf = a.c1;
 
       function panel(g2, x, y, pw, ph) {
         slab(g2, x, y, pw, ph, 2, leaf, 4);
         rrectPath(g2, x, y, pw, ph, 2);
         g2.save(); g2.clip();
-        if (wood) woodGrain(g2, a.rnd, x, y, pw, ph, leaf, 7, ph > pw);
-        else sheen(g2, x, y, pw, ph, 0.12, 0.8);
+        surfaceTexture(g2, a, x, y, pw, ph, ph > pw, 7);
         g2.restore();
         /* A recessed panel, which is what makes a door a door. */
         var ix = x + pw * 0.22, iy = y + ph * 0.18;
@@ -1568,7 +1601,7 @@
       slab(g, 2, 2, w - 4, h - 4, 4, a.c1, 5);
       rrectPath(g, 2, 2, w - 4, h - 4, 4);
       g.save(); g.clip();
-      woodGrain(g, a.rnd, 2, 2, w - 4, h - 4, a.c1, 8, h > w);
+      surfaceTexture(g, a, 2, 2, w - 4, h - 4, h > w, 8);
       g.restore();
       var mx = 7, my = 8, mw = w - 14, mh = h - 16;
       rrect(g, mx, my, mw, mh, 4, P.linen);
@@ -1626,7 +1659,7 @@
       slab(g, 3, 3, w - 6, h - 6, 3, a.c1, 5);
       rrectPath(g, 3, 3, w - 6, h - 6, 3);
       g.save(); g.clip();
-      woodGrain(g, a.rnd, 3, 3, w - 6, h - 6, a.c1, 14, false);
+      surfaceTexture(g, a, 3, 3, w - 6, h - 6, false, 14);
       /* Board joints across the top: a table this size is planks. */
       for (var b = 1; b * 21 < h - 6; b++) {
         fill(g, 3, 3 + b * 21, w - 6, 1.4, rgba('#000000', 0.26));
@@ -1648,7 +1681,7 @@
       circle(g, cx, cy + 1.5, 16, rgba('#000000', 0.3));
       circle(g, cx, cy, 15, a.c1);
       g.beginPath(); g.arc(cx, cy, 15, 0, TAU); g.save(); g.clip();
-      woodGrain(g, a.rnd, cx - 16, cy - 16, 32, 32, a.c1, 9, false);
+      surfaceTexture(g, a, cx - 16, cy - 16, 32, 32, false, 9);
       gradRect(g, cx - 16, cy - 16, 32, 32, linGrad(g, cx - 12, cy - 12, cx + 12, cy + 12,
         [0, rgba('#ffffff', 0.28), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.26)]));
       g.restore();
@@ -1662,7 +1695,7 @@
       slab(g, 3, 3, w - 6, h - 6, 3, a.c1, 5);
       rrectPath(g, 3, 3, w - 6, h - 6, 3);
       g.save(); g.clip();
-      woodGrain(g, a.rnd, 3, 3, w - 6, h - 6, a.c1, 10, h > w);
+      surfaceTexture(g, a, 3, 3, w - 6, h - 6, h > w, 10);
       g.restore();
       /* Three drawers, each with a lit top lip and a pull. */
       var n = h > w ? 3 : 2, dh = (h - 12) / n;
@@ -4129,6 +4162,7 @@
       var a = {
         def: def, rnd: rnd, variant: mask, open: open, lit: lit,
         frame: frame, noise: noise, kindId: kindId, stuffId: stuffId,
+        material: materialKind(stuffId) || materialKind(defaultStuff(def)) || 'stone',
         w: sw * PX, h: sh * PX,
         c1: c1, c2: def.color2 || shade(c1, -0.25)
       };
@@ -4509,6 +4543,18 @@
 
   Art.ready = function () { return ready; };
   Art.cacheSize = function () { return cache.size + rotCache.size; };
+
+  /* Roughly what the sprite set costs in video memory. Authoring at 64
+     rather than 16 multiplies every canvas by sixteen, so this is worth
+     being able to read rather than guess at. */
+  Art.cacheBytes = function () {
+    var n = 0;
+    function add(c) { n += c.width * c.height * 4; }
+    cache.forEach(add);
+    rotCache.forEach(add);
+    if (noiseTiles) noiseTiles.forEach(add);
+    return n;
+  };
 
   root.Art = Art;
 })(this);

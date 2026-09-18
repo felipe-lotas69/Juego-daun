@@ -369,6 +369,7 @@
   var watchIds = Object.create(null);
   var lastScan = -99999;
   var lastBedPass = -99999;
+  var lastMap = null;
 
   Social.state = state;
 
@@ -729,6 +730,27 @@
     if (hit && b && b.id !== undefined) dirty(a, b);
     return hit;
   };
+
+  /* Marrying someone ends whatever else was going on. Without this a
+     pawn dragged into a wedding by a cheating roll could stay engaged to
+     the person they walked out on, and be paid the opinion for both. */
+  function clearOtherRomances(pawn, keep) {
+    if (!pawn || !pawn.relations || !pawn.map) return;
+    var rows = pawn.relations.slice();
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (!ROMANTIC[r.kind] || r.otherId === keep.id) continue;
+      var other = r.off ? null : findPawn(pawn.map, r.otherId);
+      if (!other) {
+        /* A partner who is not on this map cannot be told; the row is
+           simply demoted so the maths stops counting it. */
+        r.kind = r.kind === 'spouse' ? 'exSpouse' : 'exLover';
+        r.label = relLabel(r.kind, r.gender);
+        continue;
+      }
+      Social.breakUp(pawn, other);
+    }
+  }
 
   function dirty(a, b) {
     var s = a.social;
@@ -1433,6 +1455,8 @@
 
   function completeWedding(map, w, a, b) {
     state.wedding = null;
+    clearOtherRomances(a, b);
+    clearOtherRomances(b, a);
     Social.removeRelation(a, b, 'lover');
     Social.removeRelation(b, a, 'lover');
     Social.removeRelation(a, b, 'fiance');
@@ -1573,7 +1597,12 @@
     if (!ba || !bb) return false;
     if (!Regions || !Regions.roomAt) return U.cheb(ba.x, ba.y, bb.x, bb.y) <= 3;
     var ra = Regions.roomAt(map, ba.x, ba.y), rb = Regions.roomAt(map, bb.x, bb.y);
-    return !!(ra && rb && ra.id === rb.id);
+    if (!ra || !rb) return false;
+    /* Outdoors is one enormous room, and two beds at opposite ends of a
+       valley are not a bedroom. Out there it takes standing next to
+       each other to count. */
+    if (ra.outdoor || rb.outdoor) return U.cheb(ba.x, ba.y, bb.x, bb.y) <= 2;
+    return ra.id === rb.id;
   }
 
   function findBedPair(map, Regions, beds, a, b) {
@@ -1607,17 +1636,26 @@
 
   function quartersThought(pawn, map) {
     var partner = Social.partnerOf(pawn);
-    if (!partner) return;
-    if (!pawn.ownedBedId || !partner.ownedBedId) {
-      thought(pawn, 'socPartnerApart', partner);
-      return;
+    if (!partner) { drop(pawn, 'socPartnerApart'); drop(pawn, 'socPartnerTogether'); return; }
+    var together = false;
+    if (pawn.ownedBedId && partner.ownedBedId) {
+      together = sameRoom(map, sys('Regions'), pawn.ownedBedId, partner.ownedBedId);
     }
-    var Regions = sys('Regions');
-    if (sameRoom(map, Regions, pawn.ownedBedId, partner.ownedBedId)) {
-      thought(pawn, 'socPartnerTogether', partner);
-    } else {
-      thought(pawn, 'socPartnerApart', partner);
-    }
+    /* These two are opposites and both last most of a day, so the one
+       that stopped being true is taken away rather than left to expire
+       beside the one that replaced it. */
+    exclusive(pawn, together ? 'socPartnerTogether' : 'socPartnerApart',
+              together ? 'socPartnerApart' : 'socPartnerTogether', partner);
+  }
+
+  function drop(pawn, id) {
+    var N = sys('Needs');
+    if (N && N.removeThought) N.removeThought(pawn, id);
+  }
+
+  function exclusive(pawn, keep, remove, other) {
+    drop(pawn, remove);
+    thought(pawn, keep, other);
   }
 
   /* ============================================================
@@ -1821,6 +1859,13 @@
       if (!e) continue;
       if (e.v >= 25 || relationsWith(pawn, id)) thought(pawn, 'socFriendCorpse', { id: id });
     }
+  }
+
+  function findThought(pawn, id) {
+    var list = pawn && pawn.thoughts;
+    if (!list) return null;
+    for (var i = 0; i < list.length; i++) if (list[i].defId === id) return list[i];
+    return null;
   }
 
   function relationsWith(pawn, id) {
@@ -2248,6 +2293,7 @@
 
   Social.tick = function (map) {
     if (!map) return;
+    if (map !== lastMap) adoptMap(map);
     var t = now();
     if (state.wedding) tickWedding(map);
 
@@ -2260,6 +2306,21 @@
       Social.pairBeds(map);
     }
   };
+
+  /* A new colony, or a loaded one, arrives as a map this module has
+     never seen. Everything that pointed at pawn objects of the old one
+     is dropped; the counters and the log belong to the save and are
+     left to Social.load to replace. */
+  function adoptMap(map) {
+    lastMap = map;
+    watch.length = 0;
+    watchIds = Object.create(null);
+    lastScan = -99999;
+    lastBedPass = -99999;
+    if (state.wedding && !(findPawn(map, state.wedding.a) && findPawn(map, state.wedding.b))) {
+      state.wedding = null;
+    }
+  }
 
   /* One walk of the pawn list: introduce anybody new, notice anybody who
      has died since the last pass, and forget the ones who have left. */
@@ -2395,12 +2456,17 @@
         if (op < worst) { worst = op; worstRival = other; }
       }
     }
-    if (friends) thought(pawn, 'socFriendHere', null, { degree: friends >= 3 ? 1 : 0 });
-    if (rivals && worstRival) thought(pawn, 'socRival', worstRival);
-    if (!friends && list.length > 2) {
+    if (friends) {
+      exclusive(pawn, 'socFriendHere', 'socLonely', null);
+      var t = findThought(pawn, 'socFriendHere');
+      if (t) t.degree = friends >= 3 ? 1 : 0;
+    } else {
       var colony = map.colonists ? map.colonists().length : 0;
-      if (colony >= 3) thought(pawn, 'socLonely');
+      if (colony >= 3) exclusive(pawn, 'socLonely', 'socFriendHere', null);
+      else drop(pawn, 'socFriendHere');
     }
+    if (rivals && worstRival) thought(pawn, 'socRival', worstRival);
+    else drop(pawn, 'socRival');
   }
 
   /* ============================================================
@@ -2446,6 +2512,7 @@
     watchIds = Object.create(null);
     lastScan = -99999;
     lastBedPass = -99999;
+    lastMap = null;
     if (!data) return false;
     if (typeof data.offId === 'number') state.offId = data.offId;
     if (Array.isArray(data.log)) state.log = data.log.slice(0, 80);
@@ -2468,6 +2535,7 @@
     watchIds = Object.create(null);
     lastScan = -99999;
     lastBedPass = -99999;
+    lastMap = null;
     return Social;
   };
 

@@ -311,7 +311,18 @@
 
   function stateOf(map) {
     var st = map.__fire;
-    if (!st || st.size !== map.size) { st = createState(map); map.__fire = st; }
+    if (!st || st.size !== map.size) {
+      st = createState(map);
+      map.__fire = st;
+      /* A loaded save hands back pawns who were already alight - the
+         flag is a plain field, so save.js carried it - and the live
+         list has to find them again or they burn for ever untouched. */
+      for (var i = 0; i < map.pawns.length; i++) {
+        var pawn = map.pawns[i];
+        if (pawn.burning && pawn.burning.sev > 0 && !pawn.dead) st.burning.push(pawn);
+        else if (pawn.burning) pawn.burning = null;
+      }
+    }
     return st;
   }
   Fire.state = stateOf;
@@ -684,7 +695,7 @@
     return lit;
   };
 
-  function tickWildfireRisk(map, st, now) {
+  function tickWildfireRisk(map, st) {
     var G = sys('Game');
     if (!G || !G.day || G.day() < WILDFIRE_MIN_DAY) return;
     if (map.byDef('fire').length) return;          /* one disaster at a time */
@@ -799,10 +810,10 @@
 
     if (st.burning.length) tickBurningPawns(map, st, now);
     if (now % SMOKE_INTERVAL === 0 && st.smokeCells.length) tickSmoke(map, st);
-    if (now % HEAT_INTERVAL === 0 && fires.length) tickRoomHeat(map, st, fires, now);
+    if (now % HEAT_INTERVAL === 0 && fires.length) tickRoomHeat(map, st, fires);
     if (now % SPRINKLER_INTERVAL === 0 && fires.length) tickSprinklers(map, st);
-    if (now % DECAY_INTERVAL === 0) tickDecay(map, st);
-    if (now % DANGER_INTERVAL === 0) tickWildfireRisk(map, st, now);
+    if (now % DECAY_INTERVAL === 0) tickDecay(map, st, now);
+    if (now % DANGER_INTERVAL === 0) tickWildfireRisk(map, st);
   };
 
   /* plants.js's name for the same loop. */
@@ -1086,6 +1097,7 @@
   Fire.extinguishPawn = function (pawn, amount) {
     if (!pawn || !pawn.burning) return true;
     var map = pawn.map;
+    if (!map) { clearBurning(pawn); return true; }
     var st = stateOf(map);
     pawn.burning.sev -= (amount === undefined ? 0.02 : amount);
     if (pawn.burning.sev > 0) {
@@ -1225,7 +1237,7 @@
      everything at once.
      ============================================================ */
 
-  function tickRoomHeat(map, st, fires, now) {
+  function tickRoomHeat(map, st, fires) {
     var R = sys('Regions');
     if (!R || !R.roomAt) return;
 
@@ -1272,6 +1284,7 @@
      ignition point at the same moment. Opening the door on one of these
      is how a colony loses two colonists to a kitchen fire. */
   function flashover(map, st, room) {
+    if (!room.cells || !room.cells.length) return;
     if (!U.chance(FLASHOVER_CHANCE)) return;
     var lit = 0;
     for (var k = 0; k < 6 && lit < 3; k++) {
@@ -1309,14 +1322,19 @@
     st.wet[i] = v > 255 ? 255 : v;
   };
 
-  /* Both grids fade, on the same slow beat, walking only the cells that
-     are not already zero. Burned ground takes about six days to come
-     back; a wetted floor dries in a few hours. */
-  function tickDecay(map, st) {
-    var scorchStep = Math.max(1, Math.round(255 / (SCORCH_DAYS * TICKS_PER_DAY / DECAY_INTERVAL)));
-    var wetStep = Math.max(1, Math.round(255 / (WET_DAYS * TICKS_PER_DAY / DECAY_INTERVAL)));
-    st.scorchCells = fade(st.scorch, st.scorchCells, scorchStep);
-    st.wetCells = fade(st.wet, st.wetCells, wetStep);
+  /* Both grids fade on the same slow beat, walking only the cells that
+     are not already zero. A byte cannot be taken down by a fraction, so
+     the slow one is done by skipping beats rather than by subtracting
+     less: scorch loses a point every twelfth beat, which is a full 255
+     over about six days, and a wetted floor dries in a few hours. */
+  var SCORCH_FADE_BEATS = Math.max(1, Math.round(SCORCH_DAYS * TICKS_PER_DAY / DECAY_INTERVAL / 255));
+  var WET_FADE_STEP = Math.max(1, Math.round(255 / (WET_DAYS * TICKS_PER_DAY / DECAY_INTERVAL)));
+
+  function tickDecay(map, st, now) {
+    if (st.scorchCells.length && Math.floor(now / DECAY_INTERVAL) % SCORCH_FADE_BEATS === 0) {
+      st.scorchCells = fade(st.scorch, st.scorchCells, 1);
+    }
+    if (st.wetCells.length) st.wetCells = fade(st.wet, st.wetCells, WET_FADE_STEP);
   }
 
   function fade(grid, cells, step) {
