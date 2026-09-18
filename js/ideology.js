@@ -69,6 +69,8 @@
   var RITUAL_INTERVAL = 4 * DAY;
   var RITUAL_GATHER_TICKS = 2500;
   var RITUAL_JOY = 0.30;
+  var RITUAL_HOUR = 13;          /* rites are held in the early afternoon */
+  var RETRY_DELAY = 0.4 * DAY;   /* when one breaks up before it began    */
 
   var Ideology = {};
 
@@ -725,7 +727,7 @@
       byFaction: {},          /* faction id -> ideoligion id             */
       ritual: null,
       lastRitualTick: -RITUAL_INTERVAL,
-      nextRitualTick: RITUAL_INTERVAL,
+      nextRitualTick: RITUAL_INTERVAL + Math.round(RITUAL_HOUR * DAY / 24),
       relicThingId: 0,
       lastBeatTick: 0,
       log: []                 /* recent ritual results, for the UI       */
@@ -735,6 +737,17 @@
   function ensureState() {
     if (!state) state = freshState();
     return state;
+  }
+
+  /* A rite that falls due at the stroke of midnight is a rite nobody
+     attends, because the colony is asleep. Due dates are pushed to the
+     next early afternoon, give or take an hour. */
+  function schedule(fromTick, delay) {
+    var due = fromTick + delay;
+    var hourTicks = DAY / 24;
+    var target = Math.floor(due / DAY) * DAY + Math.round(RITUAL_HOUR * hourTicks);
+    if (target < due) target += DAY;
+    return target + U.randInt(-1, 1) * Math.round(hourTicks);
   }
 
   Ideology.reset = function () { state = freshState(); return Ideology; };
@@ -1365,7 +1378,9 @@
 
     var previous = Ideology.roleHolder(roleId, pawn.map);
     if (previous && previous !== pawn) Ideology.unassignRole(previous);
-    if (st.roleId && st.roleId !== roleId) Ideology.unassignRole(pawn);
+    /* Moving from one role to another is a promotion, not a loss: only
+       being left with nothing carries the sting. */
+    if (st.roleId && st.roleId !== roleId) clearRole(pawn, false);
 
     st.roleId = roleId;
     slot.pawnId = pawn.id;
@@ -1374,7 +1389,7 @@
     return true;
   };
 
-  Ideology.unassignRole = function (pawn) {
+  function clearRole(pawn, hurt) {
     var st = ensurePawn(pawn);
     if (!st || !st.roleId) return false;
     var ideo = Ideology.of(pawn);
@@ -1385,9 +1400,11 @@
     }
     st.roleId = null;
     var N = sys('Needs');
-    if (N && N.addThought) N.addThought(pawn, 'ideoRoleLost');
+    if (hurt && N && N.addThought) N.addThought(pawn, 'ideoRoleLost');
     return true;
-  };
+  }
+
+  Ideology.unassignRole = function (pawn) { return clearRole(pawn, true); };
 
   /* Fill every empty slot with whoever is best at the role's skill.
      Called after a ritual and whenever the player asks for it. */
@@ -1399,16 +1416,30 @@
     var free = map.colonists().filter(function (p) {
       return !p.dead && !Ideology.roleOf(p) && Ideology.sameFaithAsColony(p);
     });
+    /* Leader and moral guide first: a colony that lost its guide to a
+       raid and has nobody spare should promote a specialist rather than
+       go without, because going without is a standing mood penalty on
+       everyone who believes. */
+    var slots = ideo.roles.slice().sort(function (a, b) {
+      return (ROLES[b.id] && ROLES[b.id].always ? 1 : 0) - (ROLES[a.id] && ROLES[a.id].always ? 1 : 0);
+    });
     var filled = 0;
-    for (var i = 0; i < ideo.roles.length; i++) {
-      var slot = ideo.roles[i];
-      if (Ideology.roleHolder(slot.id, map)) continue;
-      if (!free.length) break;
+    for (var i = 0; i < slots.length; i++) {
+      var slot = slots[i];
       var role = ROLES[slot.id];
-      var best = U.maxBy(free, function (p) {
+      if (!role || Ideology.roleHolder(slot.id, map)) continue;
+      var pool = free;
+      if (!pool.length && role.always) {
+        pool = map.colonists().filter(function (p) {
+          return !p.dead && Ideology.roleOf(p) && !ROLES[Ideology.roleOf(p)].always &&
+                 Ideology.sameFaithAsColony(p);
+        });
+      }
+      if (!pool.length) continue;
+      var best = U.maxBy(pool, function (p) {
         return (p.skillLevel ? p.skillLevel(role.skill) : 0) + Ideology.certainty(p) * 2;
       });
-      if (!best) break;
+      if (!best) continue;
       U.remove(free, best);
       if (Ideology.assignRole(best, slot.id)) filled++;
     }
@@ -1630,7 +1661,9 @@
     if (G && G.msg) G.msg('The ' + RITUALS[state.ritual.defId].label.toLowerCase() + ' broke up: ' + (reason || 'nobody came') + '.');
     state.ritual = null;
     state.lastRitualTick = now();
-    state.nextRitualTick = now() + RITUAL_INTERVAL;
+    /* A rite that broke up before it started is not four days of nothing:
+       the colony tries again the same evening or the next morning. */
+    state.nextRitualTick = schedule(now(), RETRY_DELAY);
     return true;
   };
 
@@ -1739,7 +1772,7 @@
 
     state.ritual = null;
     state.lastRitualTick = now();
-    state.nextRitualTick = now() + RITUAL_INTERVAL;
+    state.nextRitualTick = schedule(now(), RITUAL_INTERVAL);
     Ideology.autoAssignRoles(map);
   }
 
@@ -1833,9 +1866,13 @@
         finishRitual(G);
       }
     } else if (beatTick >= state.nextRitualTick) {
-      var pick = pickSpontaneousRitual(map);
-      if (pick) Ideology.startRitual(G, pick);
-      else state.nextRitualTick = beatTick + DAY;
+      /* Half the colony has to be on its feet, or the gathering is two
+         people standing in a field while everyone else sleeps. */
+      var awake = awakeColonists(map);
+      var total = map.colonists ? map.colonists().length : 0;
+      var pick = (awake >= 2 || (total === 1 && awake === 1)) ? pickSpontaneousRitual(map) : null;
+      if (pick && awake * 2 >= total) Ideology.startRitual(G, pick);
+      else state.nextRitualTick = schedule(beatTick, RETRY_DELAY);
     }
 
     /* A faith with nobody to lead it and nobody to speak for it stays
@@ -1857,6 +1894,16 @@
       var mine = p.id % RARE;
       if (((mine - phase) + RARE) % RARE < BEAT) pawnUpkeep(p, map, beatTick);
     }
+  }
+
+  function awakeColonists(map) {
+    var list = map.colonists ? map.colonists() : [];
+    var n = 0;
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      if (!p.dead && !p.asleep && !p.downed && !p.mentalState) n++;
+    }
+    return n;
   }
 
   function pawnUpkeep(pawn, map, tick) {
@@ -2199,7 +2246,7 @@
            also what advances one that is already running. */
         Ideology.tickRituals(G);
         var r = activeRitual();
-        if (!r || !isHuman(pawn) || pawn.drafted) return null;
+        if (!r || !isHuman(pawn) || pawn.drafted || pawn.asleep) return null;
         if (!Ideology.sameFaithAsColony(pawn)) return null;
         if (pawn.job && pawn.job.defId === 'ritualSpectate') return null;
 
@@ -2362,6 +2409,21 @@
   };
 
   Ideology.ritualLog = function () { ensureState(); return state.log.slice(); };
+
+  /* What the clock is doing, for the debug overlay and for anyone
+     wondering why the colony has not gathered in a while. */
+  Ideology.debugState = function () {
+    ensureState();
+    return {
+      colonyId: state.colonyId,
+      lastBeatTick: state.lastBeatTick,
+      nextRitualTick: state.nextRitualTick,
+      lastRitualTick: state.lastRitualTick,
+      ritual: state.ritual ? state.ritual.defId + '/' + state.ritual.phase : null,
+      attendees: state.ritual ? Object.keys(state.ritual.attendees).length : 0,
+      faiths: Object.keys(state.ideos).length
+    };
+  };
 
   root.Ideology = Ideology;
 })(this);

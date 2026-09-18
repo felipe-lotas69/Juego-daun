@@ -463,7 +463,14 @@
     range: 24, castTicks: 30, target: 'pawn', hostileOk: true, needsDest: true,
     description: 'Moves a body a short distance without moving it through anything between.',
     apply: function (caster, ctx) {
-      var dest = ctx.dest || nearestFreeCell(ctx.map, ctx.x, ctx.y, 6);
+      var map = ctx.map;
+      var dest = ctx.dest;
+      /* A destination that is a wall, or nothing at all, becomes the
+         nearest tile somebody can actually stand on. */
+      if (!dest || !map.inBounds(dest.x, dest.y) || !map.passable(dest.x, dest.y) ||
+          map.pawnsAt(dest.x, dest.y).length) {
+        dest = nearestFreeCell(map, dest ? dest.x : ctx.x, dest ? dest.y : ctx.y, 6);
+      }
       if (!dest) return false;
       return teleport(ctx.pawn, dest.x, dest.y);
     }
@@ -604,8 +611,11 @@
       'the downed one and carry them out.',
     apply: function (caster, ctx) {
       var psy = psyOf(ctx.pawn);
+      /* The counter is what lets the targeting chain bail on a property
+         read, so re-casting on somebody already hidden must not add a
+         second entry that nothing will ever take back off. */
+      if (!(psy.invisUntil > now())) invisibleCount++;
       psy.invisUntil = now() + 1200;
-      invisibleCount++;
       return true;
     }
   });
