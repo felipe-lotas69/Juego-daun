@@ -87,7 +87,7 @@
   }
 
   /* ============================================================
-     DIRT
+     DIRTY TRACKING
      ============================================================ */
 
   var Regions = {};
@@ -166,6 +166,11 @@
     rebuild(map, stateOf(map));
   };
 
+  /* A structural change that lands mid-tick is rebuilt there and then
+     rather than held over: the pawn who just mined the last rock of a
+     tunnel has to be able to path through it on this tick, and a stale
+     area grid would tell him the far side of the mountain is a place
+     that cannot be reached. */
   function rebuild(map, st) {
     st.outdoorTemp = outdoorTempGuess();
     labelAreas(map, st);
@@ -392,12 +397,12 @@
 
   function computeStats(map, st) {
     var terrains = Defs.all('terrain');
-    st.rooms.forEach(function (room) { statsFor(map, st, room, terrains); });
+    st.rooms.forEach(function (room) { statsFor(map, room, terrains); });
     st.statsDirty = false;
     st.statsPasses++;
   }
 
-  function statsFor(map, st, room, terrains) {
+  function statsFor(map, room, terrains) {
     var cells = room.cells, n = cells.length, w = map.w;
     var beauty = 0, clean = 0, blood = 0, wealth = 0;
     var roofed = 0, rock = 0;

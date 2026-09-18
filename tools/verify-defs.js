@@ -35,6 +35,7 @@ function fail(msg) { failures.push(msg); }
 
 const sb = load();
 const { Defs, U } = sb;
+Defs.finalize();
 
 /* 1. The registry: everything the contract promised exists. */
 Object.keys(REGISTRY).forEach(category => {
@@ -59,7 +60,12 @@ Defs.all('recipe').forEach(r => {
     }
   });
   if (!r.workbenches || !r.workbenches.length) fail(`recipe/${r.id} has no workbench`);
-  if (!r.products || !Object.keys(r.products).length) fail(`recipe/${r.id} produces nothing`);
+  /* A butchering recipe's products come from the corpse it consumes, so an
+     empty product table is correct there and only there. */
+  const dynamic = r.butcher || r.productsFromIngredient || r.dynamicProducts;
+  if (!dynamic && (!r.products || !Object.keys(r.products).length)) {
+    fail(`recipe/${r.id} produces nothing`);
+  }
   if (!r.workAmount) fail(`recipe/${r.id} has no workAmount`);
 });
 
@@ -89,10 +95,10 @@ Defs.all('thing').concat(Defs.all('recipe')).forEach(d => {
 Defs.all('thing').forEach(d => {
   if (!d.buildCategory) return;
   if (!d.workToBuild) fail(`thing/${d.id} is buildable with no workToBuild`);
+  /* An explicitly empty cost table means free on purpose (a sleeping spot,
+     a crafting spot, a grave); a missing one means somebody forgot. */
   const cost = d.buildCost || d.costList;
-  if (!d.stuffable && (!cost || !Object.keys(cost).length)) {
-    fail(`thing/${d.id} is buildable but costs nothing`);
-  }
+  if (!d.stuffable && !cost) fail(`thing/${d.id} is buildable with no cost table`);
 });
 
 /* 6. Bodies: capacities add up and every part has a parent that exists. */

@@ -38,12 +38,6 @@
      dozen candidates the twenty-fifth is never the answer. */
   var NEAREST = 24;
 
-  /* Growing-zone sow scans are recomputed at most this often. Work
-     givers ask several times a second across a colony of ten, and a
-     stale entry costs nothing: the sow job reserves the cell, so a
-     second pawn aiming at an already-sown cell is turned away there. */
-  var SOW_CACHE_TICKS = 24;
-
   /* ============================================================
      THING CATEGORIES
 
@@ -705,21 +699,38 @@
     return !!Zones.bestStorageFor(map, thing, null);
   };
 
-  /* Everything loose on the map that wants a stockpile. The haul work
-     giver narrows this with Path.closestReachable rather than asking
-     for a sorted answer here. */
+  /* Everything loose on the map that wants a stockpile, for the haul
+     work giver to narrow with Path.closestReachable. It walks the
+     byDef index of the storable defs rather than map.things, because
+     map.things is mostly grass and asking ten thousand plants whether
+     they need hauling is the kind of scan that eats a tick. */
   Zones.haulables = function (map, limit) {
     var out = [];
-    map.things.forEach(function (t) {
-      if (limit && out.length >= limit) return;
-      if (t.spawned && Zones.shouldHaul(map, t)) out.push(t);
-    });
+    for (var c = 0; c < CATEGORIES.length; c++) {
+      var defs = Zones.defsInCategory(CATEGORIES[c]);
+      for (var d = 0; d < defs.length; d++) {
+        var things = map.byDef(defs[d].id);
+        for (var k = 0; k < things.length; k++) {
+          if (!Zones.shouldHaul(map, things[k])) continue;
+          out.push(things[k]);
+          if (limit && out.length >= limit) return out;
+        }
+      }
+    }
     return out;
   };
 
   /* ============================================================
      GROWING ZONES
      ============================================================ */
+  /* The plant grid straight, rather than map.plantAt: the sow scan
+     walks every cell of every field and the bounds check is already
+     guaranteed by the cell having been claimed. */
+  function plantOn(map, i) {
+    var id = map.plantId[i];
+    return id ? (map.things.get(id) || null) : null;
+  }
+
   function sowableTerrain(map, x, y, plantDef) {
     var t = map.terrainAt(x, y);
     if (!t || t.passable === false || t.supportsPlants === false) return false;
@@ -739,46 +750,40 @@
     return sowableTerrain(map, x, y, def);
   }
 
+  /* Deliberately uncached. A plant appearing does not touch the zone
+     list, so any cache here would hand a second sower a cell that has
+     just been sown; and the scan is a walk of the farm's own cells off
+     the grids, which costs microseconds even for a field of hundreds. */
   Zones.growingCellsNeedingSow = function (map) {
-    /* No clock means no cache: a headless map ticked by a test would
-       otherwise hold the very first answer forever. */
-    var now = root.Game && typeof root.Game.tick === 'number' ? root.Game.tick : -1;
-    var cache = map._zoneSowCache;
-    if (now >= 0 && cache && cache.version === version(map) && now - cache.tick < SOW_CACHE_TICKS) {
-      return cache.list;
-    }
-
     var out = [], zones = Zones.growingZones(map), w = map.w;
     for (var z = 0; z < zones.length; z++) {
       var zone = zones[z];
       if (!zone.allowSow || !zone.plantDefId) continue;
       var list = cellList(zone);
       for (var k = 0; k < list.length; k++) {
-        var i = list[k], x = i % w, y = (i - x) / w;
-        var plant = map.plantAt(x, y);
+        var i = list[k];
+        if (map.buildingId[i]) continue;
+        var plant = plantOn(map, i);
         if (plant && plant.defId === zone.plantDefId) continue;
-        if (map.buildingAt(x, y)) continue;
-        if (!canSow(map, x, y, zone.plantDefId, !!plant)) continue;
+        var x = i % w;
+        if (!canSow(map, x, (i - x) / w, zone.plantDefId, !!plant)) continue;
         out.push(i);
       }
     }
-
-    if (now >= 0) map._zoneSowCache = { version: version(map), tick: now, list: out };
     return out;
   };
 
   /* Cells in a growing zone standing on the wrong plant. plants.js
      finds the ripe ones; these are the ones in the way. */
   Zones.growingCellsNeedingCut = function (map) {
-    var out = [], zones = Zones.growingZones(map), w = map.w;
+    var out = [], zones = Zones.growingZones(map);
     for (var z = 0; z < zones.length; z++) {
       var zone = zones[z];
       if (!zone.allowCut) continue;
       var list = cellList(zone);
       for (var k = 0; k < list.length; k++) {
-        var i = list[k], x = i % w;
-        var plant = map.plantAt(x, (i - x) / w);
-        if (plant && plant.defId !== zone.plantDefId) out.push(i);
+        var plant = plantOn(map, list[k]);
+        if (plant && plant.defId !== zone.plantDefId) out.push(list[k]);
       }
     }
     return out;

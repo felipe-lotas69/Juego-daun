@@ -91,6 +91,7 @@
   var countedDeaths = new Set();     /* pawn ids already charged to someone */
   var lastDiploTick = 0;
   var usedNames = new Set();
+  var usedSurnames = new Set();
   var _hostileCache = new Map();
 
   /* The colony is a faction too as far as everyone else is concerned, but
@@ -188,10 +189,16 @@
     var gender = TITLE_GENDER[title];
     if (!gender) gender = U.chance(0.5) ? 'male' : 'female';
     var bank = nameBank(kind.techLevel);
-    var first = U.pick(bank[gender] || bank.male);
-    var last = U.pick(bank.last);
-    /* Spacer surnames are already "of Somewhere", so they do not take a space twice. */
-    var name = last.indexOf('of ') === 0 ? first + ' ' + last : first + ' ' + last;
+    var name = '', last = '';
+    /* Two leaders on the same planet do not share a surname: it reads as a
+       mistake rather than as a coincidence. */
+    for (var attempt = 0; attempt < 16; attempt++) {
+      last = U.pick(bank.last);
+      name = U.pick(bank[gender] || bank.male) + ' ' + last;
+      if (!usedSurnames.has(last) && !usedNames.has(name)) break;
+    }
+    usedSurnames.add(last);
+    usedNames.add(name);
     return { title: title, name: name, gender: gender };
   }
 
@@ -209,18 +216,19 @@
   }
 
   /* Two clans of the same kind should not be the same swatch on the world
-     map, so every faction after the first of its kind gets its primary
-     colour nudged along a fixed step. */
+     map. The second is lightened and the third darkened rather than hue
+     shifted, so they still read as the same people. */
+  var COLOR_STEPS = [0, 46, -40, 84, -72];
+
   function shiftColor(hex, step) {
     if (!step) return hex;
     var m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
     if (!m) return hex;
     var v = parseInt(m[1], 16);
-    var r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
-    var d = step * 34;
-    r = U.clamp(r + d, 24, 236) | 0;
-    g = U.clamp(g - d * 0.5, 24, 236) | 0;
-    b = U.clamp(b + d * 0.7, 24, 236) | 0;
+    var d = COLOR_STEPS[step] === undefined ? step * 24 : COLOR_STEPS[step];
+    var r = U.clamp(((v >> 16) & 255) + d, 20, 240) | 0;
+    var g = U.clamp(((v >> 8) & 255) + d, 20, 240) | 0;
+    var b = U.clamp((v & 255) + d, 20, 240) | 0;
     return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
   }
 
@@ -414,6 +422,7 @@
     offers.length = 0;
     countedDeaths.clear();
     usedNames.clear();
+    usedSurnames.clear();
     lastDiploTick = 0;
     invalidate();
     return Factions;
@@ -504,6 +513,12 @@
 
   /* ---------- goodwill ---------- */
 
+  /* Goodwill is kept to three decimals rather than one. Diplomacy ticks
+     every 2500 ticks, so a day's drift arrives in twenty-four slivers of
+     about a hundredth each; rounding harder than this would round every
+     one of them away and no faction would ever drift at all. */
+  function tidy(v) { return Math.round(v * 1000) / 1000; }
+
   function record(f, delta, reason) {
     f.history.push({
       tick: now(),
@@ -524,7 +539,7 @@
     var factor = delta >= 0 ? (f.kind.goodwillGainFactor === undefined ? 1 : f.kind.goodwillGainFactor)
       : (f.kind.goodwillLossFactor === undefined ? 1 : f.kind.goodwillLossFactor);
     var before = f.goodwill;
-    f.goodwill = U.clamp(Math.round((before + delta * factor) * 10) / 10, -100, 100);
+    f.goodwill = U.clamp(tidy(before + delta * factor), -100, 100);
     var moved = f.goodwill - before;
     if (!moved) return f.goodwill;
 
@@ -843,7 +858,7 @@
       if (f.hostile && target > WAR_DRIFT_CEILING) target = WAR_DRIFT_CEILING;
       var before = f.goodwill;
       f.goodwill = U.approach(f.goodwill, target, rate * days * (f.hostile ? 0.5 : 1));
-      f.goodwill = Math.round(f.goodwill * 10) / 10;
+      f.goodwill = tidy(f.goodwill);
       if (f.goodwill !== before) { invalidate(); checkThresholds(f, 'time passing'); }
     }
   }
@@ -1109,8 +1124,10 @@
   };
 
   Factions.load = function (obj) {
+    /* A save with nothing in it is not a reason to throw away the
+       civilizations the running game already has. */
+    if (!obj || !obj.factions || !obj.factions.length) return false;
     Factions.reset();
-    if (!obj || !obj.factions) return false;
     lastDiploTick = obj.lastDiploTick || 0;
     (obj.names || []).forEach(function (n) { usedNames.add(n); });
     (obj.deaths || []).forEach(function (d) { countedDeaths.add(d); });

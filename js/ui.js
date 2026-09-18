@@ -1,0 +1,2156 @@
+/* ============================================================
+   ui.js - every panel, menu, tab, alert and letter, and the only
+   place in the project that touches localStorage.
+
+   Two rules shape this file.
+
+   First, UI.update() runs on every animation frame. Rebuilding a
+   panel's markup sixty times a second costs more than the whole
+   simulation does, so every panel keeps a signature of what it
+   last drew and rebuilds only when that signature changes. The
+   signature is built from exactly the values the panel prints,
+   which is why the data for a panel is gathered into a plain
+   object first and rendered second.
+
+   Second, the UI never writes simulation state by hand; it calls
+   the module APIs. Several of those modules load after this one
+   is written, so every call through a global is guarded and
+   degrades to a readable dash instead of throwing inside a frame.
+   ============================================================ */
+(function (root) {
+  'use strict';
+
+  var doc = root.document;
+  var UI = {};
+
+  var SAVE_KEY = 'rimdaun.save.v1';
+  var MESSAGE_MS = 15000;        /* how long a log line stays up, real time */
+  var ALERT_FRAMES = 90;         /* alerts are a scan of the map: keep it rare */
+  var INSPECT_FRAMES = 8;
+  var CHIP_FRAMES = 6;
+  var TAB_FRAMES = 20;
+
+  var WORK_COLORS = ['', 'p1', 'p2', 'p3', 'p4'];
+  var SCHEDULE_KINDS = ['anything', 'work', 'recreation', 'sleep'];
+  var ARCH_CATEGORIES = [
+    { id: 'orders', label: 'Orders', icon: 'cat-orders' },
+    { id: 'zones', label: 'Zones', icon: 'cat-zone' },
+    { id: 'structure', label: 'Structure', icon: 'cat-structure' },
+    { id: 'furniture', label: 'Furniture', icon: 'cat-furniture' },
+    { id: 'production', label: 'Production', icon: 'cat-production' },
+    { id: 'power', label: 'Power', icon: 'cat-power' },
+    { id: 'security', label: 'Security', icon: 'cat-security' },
+    { id: 'floor', label: 'Floors', icon: 'cat-floor' },
+    { id: 'misc', label: 'Misc', icon: 'cat-misc' }
+  ];
+  var DESIGNATIONS = [
+    ['mine', 'Mine', 'Mark rock and ore for a miner to dig out.'],
+    ['chop', 'Chop wood', 'Mark trees to be felled for wood.'],
+    ['harvest', 'Harvest', 'Mark ripe crops to be gathered.'],
+    ['cut', 'Cut plants', 'Clear grass and bushes out of the way.'],
+    ['deconstruct', 'Deconstruct', 'Take a building apart and recover some of it.'],
+    ['haulUrgent', 'Haul urgently', 'Push these items to the top of the hauling list.'],
+    ['hunt', 'Hunt', 'Send a hunter after an animal.'],
+    ['tame', 'Tame', 'Send an animal handler to befriend an animal.'],
+    ['slaughter', 'Slaughter', 'Butcher one of your own tame animals.']
+  ];
+  var OVERLAYS = ['none', 'zones', 'power', 'rooms', 'beauty', 'temperature'];
+
+  /* Panel elements, filled in by init. */
+  var P = {};
+
+  /* Per-panel caches. Each holds the signature of the last render. */
+  var sig = {
+    top: '', chipRoster: '', inspect: '', arch: '',
+    alerts: '', letters: '', tab: ''
+  };
+
+  var frame = 0;
+  var inspectTab = 'needs';
+  var archCategory = 'orders';
+  var openTabName = null;
+  var billsBuilding = null;
+  var chipMap = new Map();
+  var liveMessages = [];
+  var seenMessages = new WeakSet();
+  var alertCache = [];
+  var lastAutosaveDay = -1;
+  var floatCloser = null;
+  var paintingSchedule = null;
+  var lastSelected = null;
+  var started = false;
+
+  /* ------------------------------------------------------------------
+     DOM helpers
+     ------------------------------------------------------------------ */
+
+  function el(tag, cls, text) {
+    var e = doc.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    return e;
+  }
+
+  function clear(node) {
+    while (node && node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  function btn(label, cls, fn) {
+    var b = el('button', 'btn' + (cls ? ' ' + cls : ''), label);
+    b.type = 'button';
+    if (fn) b.addEventListener('click', fn);
+    return b;
+  }
+
+  function tip(node, text) {
+    if (text) node.setAttribute('data-tip', text);
+    return node;
+  }
+
+  /* Art hands back one cached canvas per icon key, and a DOM node can
+     only be in one place at a time, so every use gets its own copy. The
+     copy stays 16x16 and CSS scales it with pixelated rendering. */
+  function iconEl(key, px) {
+    var c = el('canvas', 'ico');
+    var src = root.Art && Art.icon ? Art.icon(key) : null;
+    c.width = src ? src.width : 16;
+    c.height = src ? src.height : 16;
+    if (px) { c.style.width = px + 'px'; c.style.height = px + 'px'; }
+    if (src) {
+      var g = c.getContext('2d');
+      g.imageSmoothingEnabled = false;
+      g.drawImage(src, 0, 0);
+    }
+    return c;
+  }
+
+  function spriteEl(defId, stuffId, px) {
+    var c = el('canvas', 'ico');
+    var src = root.Art && Art.ghost ? Art.ghost(defId, 0, stuffId || null) : null;
+    c.width = src ? src.width : 16;
+    c.height = src ? src.height : 16;
+    if (px) {
+      /* A two-tile bed is a 16x32 sprite; scaling both sides to px would
+         make it a square nothing in the game looks like. */
+      var big = Math.max(c.width, c.height) || 16;
+      c.style.width = Math.round(px * c.width / big) + 'px';
+      c.style.height = Math.round(px * c.height / big) + 'px';
+    }
+    if (src) {
+      var g = c.getContext('2d');
+      g.imageSmoothingEnabled = false;
+      g.drawImage(src, 0, 0);
+    }
+    return c;
+  }
+
+  function barEl(cls, value, label) {
+    var wrap = el('div', 'nbar' + (cls ? ' ' + cls : ''));
+    if (label !== undefined) wrap.appendChild(el('span', 'nbar-label', label));
+    var track = el('div', 'nbar-track');
+    var fill = el('i', 'nbar-fill');
+    fill.style.width = Math.round(U.clamp01(value) * 100) + '%';
+    track.appendChild(fill);
+    wrap.appendChild(track);
+    return wrap;
+  }
+
+  /* ------------------------------------------------------------------
+     Reading the simulation safely
+     ------------------------------------------------------------------ */
+
+  function isPawn(x) { return !!x && x.needs !== undefined && x.health !== undefined; }
+  function isThing(x) { return !!x && x.defId !== undefined && x.def !== undefined; }
+  function isZone(x) { return !!x && x.cells instanceof Set && x.kind !== undefined; }
+
+  function nameOf(p) {
+    if (!p || !p.name) return 'someone';
+    return p.name.nick || p.name.first || 'someone';
+  }
+  function fullName(p) {
+    if (!p || !p.name) return 'someone';
+    var first = p.name.first || '', nick = p.name.nick || '', last = p.name.last || '';
+    if (nick && first && nick !== first) return first + ' "' + nick + '" ' + last;
+    return ((nick || first) + ' ' + last).trim() || 'someone';
+  }
+
+  function pawnById(id) {
+    var list = Game.map ? Game.map.pawns : null;
+    if (!list || !id) return null;
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+
+  function moodOf(p) {
+    if (root.Needs && Needs.mood) return U.clamp01(Needs.mood(p));
+    return typeof p.mood === 'number' ? U.clamp01(p.mood) : 0.5;
+  }
+  function moodLevel(p) {
+    return U.clamp(Math.floor(moodOf(p) * 5), 0, 4);
+  }
+  function healthFraction(p) {
+    if (!p.health || !p.health.parts || !p.health.parts.length) return 1;
+    var hp = 0, max = 0;
+    for (var i = 0; i < p.health.parts.length; i++) {
+      var part = p.health.parts[i];
+      max += part.maxHp;
+      hp += part.missing ? 0 : part.hp;
+    }
+    return max > 0 ? U.clamp01(hp / max) : 1;
+  }
+  function healthText(p) {
+    return root.Health && Health.summary ? Health.summary(p) : 'unknown';
+  }
+  function jobReport(p) {
+    if (p.dead) return 'Dead';
+    if (p.mentalState) {
+      var d = p.mentalState.def;
+      return U.cap((d && d.label) || p.mentalState.id || 'having a breakdown');
+    }
+    if (root.Jobs && Jobs.report) {
+      var r = Jobs.report(p);
+      if (r) return r;
+    }
+    return p.drafted ? 'Standing by' : 'Idle';
+  }
+  function backstoryLine(p) {
+    if (p.isAnimal) {
+      var k = p.kind;
+      return (k && k.label ? U.cap(k.label) : 'Animal') + (p.tame ? ', tame' : ', wild');
+    }
+    var bs = p.backstories || {};
+    var parts = [];
+    ['childhood', 'adulthood'].forEach(function (slot) {
+      var id = bs[slot];
+      if (!id) return;
+      var d = Defs.maybe('backstory', typeof id === 'string' ? id : id.id);
+      if (d) parts.push(d.label || d.id);
+    });
+    if (!parts.length) return (p.gender || '') + (p.ageYears ? ', ' + Math.floor(p.ageYears) : '');
+    return parts.join(' / ') + (p.ageYears ? ', age ' + Math.floor(p.ageYears) : '');
+  }
+  function traitDefs(p) {
+    var out = [];
+    (p.traits || []).forEach(function (t) {
+      var d = Defs.maybe('trait', (t && t.id) || t);
+      if (d) out.push(d);
+    });
+    return out;
+  }
+  function disabledWork(p) {
+    var out = {};
+    var bs = p.backstories || {};
+    ['childhood', 'adulthood'].forEach(function (slot) {
+      var id = bs[slot];
+      var d = id ? Defs.maybe('backstory', typeof id === 'string' ? id : id.id) : null;
+      if (d && d.disabledWork) d.disabledWork.forEach(function (w) { out[w] = true; });
+    });
+    traitDefs(p).forEach(function (d) {
+      if (d.disabledWork) d.disabledWork.forEach(function (w) { out[w] = true; });
+    });
+    return out;
+  }
+  function workTypes() { return Defs.all('workType') || []; }
+  function skillDefs() { return Defs.all('skill') || []; }
+
+  function researchProgress() {
+    var R = root.Research;
+    if (!R) return 0;
+    var cur = R.current ? R.current() : null;
+    if (!cur) return 0;
+    if (typeof R.progressOf === 'function') return R.progressOf(cur.id) || 0;
+    if (typeof R.progress === 'number') return R.progress;
+    if (R.progress && typeof R.progress === 'object') return R.progress[cur.id] || 0;
+    return 0;
+  }
+  function researchDone(id) {
+    var R = root.Research;
+    return !id || (R && R.isDone ? !!R.isDone(id) : true);
+  }
+
+  function forceJob(pawn, defId, targetA, targetB) {
+    if (!pawn || !root.Jobs || !root.T) return false;
+    var job = Jobs.make(defId, targetA || null, targetB || null, { playerForced: true });
+    if (!job) return false;
+    Jobs.start(pawn, job);
+    return true;
+  }
+
+  function lookAt(x, y) {
+    if (typeof x !== 'number') return;
+    if (root.Render) { Render.centerOn(x, y); Render.flashCell(x, y); }
+  }
+
+  /* ------------------------------------------------------------------
+     Shared tool state
+     ------------------------------------------------------------------ */
+
+  UI.tool = {
+    kind: 'select', defId: null, rot: 0, stuffId: null,
+    designation: null, zoneKind: null, zone: null
+  };
+  UI.overlay = 'none';
+
+  UI.setTool = function (t) {
+    t = t || {};
+    UI.tool = {
+      kind: t.kind || 'select',
+      defId: t.defId || null,
+      rot: t.rot | 0,
+      stuffId: t.stuffId || null,
+      designation: t.designation || null,
+      zoneKind: t.zoneKind || null,
+      zone: t.zone || null
+    };
+    sig.arch = '';
+    return UI.tool;
+  };
+
+  UI.clearTool = function () {
+    return UI.setTool({ kind: 'select' });
+  };
+
+  UI.rotateTool = function (delta) {
+    if (UI.tool.kind !== 'build') return;
+    UI.tool.rot = ((UI.tool.rot + (delta < 0 ? 3 : 1)) & 3);
+  };
+
+  UI.setOverlay = function (name) {
+    UI.overlay = OVERLAYS.indexOf(name) >= 0 ? name : 'none';
+    sig.top = '';
+  };
+
+  /* ------------------------------------------------------------------
+     Top bar
+     ------------------------------------------------------------------ */
+
+  var topEls = {};
+
+  function buildTopbar() {
+    var bar = P.topbar;
+    clear(bar);
+
+    var left = el('div', 'tb-group');
+    topEls.date = el('div', 'tb-stat');
+    topEls.clock = el('div', 'tb-stat');
+    topEls.temp = el('div', 'tb-stat');
+    topEls.wealth = el('div', 'tb-stat');
+    left.appendChild(tip(topEls.date, 'Day, season and year. Seasons are 15 days long.'));
+    left.appendChild(tip(topEls.clock, 'Colony time. Colonists wake at 06:00 and sleep at 22:00 by default.'));
+    left.appendChild(tip(topEls.temp, 'Outdoor temperature. Crops stop growing below 0 C.'));
+    left.appendChild(tip(topEls.wealth, 'Colony wealth in silver. The storyteller sizes raids from it.'));
+    bar.appendChild(left);
+
+    var mid = el('div', 'tb-group tb-speed');
+    topEls.speed = [];
+    ['Pause', '1x', '2x', '3x', '6x'].forEach(function (label, i) {
+      var b = btn('', 'speed-btn', function () { Game.setSpeed(i); sig.top = ''; });
+      b.appendChild(iconEl('speed' + i, 16));
+      tip(b, label + (i === 0 ? ' (space)' : ' (key ' + i + ')'));
+      mid.appendChild(b);
+      topEls.speed.push(b);
+    });
+    bar.appendChild(mid);
+
+    var right = el('div', 'tb-group tb-right');
+    [['work', 'Work', 'tab-work'], ['research', 'Research', 'tab-research'],
+     ['colonists', 'Colonists', 'tab-colonists'], ['schedule', 'Schedule', 'tab-schedule']
+    ].forEach(function (t) {
+      var b = btn(t[1], 'tab-btn', function () { UI.openTab(t[0]); });
+      b.insertBefore(iconEl(t[2], 14), b.firstChild);
+      right.appendChild(b);
+    });
+    if (root.WorldView) {
+      right.appendChild(btn('World', 'tab-btn', function () {
+        if (WorldView.open) WorldView.open();
+      }));
+    }
+    var ov = btn('Overlay', 'tab-btn', function () {
+      var i = OVERLAYS.indexOf(UI.overlay);
+      UI.setOverlay(OVERLAYS[(i + 1) % OVERLAYS.length]);
+    });
+    topEls.overlay = ov;
+    tip(ov, 'Cycle the map overlay: zones, power, rooms, beauty, temperature.');
+    right.appendChild(ov);
+    right.appendChild(btn('Save', 'tab-btn', function () {
+      UI.toast(UI.save() ? 'Colony saved.' : 'Could not save - storage is unavailable.');
+    }));
+    right.appendChild(btn('Menu', 'tab-btn', function () { UI.showMenu(); }));
+    bar.appendChild(right);
+  }
+
+  function timeName(h) {
+    if (h < 4) return 'night';
+    if (h < 7) return 'dawn';
+    if (h < 12) return 'morning';
+    if (h < 17) return 'afternoon';
+    if (h < 21) return 'evening';
+    return 'night';
+  }
+
+  function updateTopbar() {
+    var day = Game.day(), season = Game.season();
+    var clock = Game.timeString ? Game.timeString() : '';
+    var temp = Math.round(Game.outdoorTemp());
+    var wealth = Math.round(Game.wealth || 0);
+    var s = day + '|' + season + '|' + clock + '|' + temp + '|' + wealth + '|' +
+      Game.speed + '|' + UI.overlay;
+    if (s === sig.top) return;
+    sig.top = s;
+
+    var year = Math.floor(day / 60) + 1;
+    topEls.date.textContent = 'Day ' + (day + 1) + '  ' + U.cap(season) + '  Y' + year;
+    topEls.clock.textContent = clock + '  ' + timeName(Game.hour());
+    topEls.temp.textContent = temp + '\u00b0C';
+    topEls.temp.className = 'tb-stat' + (temp <= 0 ? ' cold' : (temp >= 32 ? ' hot' : ''));
+    topEls.wealth.textContent = wealth.toLocaleString ? wealth.toLocaleString('en') + ' silver'
+      : wealth + ' silver';
+    for (var i = 0; i < topEls.speed.length; i++) {
+      topEls.speed[i].classList.toggle('on', Game.speed === i);
+    }
+    topEls.overlay.classList.toggle('on', UI.overlay !== 'none');
+    topEls.overlay.textContent = UI.overlay === 'none' ? 'Overlay' : U.cap(UI.overlay);
+  }
+
+  /* ------------------------------------------------------------------
+     Colonist bar
+     ------------------------------------------------------------------ */
+
+  function chipClick(pawn) {
+    var already = Game.selection.length === 1 && Game.selection[0] === pawn;
+    if (already) lookAt(pawn.x, pawn.y);
+    else UI.selectThing(pawn);
+  }
+
+  function buildChip(pawn) {
+    var rootEl = el('div', 'chip');
+    var face = iconEl('mood-' + moodLevel(pawn), 26);
+    face.classList.add('chip-face');
+    var body = el('div', 'chip-body');
+    var name = el('div', 'chip-name', nameOf(pawn));
+    var job = el('div', 'chip-job', '');
+    var bars = el('div', 'chip-bars');
+    var hp = el('i', 'hbar'), mood = el('i', 'mbar');
+    var hpFill = el('b', ''), moodFill = el('b', '');
+    hp.appendChild(hpFill); mood.appendChild(moodFill);
+    bars.appendChild(hp); bars.appendChild(mood);
+    body.appendChild(name); body.appendChild(job); body.appendChild(bars);
+    rootEl.appendChild(face); rootEl.appendChild(body);
+    rootEl.addEventListener('click', function () { chipClick(pawn); });
+    P.colonistBar.appendChild(rootEl);
+    return {
+      root: rootEl, face: face, name: name, job: job,
+      hpFill: hpFill, moodFill: moodFill, last: '', level: -1
+    };
+  }
+
+  function syncColonistBar() {
+    var list = Game.colonists ? Game.colonists() : [];
+    var roster = list.length + '|';
+    for (var i = 0; i < list.length; i++) roster += list[i].id + ',';
+    if (roster !== sig.chipRoster) {
+      sig.chipRoster = roster;
+      clear(P.colonistBar);
+      chipMap.clear();
+      for (i = 0; i < list.length; i++) chipMap.set(list[i].id, buildChip(list[i]));
+    }
+
+    for (i = 0; i < list.length; i++) {
+      var pawn = list[i], chip = chipMap.get(pawn.id);
+      if (!chip) continue;
+      var level = moodLevel(pawn);
+      var hp = healthFraction(pawn);
+      var state = pawn.dead ? 'dead' : (pawn.downed || (pawn.health && pawn.health.downed) ? 'downed'
+        : (pawn.mentalState ? 'broken' : (pawn.drafted ? 'drafted' : '')));
+      var selected = Game.selection.indexOf(pawn) >= 0;
+      var report = jobReport(pawn);
+      var s = level + '|' + Math.round(hp * 20) + '|' + state + '|' + selected + '|' + report;
+      if (s === chip.last) continue;
+      chip.last = s;
+      if (level !== chip.level) {
+        chip.level = level;
+        var src = root.Art ? Art.icon('mood-' + level) : null;
+        if (src) {
+          var g = chip.face.getContext('2d');
+          g.clearRect(0, 0, chip.face.width, chip.face.height);
+          g.imageSmoothingEnabled = false;
+          g.drawImage(src, 0, 0);
+        }
+      }
+      chip.job.textContent = report;
+      chip.hpFill.style.width = Math.round(hp * 100) + '%';
+      chip.hpFill.className = hp < 0.4 ? 'low' : (hp < 0.75 ? 'mid' : '');
+      chip.moodFill.style.width = Math.round(moodOf(pawn) * 100) + '%';
+      chip.root.className = 'chip' + (state ? ' ' + state : '') + (selected ? ' sel' : '');
+    }
+  }
+
+  /* ------------------------------------------------------------------
+     Inspect pane
+     ------------------------------------------------------------------ */
+
+  function row(t, l, s, v, cls, thing) {
+    return { t: t, l: l, s: s, v: v, cls: cls, thing: thing || null };
+  }
+
+  function needRows(p) {
+    var rows = [], n = p.needs || {}, mood = moodOf(p);
+    rows.push(row('bar', 'Mood', Math.round(mood * 100) + '%', mood,
+      mood < 0.25 ? 'bad' : (mood < 0.4 ? 'warn' : 'good')));
+    ['food', 'rest', 'joy', 'comfort', 'outdoors'].forEach(function (k) {
+      if (typeof n[k] !== 'number') return;
+      rows.push(row('bar', U.cap(k), Math.round(n[k] * 100) + '%', n[k],
+        n[k] < 0.2 ? 'bad' : (n[k] < 0.35 ? 'warn' : '')));
+    });
+    var th = p.breakThresholds;
+    if (th) {
+      rows.push(row('line', null, 'Breaks at ' + Math.round(th.minor * 100) + '% / ' +
+        Math.round(th.major * 100) + '% / ' + Math.round(th.extreme * 100) + '%', 0, 'dim'));
+    }
+    rows.push(row('head', null, 'Thoughts'));
+    var bd = root.Needs && Needs.breakdown ? Needs.breakdown(p) : [];
+    if (!bd.length) rows.push(row('line', null, 'Nothing on their mind.', 0, 'dim'));
+    /* Needs.breakdown hands back the baseline as an absolute mood and
+       every other entry as a signed offset, so they print differently. */
+    for (var i = 0; i < bd.length && i < 14; i++) {
+      var v = bd[i].value;
+      rows.push(row('kv', bd[i].label,
+        bd[i].base ? String(Math.round(v * 100)) : U.signed(v * 100, 0), 0,
+        bd[i].base ? 'dim' : (v < 0 ? 'bad' : 'good')));
+    }
+    return rows;
+  }
+
+  function healthRows(p) {
+    var rows = [];
+    rows.push(row('kv', 'Condition', healthText(p), 0,
+      p.health && p.health.downed ? 'bad' : ''));
+    if (p.health) {
+      var bleed = root.Health && Health.bleedRate ? Health.bleedRate(p) : 0;
+      rows.push(row('kv', 'Blood loss', Math.round((p.health.bloodLoss || 0) * 100) + '%', 0,
+        p.health.bloodLoss > 0.3 ? 'bad' : ''));
+      rows.push(row('kv', 'Pain', Math.round((p.health.pain || 0) * 100) + '%', 0,
+        p.health.pain > 0.5 ? 'warn' : ''));
+      if (bleed > 0.001) {
+        rows.push(row('kv', 'Bleeding', U.fmt(bleed, 2) + ' /day', 0, 'bad'));
+      }
+      var caps = p.health.capacities || {};
+      var capKeys = Object.keys(caps);
+      if (capKeys.length) {
+        rows.push(row('head', null, 'Capacities'));
+        for (var c = 0; c < capKeys.length; c++) {
+          var cv = caps[capKeys[c]];
+          if (cv >= 0.999) continue;
+          rows.push(row('kv', U.cap(capKeys[c]), Math.round(cv * 100) + '%', 0,
+            cv < 0.5 ? 'bad' : 'warn'));
+        }
+      }
+    }
+    rows.push(row('head', null, 'Body'));
+    var report = root.Health && Health.partReport ? Health.partReport(p) : [];
+    if (!report.length) rows.push(row('line', null, 'No injuries.', 0, 'dim'));
+    for (var i = 0; i < report.length; i++) {
+      var r = report[i];
+      if (r.missing) { rows.push(row('kv', U.cap(r.part), 'missing', 0, 'bad')); continue; }
+      var txt = r.injuries.map(function (inj) {
+        return inj.label + ' ' + inj.amount + (inj.bleeding ? ' (bleeding)'
+          : (inj.tended ? ' (tended)' : '')) + (inj.permanent ? ' (permanent)' : '');
+      }).join(', ');
+      var bleeding = r.injuries.some(function (inj) { return inj.bleeding; });
+      rows.push(row('kv', U.cap(r.part), txt, 0, bleeding ? 'bad' : 'warn'));
+    }
+    return rows;
+  }
+
+  function gearRows(p) {
+    var rows = [];
+    rows.push(row('head', null, 'Equipment'));
+    if (p.equipment) {
+      rows.push(row('act', p.equipment.label(), 'Drop', 0, '', p.equipment));
+    } else {
+      rows.push(row('line', null, 'Unarmed.', 0, 'dim'));
+    }
+    rows.push(row('head', null, 'Apparel'));
+    var ap = p.apparel || [];
+    if (!ap.length) rows.push(row('line', null, 'Wearing nothing.', 0, 'dim'));
+    for (var i = 0; i < ap.length; i++) rows.push(row('act', ap[i].label(), 'Drop', 0, '', ap[i]));
+    rows.push(row('head', null, 'Inventory'));
+    var inv = p.inventory || [];
+    if (p.carried) rows.push(row('act', 'carrying ' + p.carried.label(), 'Drop', 0, '', p.carried));
+    if (!inv.length && !p.carried) rows.push(row('line', null, 'Empty.', 0, 'dim'));
+    for (i = 0; i < inv.length; i++) rows.push(row('act', inv[i].label(), 'Drop', 0, '', inv[i]));
+    return rows;
+  }
+
+  function socialRows(p) {
+    var rows = [];
+    rows.push(row('head', null, 'Traits'));
+    var traits = traitDefs(p);
+    if (!traits.length) rows.push(row('line', null, 'Nothing remarkable.', 0, 'dim'));
+    traits.forEach(function (t) {
+      rows.push(row('kv', U.cap(t.label || t.id), t.description || '', 0, 'dim'));
+    });
+    rows.push(row('head', null, 'Relations'));
+    var rel = p.relations || [];
+    if (!rel.length) {
+      rows.push(row('line', null, 'No close ties yet. Colonists build them by talking.', 0, 'dim'));
+    }
+    for (var i = 0; i < rel.length && i < 12; i++) {
+      var r = rel[i];
+      var other = pawnById(r.otherId);
+      rows.push(row('kv', other ? nameOf(other) : 'someone',
+        (r.kind || 'known') + ' ' + (r.opinion !== undefined ? U.signed(r.opinion, 0) : ''), 0,
+        r.opinion < 0 ? 'bad' : 'good'));
+    }
+    return rows;
+  }
+
+  function characterRows(p) {
+    var rows = [];
+    rows.push(row('line', null, backstoryLine(p), 0, 'dim'));
+    rows.push(row('head', null, 'Skills'));
+    var defs = skillDefs();
+    for (var i = 0; i < defs.length; i++) {
+      var sk = p.skills && p.skills[defs[i].id];
+      if (!sk) continue;
+      rows.push(row('skill', defs[i].label || defs[i].id, String(sk.level), sk.passion | 0,
+        sk.level >= 10 ? 'good' : (sk.level <= 2 ? 'dim' : '')));
+    }
+    var dis = disabledWork(p), disList = Object.keys(dis);
+    if (disList.length) {
+      rows.push(row('head', null, 'Incapable of'));
+      rows.push(row('line', null, disList.map(function (w) {
+        var d = Defs.maybe('workType', w);
+        return (d && d.label) || w;
+      }).join(', '), 0, 'bad'));
+    }
+    return rows;
+  }
+
+  var PAWN_TABS = [
+    ['needs', 'Needs', needRows], ['health', 'Health', healthRows],
+    ['gear', 'Gear', gearRows], ['social', 'Social', socialRows],
+    ['character', 'Character', characterRows]
+  ];
+
+  function pawnData(p) {
+    var tabFn = needRows;
+    for (var i = 0; i < PAWN_TABS.length; i++) {
+      if (PAWN_TABS[i][0] === inspectTab) tabFn = PAWN_TABS[i][2];
+    }
+    var d = {
+      kind: 'pawn', pawn: p, title: fullName(p), sub: backstoryLine(p),
+      job: jobReport(p), rows: tabFn(p), tab: inspectTab
+    };
+    d.sig = 'p' + p.id + '|' + d.tab + '|' + d.title + '|' + d.sub + '|' + d.job + '|' +
+      (p.drafted ? 'D' : '') + rowsSig(d.rows);
+    return d;
+  }
+
+  function rowsSig(rows) {
+    var out = '';
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      out += '#' + r.t + '~' + (r.l || '') + '~' + (r.s || '') + '~' +
+        (r.v === undefined ? '' : Math.round(r.v * 100)) + '~' + (r.cls || '');
+    }
+    return out;
+  }
+
+  function thingData(t) {
+    var rows = [], def = t.def, map = Game.map;
+    var maxHp = root.Construct && Construct.maxHp ? Construct.maxHp(t) : (def.hp || 100);
+    rows.push(row('bar', 'Hit points', t.hp + ' / ' + maxHp, maxHp ? t.hp / maxHp : 1,
+      t.hp < maxHp * 0.4 ? 'bad' : ''));
+    if (def.description) rows.push(row('line', null, def.description, 0, 'dim'));
+
+    if (t.isItem && t.isItem()) {
+      rows.push(row('kv', 'Stack', String(t.stack), 0));
+      rows.push(row('kv', 'Value', Math.round((def.marketValue || 0) * t.stack) + ' silver', 0));
+      rows.push(row('kv', 'Mass', U.fmt((def.mass || 0) * t.stack, 1) + ' kg', 0));
+      if (def.nutrition) rows.push(row('kv', 'Nutrition', U.fmt(def.nutrition * t.stack, 2), 0));
+      if (def.rotDays && t.rotProgress > 0) {
+        rows.push(row('bar', 'Freshness', Math.round((1 - t.rotProgress) * 100) + '%',
+          1 - t.rotProgress, t.rotProgress > 0.7 ? 'bad' : ''));
+      }
+    } else {
+      if (t.stuff) rows.push(row('kv', 'Made of', t.stuff, 0));
+      if (def.building && (def.building.powerConsumed || def.building.powerProduced)) {
+        var powered = root.Power && Power.isPowered ? Power.isPowered(t) : !!t.powered;
+        rows.push(row('kv', 'Power', (def.building.powerProduced
+          ? '+' + def.building.powerProduced : '-' + def.building.powerConsumed) + ' W ' +
+          (powered ? '(connected)' : '(no power)'), 0, powered ? 'good' : 'bad'));
+        var net = root.Power && Power.netOf ? Power.netOf(map, t) : null;
+        if (net) {
+          rows.push(row('kv', 'Net', Math.round(net.production) + ' W made, ' +
+            Math.round(net.consumption) + ' W used, ' + Math.round(net.stored) + ' Wd stored', 0, 'dim'));
+        }
+      }
+      var room = root.Regions && Regions.roomAt ? Regions.roomAt(map, t.x, t.y) : null;
+      if (room) {
+        rows.push(row('kv', 'Room', (room.outdoor ? 'outdoors' : room.role || 'room') + ', ' +
+          Math.round(room.temperature) + '\u00b0C, ' + room.size + ' tiles', 0));
+      }
+      if (t.isPlant && t.isPlant()) {
+        rows.push(row('bar', 'Growth', Math.round((t.growth || 0) * 100) + '%', t.growth || 0,
+          t.growth >= 1 ? 'good' : ''));
+        if (t.blighted) rows.push(row('kv', 'Blight', 'this crop is dying', 0, 'bad'));
+      }
+      if (t.isFrame) {
+        var need = root.Construct && Construct.materialsNeeded ? Construct.materialsNeeded(t) : null;
+        var still = [];
+        if (need) for (var k in need) if (need[k] > 0) still.push(need[k] + ' ' + k);
+        rows.push(row('kv', 'Still needs', still.length ? still.join(', ') : 'nothing - just work', 0,
+          still.length ? 'warn' : 'good'));
+      }
+      if (t.bills && t.bills.length) {
+        rows.push(row('kv', 'Bills', t.bills.length + ' queued', 0));
+      }
+    }
+    var d = { kind: 'thing', thing: t, title: U.cap(t.label()), sub: def.label || def.id, rows: rows };
+    d.sig = 't' + t.id + '|' + d.title + rowsSig(rows);
+    return d;
+  }
+
+  function zoneData(z) {
+    var rows = [];
+    rows.push(row('kv', 'Kind', z.kind === 'growing' ? 'growing zone' : 'stockpile', 0));
+    rows.push(row('kv', 'Size', z.cells.size + ' tiles', 0));
+    if (z.kind === 'stockpile') {
+      rows.push(row('kv', 'Priority', String(z.priority), 0));
+      rows.push(row('line', null, 'Haulers fill the highest priority stockpile that accepts a thing.', 0, 'dim'));
+    } else {
+      var pd = z.plantDefId ? Defs.maybe('thing', z.plantDefId) : null;
+      rows.push(row('kv', 'Growing', pd ? pd.label : 'nothing', 0));
+      rows.push(row('kv', 'Sow', z.allowSow ? 'yes' : 'no', 0));
+      rows.push(row('kv', 'Harvest', z.allowCut === false ? 'no' : 'yes', 0));
+    }
+    var d = { kind: 'zone', zone: z, title: z.label || U.cap(z.kind) + ' ' + z.id, sub: '', rows: rows };
+    d.sig = 'z' + z.id + rowsSig(rows);
+    return d;
+  }
+
+  function renderRows(body, rows, data) {
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i], node;
+      if (r.t === 'head') {
+        node = el('div', 'head', r.s);
+      } else if (r.t === 'line') {
+        node = el('div', 'line' + (r.cls ? ' ' + r.cls : ''), r.s);
+      } else if (r.t === 'bar') {
+        node = barEl(r.cls, r.v, r.l);
+        node.appendChild(el('span', 'nbar-val', r.s));
+      } else if (r.t === 'skill') {
+        node = el('div', 'kv');
+        node.appendChild(el('span', 'kv-l', r.l));
+        var val = el('span', 'kv-v' + (r.cls ? ' ' + r.cls : ''), r.s);
+        if (r.v > 0) val.appendChild(el('i', 'passion p' + r.v));
+        node.appendChild(val);
+      } else if (r.t === 'act') {
+        node = el('div', 'kv');
+        node.appendChild(el('span', 'kv-l', r.l));
+        node.appendChild(dropButton(data, r));
+      } else {
+        node = el('div', 'kv');
+        node.appendChild(el('span', 'kv-l', r.l));
+        node.appendChild(el('span', 'kv-v' + (r.cls ? ' ' + r.cls : ''), r.s));
+      }
+      body.appendChild(node);
+    }
+  }
+
+  function dropButton(data, r) {
+    return btn(r.s, 'mini', function () {
+      if (!forceJob(data.pawn, 'dropThing', root.T && r.thing ? T.thing(r.thing) : null)) {
+        UI.toast('That cannot be dropped right now.');
+      }
+      sig.inspect = '';
+    });
+  }
+
+  function buildInspect() {
+    var pane = P.inspect;
+    clear(pane);
+    var head = el('div', 'ins-head');
+    head.appendChild(el('div', 'ins-title', ''));
+    head.appendChild(el('div', 'ins-sub', ''));
+    head.appendChild(el('div', 'ins-job', ''));
+    pane.appendChild(head);
+    pane.appendChild(el('div', 'ins-tabs'));
+    pane.appendChild(el('div', 'ins-body'));
+    pane.appendChild(el('div', 'ins-foot'));
+  }
+
+  function renderInspect(data) {
+    var pane = P.inspect;
+    if (!data) { pane.classList.add('hidden'); return; }
+    pane.classList.remove('hidden');
+    var head = pane.firstChild;
+    head.childNodes[0].textContent = data.title;
+    head.childNodes[1].textContent = data.sub || '';
+    head.childNodes[2].textContent = data.job || '';
+
+    var tabs = pane.childNodes[1];
+    clear(tabs);
+    if (data.kind === 'pawn' && !data.pawn.isAnimal) {
+      PAWN_TABS.forEach(function (t) {
+        var b = btn(t[1], 'ins-tab' + (inspectTab === t[0] ? ' on' : ''), function () {
+          inspectTab = t[0];
+          sig.inspect = '';
+        });
+        tabs.appendChild(b);
+      });
+    }
+
+    var body = pane.childNodes[2];
+    clear(body);
+    renderRows(body, data.rows, data);
+
+    var foot = pane.childNodes[3];
+    clear(foot);
+    if (data.kind === 'pawn') buildPawnButtons(foot, data.pawn);
+    else if (data.kind === 'thing') buildThingButtons(foot, data.thing);
+    else if (data.kind === 'zone') buildZoneButtons(foot, data.zone);
+  }
+
+  function buildPawnButtons(foot, p) {
+    if (p.faction === 'player' && !p.isAnimal) {
+      foot.appendChild(btn(p.drafted ? 'Undraft' : 'Draft', p.drafted ? 'on' : '', function () {
+        p.drafted = !p.drafted;
+        if (!p.drafted) p.draftTarget = null;
+        if (root.Jobs && Jobs.end) Jobs.end(p, 'interrupted');
+        sig.inspect = '';
+      }));
+      foot.appendChild(tip(btn('Prioritise', '', function () {
+        UI.setTool({ kind: 'order' });
+        UI.toast('Click something for ' + nameOf(p) + ' to do right now.');
+      }), 'Pick a job for this colonist to do before anything else.'));
+      foot.appendChild(btn('Rename', '', function () { renameDialog(p); }));
+    }
+    foot.appendChild(btn('Go to', '', function () { lookAt(p.x, p.y); }));
+  }
+
+  function buildThingButtons(foot, t) {
+    var map = Game.map;
+    var recipes = t.def.recipes && t.def.recipes.length;
+    if (recipes && !t.isGhost()) {
+      foot.appendChild(btn('Bills', '', function () { UI.openBills(t); }));
+    }
+    if (t.isBuilding && t.isBuilding() && !t.def.natural) {
+      foot.appendChild(btn('Deconstruct', 'bad', function () {
+        if (root.Construct && Construct.designateDeconstruct) Construct.designateDeconstruct(map, t.x, t.y);
+        else map.designate(t.x, t.y, 'deconstruct');
+        UI.toast('Marked for deconstruction.');
+      }));
+    }
+    if (t.isGhost()) {
+      foot.appendChild(btn('Cancel plan', 'bad', function () {
+        if (root.Construct && Construct.cancelAt) Construct.cancelAt(map, t.x, t.y);
+        Game.deselectAll();
+        sig.inspect = '';
+      }));
+    }
+    /* Only a blueprint can still change material: once a frame has taken
+       delivery of wood, swapping it to steel would strand the wood. */
+    if (t.isBlueprint && root.Construct && Construct.stuffOptions) {
+      var opts = Construct.stuffOptions(t.buildDefId);
+      opts.forEach(function (s) {
+        var b = btn(s, t.stuff === s ? 'on mini' : 'mini', function () {
+          t.stuff = s;
+          sig.inspect = '';
+        });
+        foot.appendChild(b);
+      });
+    }
+    foot.appendChild(btn('Go to', '', function () { lookAt(t.x, t.y); }));
+  }
+
+  function buildZoneButtons(foot, z) {
+    if (z.kind === 'stockpile') {
+      for (var i = 0; i <= 4; i++) {
+        (function (pr) {
+          foot.appendChild(btn(String(pr), (z.priority === pr ? 'on ' : '') + 'mini', function () {
+            z.priority = pr;
+            sig.inspect = '';
+          }));
+        })(i);
+      }
+    } else {
+      var plants = Defs.plants().filter(function (d) { return d.plant && d.plant.sowable; });
+      if (!plants.length) plants = Defs.plants().filter(function (d) { return /^plant/.test(d.id); });
+      var sel = el('select', 'mini-select');
+      plants.forEach(function (d) {
+        var o = el('option', null, d.label || d.id);
+        o.value = d.id;
+        if (z.plantDefId === d.id) o.selected = true;
+        sel.appendChild(o);
+      });
+      sel.addEventListener('change', function () { z.plantDefId = sel.value; sig.inspect = ''; });
+      foot.appendChild(sel);
+      foot.appendChild(btn(z.allowSow ? 'Sowing on' : 'Sowing off', z.allowSow ? 'on mini' : 'mini',
+        function () { z.allowSow = !z.allowSow; sig.inspect = ''; }));
+    }
+    foot.appendChild(btn('Delete zone', 'bad', function () {
+      if (root.Zones && Zones['delete']) Zones['delete'](Game.map, z);
+      Game.deselectAll();
+      sig.inspect = '';
+    }));
+  }
+
+  function updateInspect() {
+    var sel = Game.selection[0];
+    var data = null;
+    if (isPawn(sel)) data = pawnData(sel);
+    else if (isThing(sel)) data = thingData(sel);
+    else if (isZone(sel)) data = zoneData(sel);
+    if (data && Game.selection.length > 1) {
+      data.sub = (data.sub ? data.sub + '  ' : '') +
+        '(' + Game.selection.length + ' selected, showing the first)';
+      data.sig += '+' + Game.selection.length;
+    }
+    var s = data ? data.sig : 'none';
+    if (s === sig.inspect) return;
+    sig.inspect = s;
+    renderInspect(data);
+  }
+
+  UI.refreshInspect = function () { sig.inspect = ''; };
+
+  UI.selectThing = function (x) {
+    Game.select(x);
+    sig.inspect = '';
+  };
+
+  /* ------------------------------------------------------------------
+     Architect
+     ------------------------------------------------------------------ */
+
+  function buildablesIn(category) {
+    if (category === 'floor') {
+      return Defs.all('terrain').filter(function (d) { return d.buildCategory === 'floor'; });
+    }
+    var known = ['structure', 'furniture', 'production', 'power', 'security', 'floor'];
+    return Defs.all('thing').filter(function (d) {
+      if (!d.buildCategory) return false;
+      if (category === 'misc') return known.indexOf(d.buildCategory) < 0;
+      return d.buildCategory === category;
+    });
+  }
+
+  function costText(defId, stuffId) {
+    if (!root.Construct || !Construct.totalCost) return '';
+    var cost = Construct.totalCost(defId, stuffId), parts = [];
+    for (var k in cost) {
+      var d = Defs.maybe('thing', k);
+      parts.push(cost[k] + ' ' + ((d && d.label) || k));
+    }
+    return parts.join(', ') || 'free';
+  }
+
+  function buildArchitect() {
+    clear(P.architect);
+    var cats = el('div', 'arch-cats');
+    ARCH_CATEGORIES.forEach(function (c) {
+      var b = btn(c.label, 'arch-cat' + (archCategory === c.id ? ' on' : ''), function () {
+        archCategory = c.id;
+        sig.arch = '';
+      });
+      b.insertBefore(iconEl(c.icon, 14), b.firstChild);
+      cats.appendChild(b);
+    });
+    P.architect.appendChild(cats);
+    P.architect.appendChild(el('div', 'arch-items'));
+    P.architect.appendChild(el('div', 'arch-hint'));
+  }
+
+  function renderArchitect() {
+    var doneCount = root.Research && Research.done ? Research.done.size : 0;
+    var t = UI.tool;
+    var s = archCategory + '|' + doneCount + '|' + t.kind + '|' + (t.defId || '') + '|' +
+      (t.designation || '') + '|' + (t.zoneKind || '') + '|' + (t.stuffId || '');
+    if (s === sig.arch) return;
+    sig.arch = s;
+
+    var cats = P.architect.firstChild;
+    for (var i = 0; i < cats.childNodes.length; i++) {
+      cats.childNodes[i].classList.toggle('on', ARCH_CATEGORIES[i].id === archCategory);
+    }
+    var items = P.architect.childNodes[1];
+    clear(items);
+
+    if (archCategory === 'orders') renderOrders(items);
+    else if (archCategory === 'zones') renderZoneTools(items);
+    else renderBuildables(items);
+
+    var hint = P.architect.childNodes[2];
+    clear(hint);
+    if (t.kind === 'build' && t.defId) {
+      var def = Defs.maybe('thing', t.defId) || Defs.maybe('terrain', t.defId);
+      hint.appendChild(el('span', 'arch-hint-text',
+        U.cap((def && def.label) || t.defId) + ' - ' + costText(t.defId, t.stuffId) +
+        '. Drag to place a line, R rotates, escape cancels.'));
+      if (def && def.stuffable && root.Construct) {
+        var stuffs = Construct.stuffOptions(t.defId);
+        stuffs.forEach(function (sid) {
+          var sd = Defs.maybe('thing', sid);
+          hint.appendChild(btn((sd && sd.label) || sid, 'mini' + (t.stuffId === sid ? ' on' : ''),
+            function () { UI.tool.stuffId = sid; sig.arch = ''; }));
+        });
+      }
+    } else if (t.kind !== 'select') {
+      hint.appendChild(el('span', 'arch-hint-text',
+        'Drag over the map to apply. Escape cancels the tool.'));
+    }
+  }
+
+  function archButton(iconNode, label, sub, active, onClick, disabledReason) {
+    var b = el('button', 'arch-item' + (active ? ' on' : '') + (disabledReason ? ' off' : ''));
+    b.type = 'button';
+    b.appendChild(iconNode);
+    b.appendChild(el('span', 'arch-label', label));
+    if (sub) b.appendChild(el('span', 'arch-cost', sub));
+    if (disabledReason) { b.disabled = true; tip(b, disabledReason); }
+    else b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function renderOrders(items) {
+    DESIGNATIONS.forEach(function (d) {
+      var active = UI.tool.kind === 'designate' && UI.tool.designation === d[0];
+      items.appendChild(tip(archButton(iconEl('des-' + d[0], 20), d[1], null, active, function () {
+        UI.setTool({ kind: 'designate', designation: d[0] });
+      }), d[2]));
+    });
+    items.appendChild(tip(archButton(iconEl('des-cancel', 20), 'Cancel', null,
+      UI.tool.kind === 'cancel', function () { UI.setTool({ kind: 'cancel' }); }),
+      'Remove designations, plans and zone tiles you drag over.'));
+  }
+
+  function renderZoneTools(items) {
+    items.appendChild(tip(archButton(iconEl('cat-zone', 20), 'Stockpile', 'storage',
+      UI.tool.kind === 'zone' && UI.tool.zoneKind === 'stockpile', function () {
+        UI.setTool({ kind: 'zone', zoneKind: 'stockpile' });
+      }), 'Paint a stockpile. Haulers carry loose items into it.'));
+    items.appendChild(tip(archButton(iconEl('work-grow', 20), 'Growing zone', 'crops',
+      UI.tool.kind === 'zone' && UI.tool.zoneKind === 'growing', function () {
+        UI.setTool({ kind: 'zone', zoneKind: 'growing' });
+      }), 'Paint a field. Growers sow it and harvest it when it is ripe.'));
+  }
+
+  function renderBuildables(items) {
+    var list = buildablesIn(archCategory);
+    if (!list.length) {
+      items.appendChild(el('div', 'line dim', 'Nothing here yet.'));
+      return;
+    }
+    list.forEach(function (def) {
+      var locked = def.researchPrerequisite && !researchDone(def.researchPrerequisite);
+      var reason = null;
+      if (locked) {
+        var r = Defs.maybe('research', def.researchPrerequisite);
+        reason = 'Needs research: ' + ((r && r.label) || def.researchPrerequisite);
+      }
+      var stuff = root.Construct && Construct.defaultStuff ? Construct.defaultStuff(def.id) : null;
+      var active = UI.tool.kind === 'build' && UI.tool.defId === def.id;
+      var b = archButton(spriteEl(def.id, stuff, 20), def.label || def.id,
+        costText(def.id, stuff), active, function () {
+          UI.setTool({ kind: 'build', defId: def.id, rot: 0, stuffId: stuff });
+        }, reason);
+      if (!reason && def.description) tip(b, def.description);
+      items.appendChild(b);
+    });
+  }
+
+  /* ------------------------------------------------------------------
+     Overlay tabs: work, research, colonists, schedule, bills
+     ------------------------------------------------------------------ */
+
+  UI.openTab = function (name) {
+    if (openTabName === name && name !== 'bills') return UI.closeTab();
+    openTabName = name;
+    sig.tab = '';
+    P.tabPanel.classList.remove('hidden');
+    renderTab();
+  };
+
+  UI.closeTab = function () {
+    openTabName = null;
+    billsBuilding = null;
+    P.tabPanel.classList.add('hidden');
+  };
+
+  UI.openBills = function (building) {
+    if (!root.Production || !building) { UI.toast('Nothing can be produced here.'); return; }
+    billsBuilding = building;
+    openTabName = 'bills';
+    sig.tab = '';
+    P.tabPanel.classList.remove('hidden');
+    renderTab();
+  };
+
+  /* A rebuild throws away the scroll position, and the Work tab is
+     rebuilt on every click in it, so the offsets are carried over. */
+  function tabFrame(title) {
+    var old = P.tabPanel.querySelector('.tp-body');
+    var keepTop = old ? old.scrollTop : 0, keepLeft = old ? old.scrollLeft : 0;
+    clear(P.tabPanel);
+    var head = el('div', 'tp-head');
+    head.appendChild(el('div', 'tp-title', title));
+    head.appendChild(btn('Close', 'tp-close', function () { UI.closeTab(); }));
+    P.tabPanel.appendChild(head);
+    var body = el('div', 'tp-body');
+    P.tabPanel.appendChild(body);
+    body.scrollTop = keepTop;
+    body.scrollLeft = keepLeft;
+    pendingScroll = { body: body, top: keepTop, left: keepLeft };
+    return body;
+  }
+
+  var pendingScroll = null;
+
+  function renderTab() {
+    if (!openTabName) return;
+    var colonists = Game.colonists ? Game.colonists() : [];
+    var s = openTabName + '|' + colonists.length + '|';
+    if (openTabName === 'work') {
+      for (var i = 0; i < colonists.length; i++) {
+        s += colonists[i].id + ':' + JSON.stringify(colonists[i].workPriority || {}) + ';';
+      }
+    } else if (openTabName === 'research') {
+      var cur = root.Research && Research.current ? Research.current() : null;
+      s += (cur ? cur.id : '-') + ':' + Math.round(researchProgress()) + ':' +
+        (root.Research && Research.done ? Research.done.size : 0);
+    } else if (openTabName === 'colonists') {
+      for (i = 0; i < colonists.length; i++) {
+        s += colonists[i].id + ':' + Math.round(moodOf(colonists[i]) * 20) + ':' +
+          jobReport(colonists[i]) + ';';
+      }
+    } else if (openTabName === 'schedule') {
+      for (i = 0; i < colonists.length; i++) s += scheduleOf(colonists[i]).join('') + ';';
+      s += Math.floor(Game.hour());
+    } else if (openTabName === 'bills') {
+      s += billsBuilding ? billsBuilding.id + ':' + JSON.stringify(billsBuilding.bills || []) : '-';
+    }
+    if (s === sig.tab) return;
+    sig.tab = s;
+
+    if (openTabName === 'work') renderWork(colonists);
+    else if (openTabName === 'research') renderResearch();
+    else if (openTabName === 'colonists') renderColonists(colonists);
+    else if (openTabName === 'schedule') renderSchedule(colonists);
+    else if (openTabName === 'bills') renderBills();
+
+    if (pendingScroll) {
+      pendingScroll.body.scrollTop = pendingScroll.top;
+      pendingScroll.body.scrollLeft = pendingScroll.left;
+      pendingScroll = null;
+    }
+  }
+
+  function renderWork(colonists) {
+    var body = tabFrame('Work priorities');
+    body.appendChild(el('div', 'tp-note',
+      '1 is done first, 4 last, blank means never. Click a cell to lower its priority; ' +
+      'right-click clears it. A colonist works down their list and then finds something to do.'));
+    var types = workTypes();
+    if (!types.length || !colonists.length) {
+      body.appendChild(el('div', 'line dim', 'No colonists to assign work to.'));
+      return;
+    }
+    var grid = el('div', 'work-grid');
+    grid.style.gridTemplateColumns = '140px repeat(' + types.length + ', minmax(30px, 1fr))';
+
+    grid.appendChild(el('div', 'wg-corner', 'Colonist'));
+    types.forEach(function (t) {
+      var h = el('div', 'wg-head');
+      h.appendChild(iconEl('work-' + t.id, 14));
+      h.appendChild(el('span', null, t.label || t.id));
+      var skills = (t.skills || []).map(function (sk) {
+        var d = Defs.maybe('skill', sk);
+        return (d && d.label) || sk;
+      }).join(', ');
+      tip(h, (t.label || t.id) + ' - ' + (t.description || 'Work of this kind.') +
+        (skills ? ' Uses ' + skills + '.' : ' Uses no skill.'));
+      grid.appendChild(h);
+    });
+
+    colonists.forEach(function (p) {
+      if (!p.workPriority) p.workPriority = {};
+      var dis = disabledWork(p);
+      var nameCell = el('div', 'wg-name', nameOf(p));
+      nameCell.addEventListener('click', function () { UI.selectThing(p); });
+      grid.appendChild(nameCell);
+      types.forEach(function (t) {
+        var incapable = !!dis[t.id];
+        var cell = el('div', 'wg-cell');
+        if (incapable) {
+          cell.className = 'wg-cell off';
+          cell.textContent = '-';
+          tip(cell, nameOf(p) + ' is incapable of ' + (t.label || t.id) + '.');
+          grid.appendChild(cell);
+          return;
+        }
+        var v = p.workPriority[t.id] | 0;
+        cell.className = 'wg-cell ' + (v ? WORK_COLORS[v] : '');
+        cell.textContent = v ? String(v) : '';
+        cell.addEventListener('click', function () {
+          p.workPriority[t.id] = (p.workPriority[t.id] | 0) >= 4 ? 0 : (p.workPriority[t.id] | 0) + 1;
+          sig.tab = '';
+        });
+        cell.addEventListener('contextmenu', function (e) {
+          e.preventDefault();
+          p.workPriority[t.id] = 0;
+          sig.tab = '';
+        });
+        grid.appendChild(cell);
+      });
+    });
+    body.appendChild(grid);
+  }
+
+  function researchTiers() {
+    var all = root.Research && Research.projects ? Research.projects() : [];
+    var memo = {}, tiers = [];
+    function tierOf(def) {
+      if (memo[def.id] !== undefined) return memo[def.id];
+      memo[def.id] = 0;
+      var t = 0;
+      (def.prerequisites || []).forEach(function (pid) {
+        var pd = Defs.maybe('research', pid);
+        if (pd) t = Math.max(t, tierOf(pd) + 1);
+      });
+      memo[def.id] = t;
+      return t;
+    }
+    all.forEach(function (d) {
+      var t = tierOf(d);
+      if (!tiers[t]) tiers[t] = [];
+      tiers[t].push(d);
+    });
+    return tiers;
+  }
+
+  function renderResearch() {
+    var body = tabFrame('Research');
+    var cur = root.Research && Research.current ? Research.current() : null;
+    var head = el('div', 'tp-note');
+    if (cur) {
+      var prog = researchProgress(), cost = cur.cost || 1;
+      head.textContent = 'Researching ' + (cur.label || cur.id) + ' - ' +
+        Math.round(prog) + ' / ' + Math.round(cost) + ' work';
+      body.appendChild(head);
+      body.appendChild(barEl('wide', prog / cost, null));
+    } else {
+      head.textContent = 'Nothing is being researched. Pick a project and put someone on the research bench.';
+      body.appendChild(head);
+    }
+
+    var wrap = el('div', 'res-wrap');
+    var tiers = researchTiers();
+    var cardById = {};
+    tiers.forEach(function (tier) {
+      var col = el('div', 'res-col');
+      tier.forEach(function (def) {
+        var done = researchDone(def.id);
+        var isCur = cur && cur.id === def.id;
+        var locked = (def.prerequisites || []).some(function (p) { return !researchDone(p); });
+        var card = el('div', 'res-card' + (done ? ' done' : (isCur ? ' cur' : (locked ? ' locked' : ''))));
+        card.appendChild(el('div', 'res-name', def.label || def.id));
+        card.appendChild(el('div', 'res-cost', Math.round(def.cost || 0) + ' work'));
+        if (def.description) card.appendChild(el('div', 'res-desc', def.description));
+        var unlocks = (def.unlocks || []).map(function (u) {
+          var d = Defs.maybe('thing', u) || Defs.maybe('recipe', u) || Defs.maybe('terrain', u);
+          return (d && d.label) || u;
+        });
+        if (unlocks.length) card.appendChild(el('div', 'res-unlock', 'Unlocks: ' + unlocks.join(', ')));
+        if (done) card.appendChild(el('div', 'res-state good', 'Finished'));
+        else if (isCur) card.appendChild(el('div', 'res-state gold', 'In progress'));
+        else if (locked) card.appendChild(el('div', 'res-state dim', 'Needs earlier work'));
+        else {
+          card.appendChild(btn('Start', 'mini', function () {
+            if (root.Research && Research.start) Research.start(def.id);
+            sig.tab = '';
+          }));
+        }
+        cardById[def.id] = card;
+        col.appendChild(card);
+      });
+      wrap.appendChild(col);
+    });
+    body.appendChild(wrap);
+    drawResearchLinks(wrap, cardById);
+  }
+
+  /* The tree is only a tree if you can see the prerequisites, so the
+     links are drawn once, after layout, from the cards' own positions.
+     Three absolutely positioned rules per link rather than an SVG: the
+     elbows suit the pixel-art look, and it needs nothing but a div. */
+  function linkSeg(parent, cls, x, y, w, h) {
+    var d = el('i', cls);
+    d.style.left = x + 'px';
+    d.style.top = y + 'px';
+    d.style.width = Math.max(2, w) + 'px';
+    d.style.height = Math.max(2, h) + 'px';
+    parent.appendChild(d);
+  }
+
+  function drawResearchLinks(wrap, cardById) {
+    var drawn = 0;
+    Object.keys(cardById).forEach(function (id) {
+      var def = Defs.maybe('research', id);
+      if (!def || !def.prerequisites || !def.prerequisites.length) return;
+      var to = cardById[id];
+      def.prerequisites.forEach(function (pid) {
+        var from = cardById[pid];
+        if (!from || drawn > 120) return;
+        drawn++;
+        var cls = 'res-link' + (researchDone(pid) ? ' done' : '');
+        var x1 = from.offsetLeft + from.offsetWidth;
+        var y1 = from.offsetTop + Math.round(from.offsetHeight / 2);
+        var x2 = to.offsetLeft;
+        var y2 = to.offsetTop + Math.round(to.offsetHeight / 2);
+        var mx = Math.round((x1 + x2) / 2);
+        linkSeg(wrap, cls, x1, y1, mx - x1, 2);
+        linkSeg(wrap, cls, mx, Math.min(y1, y2), 2, Math.abs(y2 - y1) + 2);
+        linkSeg(wrap, cls, mx, y2, x2 - mx, 2);
+      });
+    });
+  }
+
+  function renderColonists(colonists) {
+    var body = tabFrame('Colonists');
+    if (!colonists.length) {
+      body.appendChild(el('div', 'line dim', 'Nobody left.'));
+      return;
+    }
+    var skills = skillDefs();
+    var table = el('table', 'ctable');
+    var thead = el('thead'), hr = el('tr');
+    ['Name', 'Mood', 'Health', 'Doing'].forEach(function (h) { hr.appendChild(el('th', null, h)); });
+    skills.forEach(function (sk) {
+      var th = el('th', 'skcol', (sk.label || sk.id).slice(0, 4));
+      tip(th, sk.label || sk.id);
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+
+    var tbody = el('tbody');
+    colonists.forEach(function (p) {
+      var tr = el('tr');
+      var nameTd = el('td', 'cname', nameOf(p));
+      nameTd.addEventListener('click', function () { UI.selectThing(p); lookAt(p.x, p.y); });
+      tr.appendChild(nameTd);
+      var mood = moodOf(p);
+      tr.appendChild(el('td', mood < 0.25 ? 'bad' : (mood < 0.4 ? 'warn' : 'good'),
+        Math.round(mood * 100) + '%'));
+      var hp = healthFraction(p);
+      tr.appendChild(el('td', hp < 0.6 ? 'bad' : '', healthText(p)));
+      tr.appendChild(el('td', 'cjob', jobReport(p)));
+      skills.forEach(function (sk) {
+        var s = p.skills && p.skills[sk.id];
+        var td = el('td', 'sk' + (s && s.level >= 10 ? ' good' : (s && s.level <= 2 ? ' dim' : '')),
+          s ? String(s.level) : '-');
+        if (s && s.passion) td.appendChild(el('i', 'passion p' + s.passion));
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    body.appendChild(table);
+  }
+
+  /* The schedule lives on the pawn so the think tree can read it; the
+     default is the one the balance table states, awake at 06:00 and
+     asleep at 22:00, with the last two hours of the day for recreation. */
+  function scheduleOf(p) {
+    if (!p.schedule || p.schedule.length !== 24) {
+      p.schedule = [];
+      for (var h = 0; h < 24; h++) {
+        if (h >= 22 || h < 6) p.schedule.push('sleep');
+        else if (h >= 20) p.schedule.push('recreation');
+        else p.schedule.push('work');
+      }
+    }
+    return p.schedule;
+  }
+
+  var schedulePaint = 'work';
+
+  function renderSchedule(colonists) {
+    var body = tabFrame('Schedule');
+    body.appendChild(el('div', 'tp-note',
+      'Pick a kind of hour, then drag across a colonist\u2019s day to paint it. ' +
+      'Anything lets them choose; Work keeps them at their jobs; Sleep sends them to bed.'));
+    var pal = el('div', 'sc-pal');
+    SCHEDULE_KINDS.forEach(function (k) {
+      var b = btn(U.cap(k), 'sc-swatch ' + k + (schedulePaint === k ? ' on' : ''), function () {
+        schedulePaint = k;
+        sig.tab = '';
+      });
+      pal.appendChild(b);
+    });
+    body.appendChild(pal);
+
+    var grid = el('div', 'sched');
+    grid.appendChild(el('div', 'sc-name', ''));
+    for (var h = 0; h < 24; h++) {
+      grid.appendChild(el('div', 'sc-hour' + (Math.floor(Game.hour()) === h ? ' now' : ''),
+        h % 2 === 0 ? String(h) : ''));
+    }
+    colonists.forEach(function (p) {
+      var sched = scheduleOf(p);
+      var nameCell = el('div', 'sc-name', nameOf(p));
+      nameCell.addEventListener('click', function () { UI.selectThing(p); });
+      grid.appendChild(nameCell);
+      for (var hh = 0; hh < 24; hh++) {
+        (function (hour) {
+          var cell = el('div', 'sc-cell ' + sched[hour]);
+          cell.addEventListener('mousedown', function (e) {
+            e.preventDefault();
+            paintingSchedule = true;
+            sched[hour] = schedulePaint;
+            cell.className = 'sc-cell ' + schedulePaint;
+          });
+          cell.addEventListener('mouseenter', function () {
+            if (!paintingSchedule) return;
+            sched[hour] = schedulePaint;
+            cell.className = 'sc-cell ' + schedulePaint;
+          });
+          grid.appendChild(cell);
+        })(hh);
+      }
+    });
+    body.appendChild(grid);
+  }
+
+  function renderBills() {
+    var b = billsBuilding;
+    if (!b) { UI.closeTab(); return; }
+    var body = tabFrame('Bills - ' + U.cap(b.label()));
+    if (!b.bills) b.bills = [];
+
+    var add = el('div', 'bill-add');
+    var recipes = root.Production && Production.availableRecipes ? Production.availableRecipes(b) : [];
+    if (!recipes.length) {
+      add.appendChild(el('span', 'dim', 'Nothing can be made here yet - check your research.'));
+    } else {
+      var sel = el('select', 'mini-select');
+      recipes.forEach(function (r) {
+        var o = el('option', null, r.label || r.id);
+        o.value = r.id;
+        sel.appendChild(o);
+      });
+      add.appendChild(sel);
+      add.appendChild(btn('Add bill', '', function () {
+        if (Production.addBill(b, sel.value, {})) sig.tab = '';
+        else UI.toast('That bill cannot be added here.');
+      }));
+    }
+    body.appendChild(add);
+
+    if (!b.bills.length) {
+      body.appendChild(el('div', 'line dim', 'No bills. Nothing will be made here until you add one.'));
+      return;
+    }
+    b.bills.forEach(function (bill, i) {
+      var recipe = Defs.maybe('recipe', bill.recipeId);
+      var wrap = el('div', 'bill' + (bill.suspended ? ' suspended' : ''));
+      var head = el('div', 'bill-head');
+      head.appendChild(el('span', 'bill-name', (recipe && recipe.label) || bill.recipeId));
+      head.appendChild(el('span', 'bill-done', 'done ' + (bill.done || 0)));
+      wrap.appendChild(head);
+
+      var ctl = el('div', 'bill-ctl');
+      ctl.appendChild(btn(bill.repeatMode === 'forever' ? 'Repeat forever'
+        : (bill.repeatMode === 'count' ? 'Do ' + bill.targetCount : 'Until you have ' + bill.targetCount),
+        'grow', function () {
+          bill.repeatMode = bill.repeatMode === 'forever' ? 'count'
+            : (bill.repeatMode === 'count' ? 'untilHave' : 'forever');
+          if (bill.repeatMode === 'count') bill.done = 0;
+          sig.tab = '';
+        }));
+      if (bill.repeatMode !== 'forever') {
+        [-10, -1, 1, 10].forEach(function (d) {
+          ctl.appendChild(btn(U.signed(d, 0), 'mini', function () {
+            bill.targetCount = Math.max(1, (bill.targetCount | 0) + d);
+            sig.tab = '';
+          }));
+        });
+      }
+      ctl.appendChild(btn(bill.suspended ? 'Resume' : 'Suspend', 'mini', function () {
+        bill.suspended = !bill.suspended;
+        sig.tab = '';
+      }));
+      ctl.appendChild(btn('Up', 'mini', function () {
+        if (Production.reorderBill(b, bill, -1)) sig.tab = '';
+      }));
+      ctl.appendChild(btn('Down', 'mini', function () {
+        if (Production.reorderBill(b, bill, 1)) sig.tab = '';
+      }));
+      ctl.appendChild(btn('Remove', 'mini bad', function () {
+        Production.removeBill(b, bill);
+        sig.tab = '';
+      }));
+      wrap.appendChild(ctl);
+      if (recipe && recipe.description) wrap.appendChild(el('div', 'bill-desc dim', recipe.description));
+      body.appendChild(wrap);
+    });
+  }
+
+  /* ------------------------------------------------------------------
+     Alerts
+     ------------------------------------------------------------------ */
+
+  var foodDefCache = null;
+  function foodDefs() {
+    if (!foodDefCache) {
+      foodDefCache = Defs.items().filter(function (d) { return (d.nutrition || 0) > 0; });
+    }
+    return foodDefCache;
+  }
+
+  function computeAlerts() {
+    var out = [], map = Game.map;
+    if (!map) return out;
+    var colonists = map.colonists();
+
+    var hungry = null, tend = null, low = null;
+    for (var i = 0; i < colonists.length; i++) {
+      var p = colonists[i];
+      if (!hungry && p.needs && p.needs.food <= 0.15) hungry = p;
+      if (!tend && root.Health && Health.needsTending && Health.needsTending(p)) tend = p;
+      if (!low && moodOf(p) <= (p.breakThresholds ? p.breakThresholds.major : 0.25)) low = p;
+    }
+    if (hungry) out.push({ label: nameOf(hungry) + ' is starving', severity: 'high', lookAt: hungry });
+    if (tend) out.push({ label: nameOf(tend) + ' needs tending', severity: 'high', lookAt: tend });
+    if (low) out.push({ label: nameOf(low) + ' is close to breaking', severity: 'medium', lookAt: low });
+
+    var nutrition = 0, foods = foodDefs();
+    for (i = 0; i < foods.length; i++) {
+      var list = map.byDef(foods[i].id);
+      for (var j = 0; j < list.length; j++) nutrition += foods[i].nutrition * list[j].stack;
+    }
+    if (colonists.length && nutrition < colonists.length * 1.6) {
+      out.push({ label: nutrition <= 0 ? 'No food stored' : 'Low food stores', severity: nutrition <= 0 ? 'high' : 'medium' });
+    }
+
+    var beds = map.byDef('bed').concat(map.byDef('sleepingSpot'));
+    if (colonists.length && beds.length < colonists.length) {
+      out.push({ label: 'Not enough beds', severity: 'medium', lookAt: beds[0] || null });
+    }
+    for (i = 0; i < beds.length; i++) {
+      if (!map.hasRoofAt(beds[i].x, beds[i].y)) {
+        out.push({ label: 'A bed is unroofed', severity: 'low', lookAt: beds[i] });
+        break;
+      }
+    }
+
+    var fires = map.byDef('fire');
+    if (fires.length) {
+      out.push({ label: fires.length + ' ' + U.plural(fires.length, 'fire') + ' burning',
+        severity: 'high', lookAt: fires[0] });
+    }
+
+    var hostiles = 0, firstHostile = null;
+    for (i = 0; i < map.pawns.length; i++) {
+      var q = map.pawns[i];
+      if (q.dead || q.downed) continue;
+      if (Game.hostile && Game.hostile('player', q.faction)) {
+        hostiles++;
+        if (!firstHostile) firstHostile = q;
+      }
+    }
+    if (hostiles) {
+      out.push({ label: hostiles + ' ' + U.plural(hostiles, 'hostile') + ' on the map',
+        severity: 'high', lookAt: firstHostile });
+    }
+
+    if (root.Research && Research.current && !Research.current()) {
+      var avail = Research.available ? Research.available() : [];
+      if (avail.length) out.push({ label: 'No research project', severity: 'low', tab: 'research' });
+    }
+    return out;
+  }
+
+  function renderAlerts() {
+    var list = alertCache;
+    var s = list.length + '|' + list.map(function (a) { return a.severity + a.label; }).join('|');
+    if (s === sig.alerts) return;
+    sig.alerts = s;
+    clear(P.alerts);
+    list.forEach(function (a) {
+      var node = el('div', 'alert ' + a.severity);
+      node.appendChild(iconEl('alert-' + a.severity, 14));
+      node.appendChild(el('span', null, a.label));
+      node.addEventListener('click', function () {
+        if (a.tab) { UI.openTab(a.tab); return; }
+        var t = a.lookAt;
+        if (!t) return;
+        if (t.x !== undefined) lookAt(t.x, t.y);
+        if (isPawn(t) || isThing(t)) UI.selectThing(t);
+      });
+      P.alerts.appendChild(node);
+    });
+  }
+
+  UI.alerts = function () {
+    return alertCache.map(function (a) {
+      return { label: a.label, severity: a.severity, lookAt: a.lookAt || null };
+    });
+  };
+
+  /* ------------------------------------------------------------------
+     Letters and messages
+     ------------------------------------------------------------------ */
+
+  function openLetter(letter) {
+    var actions = [];
+    if (letter.x !== null && letter.x !== undefined) {
+      actions.push(['Jump there', function () { lookAt(letter.x, letter.y); closeModal(); }]);
+    }
+    actions.push(['Dismiss', function () {
+      Game.dismissLetter(letter);
+      sig.letters = '';
+      closeModal();
+    }]);
+    actions.push(['Close', closeModal]);
+    showModal(letter.title, letter.text, actions, 'letter-' + letter.kind);
+  }
+
+  function renderLetters() {
+    var list = Game.letters || [];
+    var s = list.length + '|' + list.map(function (l) { return l.id; }).join(',');
+    if (s === sig.letters) return;
+    sig.letters = s;
+    clear(P.letters);
+    for (var i = list.length - 1; i >= 0 && i >= list.length - 8; i--) {
+      (function (letter) {
+        var node = el('div', 'letter ' + letter.kind);
+        node.appendChild(iconEl('letter-' + letter.kind, 18));
+        node.appendChild(el('span', null, letter.title));
+        node.addEventListener('click', function () { openLetter(letter); });
+        P.letters.appendChild(node);
+      })(list[i]);
+    }
+  }
+
+  function pumpMessages() {
+    var list = Game.messages || [];
+    var now = root.performance ? performance.now() : 0;
+    /* Walk back to the first line already on screen, then replay forward,
+       because the log reads top-down and the newest line belongs last. */
+    var fresh = [];
+    for (var i = list.length - 1; i >= 0; i--) {
+      if (seenMessages.has(list[i])) break;
+      seenMessages.add(list[i]);
+      fresh.push(list[i]);
+    }
+    for (i = fresh.length - 1; i >= 0; i--) {
+      var m = fresh[i];
+      var node = el('div', 'msg ' + (m.type || 'info'));
+      node.textContent = m.text;
+      if (m.x !== null && m.x !== undefined) {
+        node.classList.add('clickable');
+        (function (mx, my) {
+          node.addEventListener('click', function () { lookAt(mx, my); });
+        })(m.x, m.y);
+      }
+      P.messages.appendChild(node);
+      liveMessages.push({ node: node, born: now });
+    }
+    while (liveMessages.length && now - liveMessages[0].born > MESSAGE_MS) {
+      var old = liveMessages.shift();
+      if (old.node.parentNode) old.node.parentNode.removeChild(old.node);
+    }
+    for (i = 0; i < liveMessages.length; i++) {
+      var age = now - liveMessages[i].born;
+      if (age > MESSAGE_MS - 2000) liveMessages[i].node.classList.add('fade');
+    }
+    while (liveMessages.length > 10) {
+      var extra = liveMessages.shift();
+      if (extra.node.parentNode) extra.node.parentNode.removeChild(extra.node);
+    }
+  }
+
+  UI.toast = function (text) {
+    var node = el('div', 'msg toast', text);
+    P.messages.appendChild(node);
+    liveMessages.push({ node: node, born: root.performance ? performance.now() : 0 });
+  };
+
+  /* ------------------------------------------------------------------
+     Float menu and tooltip
+     ------------------------------------------------------------------ */
+
+  UI.floatMenu = function (x, y, options) {
+    UI.closeFloatMenu();
+    if (!options || !options.length) return;
+    var menu = P.floatMenu;
+    clear(menu);
+    options.forEach(function (o) {
+      var item = el('div', 'fm-item' + (o.disabled ? ' off' : ''), o.label);
+      if (!o.disabled && o.action) {
+        item.addEventListener('click', function () {
+          UI.closeFloatMenu();
+          o.action();
+        });
+      }
+      menu.appendChild(item);
+    });
+    menu.classList.remove('hidden');
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    var w = menu.offsetWidth, h = menu.offsetHeight;
+    var maxX = P.app.clientWidth - w - 4, maxY = P.app.clientHeight - h - 4;
+    menu.style.left = Math.max(2, Math.min(x, maxX)) + 'px';
+    menu.style.top = Math.max(2, Math.min(y, maxY)) + 'px';
+
+    floatCloser = function (e) {
+      if (menu.contains(e.target)) return;
+      UI.closeFloatMenu();
+    };
+    /* Deferred so the click that opened the menu does not close it. */
+    setTimeout(function () {
+      if (floatCloser) doc.addEventListener('mousedown', floatCloser, true);
+    }, 0);
+  };
+
+  UI.closeFloatMenu = function () {
+    P.floatMenu.classList.add('hidden');
+    if (floatCloser) {
+      doc.removeEventListener('mousedown', floatCloser, true);
+      floatCloser = null;
+    }
+  };
+
+  UI.tooltip = function (text, sx, sy) {
+    var t = P.tooltip;
+    if (!text) { t.classList.add('hidden'); return; }
+    t.textContent = text;
+    t.classList.remove('hidden');
+    var w = t.offsetWidth, h = t.offsetHeight;
+    var x = Math.min(sx === undefined ? 0 : sx, P.app.clientWidth - w - 6);
+    var y = Math.min(sy === undefined ? 0 : sy, P.app.clientHeight - h - 6);
+    t.style.left = Math.max(4, x) + 'px';
+    t.style.top = Math.max(4, y) + 'px';
+  };
+
+  function hookTooltips() {
+    P.app.addEventListener('mouseover', function (e) {
+      var node = e.target && e.target.closest ? e.target.closest('[data-tip]') : null;
+      if (!node) { UI.tooltip(null); return; }
+      var r = node.getBoundingClientRect();
+      UI.tooltip(node.getAttribute('data-tip'), r.left, r.bottom + 4);
+    });
+    P.app.addEventListener('mouseout', function (e) {
+      if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('[data-tip]')) {
+        UI.tooltip(null);
+      }
+    });
+  }
+
+  /* ------------------------------------------------------------------
+     Modal
+     ------------------------------------------------------------------ */
+
+  function showModal(title, text, actions, cls) {
+    clear(P.modal);
+    var box = el('div', 'modal-box' + (cls ? ' ' + cls : ''));
+    box.appendChild(el('div', 'modal-title', title));
+    if (typeof text === 'string') box.appendChild(el('div', 'modal-text', text));
+    else if (text) box.appendChild(text);
+    var row = el('div', 'modal-actions');
+    (actions || [['Close', closeModal]]).forEach(function (a) {
+      row.appendChild(btn(a[0], a[2] || '', a[1]));
+    });
+    box.appendChild(row);
+    P.modal.appendChild(box);
+    P.modal.classList.remove('hidden');
+  }
+
+  function closeModal() {
+    P.modal.classList.add('hidden');
+    clear(P.modal);
+  }
+  UI.closeModal = closeModal;
+
+  function renameDialog(p) {
+    var wrap = el('div', 'modal-form');
+    var input = el('input', 'field');
+    input.type = 'text';
+    input.value = p.name ? (p.name.nick || p.name.first || '') : '';
+    input.maxLength = 24;
+    wrap.appendChild(input);
+    showModal('Rename ' + nameOf(p), wrap, [
+      ['Rename', function () {
+        var v = input.value.trim();
+        if (v) {
+          if (!p.name) p.name = { first: v, nick: v, last: '' };
+          else p.name.nick = v;
+          sig.chipRoster = '';
+          sig.inspect = '';
+        }
+        closeModal();
+      }],
+      ['Cancel', closeModal]
+    ]);
+    input.focus();
+  }
+
+  function deathScreen() {
+    showModal('The colony is over', Game.gameOver.reason + ' You lasted ' +
+      (Game.day() + 1) + ' days and built ' + Math.round(Game.wealth) + ' silver of colony.', [
+      ['Main menu', function () { closeModal(); UI.showMenu(); }]
+    ], 'death');
+  }
+
+  /* ------------------------------------------------------------------
+     Main menu, how to play, credits
+     ------------------------------------------------------------------ */
+
+  var menuFields = {};
+
+  function selectField(label, options, value) {
+    var wrap = el('label', 'menu-field');
+    wrap.appendChild(el('span', null, label));
+    var sel = el('select', 'field');
+    options.forEach(function (o) {
+      var opt = el('option', null, o[1]);
+      opt.value = o[0];
+      if (o[0] === value) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    wrap.appendChild(sel);
+    return { wrap: wrap, input: sel };
+  }
+
+  function buildMenu() {
+    clear(P.menu);
+    var box = el('div', 'menu-box');
+    box.appendChild(el('h1', 'menu-title', 'RIMDAUN'));
+    box.appendChild(el('div', 'menu-pitch',
+      'Three survivors, one unnamed world, and a storyteller who has read your plans.'));
+
+    var form = el('div', 'menu-form');
+    var biome = selectField('Biome', [
+      ['temperateForest', 'Temperate forest - forgiving'],
+      ['aridShrubland', 'Arid shrubland - hot and thin'],
+      ['borealForest', 'Boreal forest - cold and hungry']
+    ], 'temperateForest');
+    var size = selectField('Map size', [
+      ['100', 'Small (100 x 100)'], ['140', 'Medium (140 x 140)'], ['180', 'Large (180 x 180)']
+    ], '140');
+    var diff = selectField('Difficulty', [
+      ['0.5|Gentle', 'Gentle'], ['0.8|Easy', 'Easy'], ['1|Rough', 'Rough'],
+      ['1.4|Hard', 'Hard'], ['2|Merciless', 'Merciless']
+    ], '1|Rough');
+    var seedWrap = el('label', 'menu-field');
+    seedWrap.appendChild(el('span', null, 'Seed'));
+    var seed = el('input', 'field');
+    seed.type = 'text';
+    seed.placeholder = 'blank for a random world';
+    seedWrap.appendChild(seed);
+
+    form.appendChild(biome.wrap);
+    form.appendChild(size.wrap);
+    form.appendChild(diff.wrap);
+    form.appendChild(seedWrap);
+    box.appendChild(form);
+    menuFields = { biome: biome.input, size: size.input, diff: diff.input, seed: seed };
+
+    var actions = el('div', 'menu-actions');
+    actions.appendChild(btn('New colony', 'big-btn primary', function () {
+      var parts = menuFields.diff.value.split('|');
+      UI.startGame({
+        biome: menuFields.biome.value,
+        size: parseInt(menuFields.size.value, 10),
+        difficulty: { threatScale: parseFloat(parts[0]), name: parts[1] },
+        seed: seedValue(menuFields.seed.value)
+      });
+    }));
+    /* Continue only exists when there is something to continue: an
+       always-present grey button reads as a broken feature. */
+    if (UI.hasSave()) {
+      actions.appendChild(btn('Continue', 'big-btn', function () {
+        if (UI.load()) UI.hideMenu();
+        else showModal('That save would not open',
+          'The stored colony could not be read - it may be from an older version of the game.',
+          [['Close', closeModal]]);
+      }));
+    }
+    actions.appendChild(btn('How to play', 'big-btn', howToPlay));
+    actions.appendChild(btn('Credits', 'big-btn', credits));
+    box.appendChild(actions);
+    box.appendChild(el('div', 'menu-foot',
+      'Runs entirely in this page. Nothing is uploaded; saves live in this browser.'));
+    P.menu.appendChild(box);
+  }
+
+  /* A typed seed should mean the same world every time, and a word is a
+     friendlier thing to share than nine digits. */
+  function seedValue(text) {
+    text = (text || '').trim();
+    if (!text) return undefined;
+    if (/^\d+$/.test(text)) return parseInt(text, 10) % 2000000000;
+    return U.hash(text) % 2000000000;
+  }
+
+  function howToPlay() {
+    var wrap = el('div', 'doc');
+    var cols = el('div', 'doc-cols');
+
+    var a = el('div', 'doc-col');
+    a.appendChild(el('h3', null, 'The loop'));
+    a.appendChild(el('p', null,
+      'You never order a colonist to do a task directly. You mark what needs doing - a wall to ' +
+      'build, rock to mine, a field to sow - and each colonist picks the highest-priority work ' +
+      'they are allowed to do and can reach. The Work tab is where you decide who does what.'));
+    a.appendChild(el('p', null,
+      'Everything else follows from that: they get hungry, so someone has to cook; they get ' +
+      'tired, so someone has to build beds; wealth attracts raiders, so someone has to shoot.'));
+    a.appendChild(el('h3', null, 'Your first five minutes'));
+    var ol = el('ol');
+    [
+      'Open Architect / Orders and mark a dozen trees to chop and some rock to mine.',
+      'Under Zones, paint a stockpile near the drop pods so hauled goods land somewhere sane.',
+      'Under Structure, wall in a small room - four walls and a door is enough.',
+      'Under Furniture, put down one bed per colonist inside it.',
+      'Under Zones, paint a growing zone on soil and let it default to rice.',
+      'Open the Work tab and make sure someone has Cook, Construct, Grow and Doctor at 1 or 2.',
+      'Build a campfire under Production, add a "cook simple meal" bill, and unpause.'
+    ].forEach(function (t) { ol.appendChild(el('li', null, t)); });
+    a.appendChild(ol);
+    cols.appendChild(a);
+
+    var b = el('div', 'doc-col');
+    b.appendChild(el('h3', null, 'Controls'));
+    var keys = [
+      ['Left click', 'select a pawn, building, item or zone'],
+      ['Left drag', 'box select, or paint the current tool'],
+      ['Right click', 'order the selected colonist; when drafted, move or attack'],
+      ['Right / middle drag', 'pan the map'],
+      ['Wheel, Z / X', 'zoom toward the cursor'],
+      ['W A S D, arrows', 'pan'],
+      ['Space', 'pause and resume'],
+      ['1 2 3 4', 'game speed'],
+      ['R', 'rotate the build ghost'],
+      ['F', 'draft or undraft the selection'],
+      ['H', 'jump home to the colony'],
+      ['Tab', 'cycle through colonists'],
+      ['Delete', 'cancel the designation under the cursor'],
+      ['Escape', 'drop the tool, then the selection, then open the menu']
+    ];
+    var dl = el('div', 'keys');
+    keys.forEach(function (k) {
+      var r = el('div', 'key-row');
+      r.appendChild(el('kbd', null, k[0]));
+      r.appendChild(el('span', null, k[1]));
+      dl.appendChild(r);
+    });
+    b.appendChild(dl);
+    b.appendChild(el('h3', null, 'Things that will kill you'));
+    b.appendChild(el('p', null,
+      'Sleeping outdoors in winter. No doctor when someone is bleeding. A single wooden room ' +
+      'with a campfire in it. Wealth you cannot defend. Letting a colonist stay miserable ' +
+      'until they break.'));
+    cols.appendChild(b);
+
+    wrap.appendChild(cols);
+    showModal('How to play', wrap, [['Got it', closeModal]], 'wide');
+  }
+
+  function credits() {
+    var wrap = el('div', 'doc');
+    wrap.appendChild(el('p', null,
+      'RIMDAUN is an original colony simulation written in plain JavaScript, inspired by ' +
+      'Ludeon Studios\u2019 RimWorld. It is not affiliated with or endorsed by Ludeon.'));
+    wrap.appendChild(el('p', null,
+      'Every sprite in the game is drawn in code at load time - there are no image files, no ' +
+      'fonts to download and no network requests. The page works from a file:// URL.'));
+    wrap.appendChild(el('p', null, 'Seed of this world: ' + (Game.seed || 'not started')));
+    showModal('Credits', wrap, [['Close', closeModal]]);
+  }
+
+  UI.showMenu = function () {
+    Game.setSpeed(0);
+    buildMenu();
+    P.menu.classList.remove('hidden');
+    UI.closeTab();
+    UI.closeFloatMenu();
+  };
+
+  UI.hideMenu = function () {
+    P.menu.classList.add('hidden');
+    closeModal();
+    if (Game.speed === 0) Game.setSpeed(1);
+    resetPanels();
+  };
+
+  UI.startGame = function (opts) {
+    try {
+      Game.newGame(opts || {});
+    } catch (e) {
+      console.error('could not start a colony:', e);
+      showModal('The world would not generate',
+        'Something went wrong building the map: ' + (e && e.message ? e.message : e) +
+        '. Try a different seed or map size.', [['Back', closeModal]]);
+      return;
+    }
+    started = true;
+    lastAutosaveDay = Game.day();
+    UI.hideMenu();
+    centerOnColony();
+  };
+
+  function centerOnColony() {
+    var list = Game.colonists ? Game.colonists() : [];
+    if (list.length) lookAt(list[0].x, list[0].y);
+    else if (Game.map) lookAt(Game.map.w >> 1, Game.map.h >> 1);
+  }
+  UI.home = centerOnColony;
+
+  function resetPanels() {
+    sig.top = ''; sig.chipRoster = ''; sig.inspect = '';
+    sig.arch = ''; sig.alerts = ''; sig.letters = ''; sig.tab = '';
+    chipMap.clear();
+    clear(P.colonistBar);
+    clear(P.messages);
+    clear(P.alerts);
+    clear(P.letters);
+    alertCache = [];
+    liveMessages.length = 0;
+  }
+
+  /* ------------------------------------------------------------------
+     Save and load - the only localStorage in the project
+     ------------------------------------------------------------------ */
+
+  function storage() {
+    try {
+      var s = root.localStorage;
+      /* Safari in private mode hands back a store that throws on write,
+         so the only honest test is a write. */
+      s.setItem('rimdaun.probe', '1');
+      s.removeItem('rimdaun.probe');
+      return s;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  UI.hasSave = function () {
+    var s = storage();
+    if (!s) return false;
+    try { return !!s.getItem(SAVE_KEY); } catch (e) { return false; }
+  };
+
+  UI.save = function () {
+    var s = storage();
+    if (!s || !root.Save || !Save.serialize || !Game.started) return false;
+    try {
+      s.setItem(SAVE_KEY, JSON.stringify(Save.serialize(Game)));
+      return true;
+    } catch (e) {
+      /* Quota is the common one: a big map plus a long history can push
+         past 5 MB, and there is nothing useful to do but say so. */
+      return false;
+    }
+  };
+
+  UI.load = function () {
+    var s = storage();
+    if (!s || !root.Save || !Save.deserialize) return false;
+    try {
+      var raw = s.getItem(SAVE_KEY);
+      if (!raw) return false;
+      if (!Save.deserialize(JSON.parse(raw))) return false;
+      started = true;
+      lastAutosaveDay = Game.day();
+      resetPanels();
+      centerOnColony();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  };
+
+  UI.deleteSave = function () {
+    var s = storage();
+    if (!s) return false;
+    try { s.removeItem(SAVE_KEY); return true; } catch (e) { return false; }
+  };
+
+  /* One save per in-game day. The very first frame only records which
+     day it is: a colony that has just booted has nothing worth writing,
+     and writing it would clobber the save the player came back for. */
+  function autosave() {
+    var day = Game.day();
+    if (day === lastAutosaveDay) return;
+    var first = lastAutosaveDay < 0;
+    lastAutosaveDay = day;
+    if (first) return;
+    if (UI.save()) Game.msg('Autosaved.', { type: 'info' });
+  }
+
+  /* ------------------------------------------------------------------
+     Boot and the per-frame update
+     ------------------------------------------------------------------ */
+
+  UI.init = function () {
+    P.app = doc.getElementById('app');
+    P.topbar = doc.getElementById('topbar');
+    P.colonistBar = doc.getElementById('colonist-bar');
+    P.alerts = doc.getElementById('alerts');
+    P.messages = doc.getElementById('messages');
+    P.letters = doc.getElementById('letters');
+    P.inspect = doc.getElementById('inspect');
+    P.architect = doc.getElementById('architect');
+    P.tabPanel = doc.getElementById('tab-panel');
+    P.floatMenu = doc.getElementById('float-menu');
+    P.tooltip = doc.getElementById('tooltip');
+    P.menu = doc.getElementById('menu');
+    P.modal = doc.getElementById('modal');
+
+    buildTopbar();
+    buildInspect();
+    buildArchitect();
+    buildMenu();
+    hookTooltips();
+
+    /* Painting the schedule is a drag, and the mouse can leave the grid
+       mid-stroke, so the release is caught on the document. */
+    doc.addEventListener('mouseup', function () { paintingSchedule = null; });
+    P.architect.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    P.tabPanel.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+    return UI;
+  };
+
+  UI.update = function () {
+    frame++;
+    var onMenu = !P.menu.classList.contains('hidden');
+    if (onMenu || !Game.started || !Game.map) {
+      P.inspect.classList.add('hidden');
+      return;
+    }
+    if (Game.gameOver && P.modal.classList.contains('hidden')) deathScreen();
+
+    updateTopbar();
+    if (frame % CHIP_FRAMES === 0) syncColonistBar();
+    var sel = Game.selection[0] || null;
+    if (sel !== lastSelected) { lastSelected = sel; sig.inspect = ''; }
+    if (frame % INSPECT_FRAMES === 0 || sig.inspect === '') updateInspect();
+    renderArchitect();
+    if (frame % ALERT_FRAMES === 0) {
+      alertCache = computeAlerts();
+      renderAlerts();
+    }
+    renderLetters();
+    pumpMessages();
+    if (openTabName && frame % TAB_FRAMES === 0) renderTab();
+    autosave();
+  };
+
+  root.UI = UI;
+})(this);

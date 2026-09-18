@@ -115,6 +115,32 @@
   };
   Defs.clearCache = function () { _cache = {}; };
 
+  /* A recipe names the benches it can be made at, and a bench names the
+     recipes it offers. Requiring both to agree by hand guarantees they
+     will not, so the link is reconciled here: declare it on either side
+     and the other picks it up. Idempotent, and cheap enough to call
+     before validation and at the start of a game. */
+  Defs.finalize = function () {
+    lists.recipe.forEach(function (r) {
+      (r.workbenches || []).forEach(function (benchId) {
+        var bench = tables.thing[benchId];
+        if (!bench) return;
+        if (!bench.recipes) bench.recipes = [];
+        if (bench.recipes.indexOf(r.id) < 0) bench.recipes.push(r.id);
+      });
+    });
+    lists.thing.forEach(function (bench) {
+      (bench.recipes || []).forEach(function (recipeId) {
+        var r = tables.recipe[recipeId];
+        if (!r) return;
+        if (!r.workbenches) r.workbenches = [];
+        if (r.workbenches.indexOf(bench.id) < 0) r.workbenches.push(bench.id);
+      });
+    });
+    _cache = {};
+    return Defs;
+  };
+
   /* ------------------------------------------------------------------
      Reference integrity. Each entry says: for defs in <category>, the
      value(s) at <path> must name an existing def in <target>.
@@ -165,6 +191,7 @@
 
   Defs.validate = function () {
     var errors = [];
+    Defs.finalize();
     REFS.forEach(function (ref) {
       var category = ref[0], path = ref[1].split('.'), target = ref[2];
       lists[category].forEach(function (def) {

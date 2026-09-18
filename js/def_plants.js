@@ -139,7 +139,7 @@
         harvestedThing: 'berries', harvestYield: 8, harvestWork: 200,
         harvestMinGrowth: 0.65, harvestDestroys: false, regrowsTo: 0.25,
         minFertility: 0.1, fertilitySensitivity: 0.4,
-        wildDensity: 0.022, wildBiomes: ['temperateForest', 'borealForest'], wildCluster: [2, 6],
+        wildDensity: 0.022, wildBiomes: ALL_BIOMES, wildCluster: [2, 6],
         visualSizeRange: [0.8, 1.1]
       })
     },
@@ -175,7 +175,7 @@
         growDays: 15, lifespanDays: 120,
         harvestedThing: 'wood', harvestYield: 25, harvestWork: 620, harvestMinGrowth: 0.25,
         minFertility: 0.3, fertilitySensitivity: 0.5,
-        wildDensity: 0.06, wildBiomes: ['temperateForest'], wildCluster: [3, 8],
+        wildDensity: 0.06, wildBiomes: ['temperateForest', 'aridShrubland'], wildCluster: [3, 8],
         isTree: true, visualSizeRange: [0.85, 1.35]
       })
     },

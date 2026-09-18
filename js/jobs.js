@@ -121,20 +121,28 @@
      These write the exact fields the pawn model documents, which is the
      same handshake animals.js and combat.js use. */
 
-  function setPath(pawn, path, map) {
+  /* destX/destY name the GOAL, not the end of the path: the two differ
+     whenever the end mode is TOUCH or INTERACTION, and pawn.js rebuilds
+     a route from those fields plus pathMode when a wall goes up across
+     a walk. Writing the path's last cell there instead would quietly
+     turn a blocked walk to a workbench into a walk to whichever tile
+     the old route happened to finish on. */
+  function setPath(pawn, path, map, gx, gy, mode) {
     var last = path[path.length - 1];
+    if (gx === undefined) { gx = map.xOf(last); gy = map.yOf(last); }
     pawn.path = path;
     pawn.pathIdx = 0;
     pawn.moveProgress = 0;
-    pawn.destX = map.xOf(last);
-    pawn.destY = map.yOf(last);
-    pawn.pathDest = last;
+    pawn.destX = gx;
+    pawn.destY = gy;
+    pawn.pathMode = mode === undefined ? PE.ON_CELL : mode;
+    pawn.pathDest = map.idx(gx, gy);
   }
 
   function stopMoving(pawn) {
     pawn.path = null;
     pawn.pathIdx = 0;
-    pawn.pathDest = null;
+    pawn.pathDest = -1;
     pawn.destX = pawn.x;
     pawn.destY = pawn.y;
   }
@@ -146,11 +154,11 @@
   function walkTo(pawn, x, y, mode) {
     var map = pawn.map;
     if (!Path || !map.inBounds(x, y)) return false;
-    var path = Path.find(map, pawn.x, pawn.y, x, y,
-      { pawn: pawn, peMode: mode === undefined ? PE.ON_CELL : mode });
+    if (mode === undefined) mode = PE.ON_CELL;
+    var path = Path.find(map, pawn.x, pawn.y, x, y, { pawn: pawn, peMode: mode });
     if (!path) return false;
     if (!path.length) { stopMoving(pawn); return true; }
-    setPath(pawn, path, map);
+    setPath(pawn, path, map, x, y, mode);
     return true;
   }
 
@@ -235,6 +243,7 @@
       return (p && !p.dead) ? p : null;
     }
     if (target.k === 't') {
+      _holder = null;
       var t = map.things.get(target.id);
       if (t) return t;
       return findHeld(map, target.id);
@@ -409,7 +418,7 @@
     opts = opts || {};
     this.id = U.nextId();
     this.defId = defId;
-    this.def = Jobs.defs.get(defId) || null;
+    this.def = Jobs.defs[defId] || null;
     this.targetA = targetA || null;
     this.targetB = targetB || null;
     this.targetC = opts.targetC || null;
@@ -431,7 +440,12 @@
      ============================================================ */
 
   var Jobs = {};
-  Jobs.defs = new Map();
+  /* A plain table rather than a Map: a job registry is read far more
+     often than it is written, it round-trips through a headless
+     checker in another realm (where `instanceof Map` is false), and a
+     null prototype keeps an id called 'constructor' from ever
+     resolving to something that is not a job def. */
+  Jobs.defs = Object.create(null);
   Jobs.XP_PER_WORK = XP_PER_WORK;
 
   Jobs.register = function (id, spec) {
@@ -448,12 +462,13 @@
       allowGoneTarget: !!spec.allowGoneTarget,
       onEnd: spec.onEnd || null
     };
-    Jobs.defs.set(id, def);
+    Jobs.defs[id] = def;
     return def;
   };
 
-  Jobs.def = function (id) { return Jobs.defs.get(id) || null; };
-  Jobs.isRegistered = function (id) { return Jobs.defs.has(id); };
+  Jobs.def = function (id) { return Jobs.defs[id] || null; };
+  Jobs.isRegistered = function (id) { return !!Jobs.defs[id]; };
+  Jobs.defIds = function () { return Object.keys(Jobs.defs); };
 
   Jobs.make = function (defId, targetA, targetB, opts) {
     return new Job(defId, targetA, targetB, opts);
@@ -465,7 +480,7 @@
      plan was sane once. */
   Jobs.start = function (pawn, job) {
     if (!pawn || !job) return false;
-    var def = job.def || Jobs.defs.get(job.defId);
+    var def = job.def || Jobs.defs[job.defId];
     if (!def || typeof def.toils !== 'function') {
       if (root.Game && root.Game.debug) console.log('[jobs] no def for ' + job.defId);
       return false;
@@ -599,7 +614,7 @@
   Jobs.report = function (pawn) {
     var job = pawn && pawn.job;
     if (!job) return 'Standing';
-    var def = job.def || Jobs.defs.get(job.defId);
+    var def = job.def || Jobs.defs[job.defId];
     var rs = def && def.reportString;
     if (typeof rs === 'function') {
       try {
@@ -705,7 +720,7 @@
             return (++s.fails > 1) ? 'fail' : 'stay';
           }
           if (!path.length) { stopMoving(pawn); return 'next'; }
-          setPath(pawn, path, map);
+          setPath(pawn, path, map, pos.x, pos.y, mode);
           s.destX = pos.x; s.destY = pos.y; s.cool = 12; s.fails = 0;
         }
         return 'stay';
@@ -1442,6 +1457,7 @@
       name: opts.name || 'wander',
       init: function (pawn, job, s) {
         s.legs = opts.legs || (job.count > 0 ? job.count : 3);
+        s.phase = 'pick';
         s.pause = 0;
         s.walkTicks = 0;
         s.total = 0;
@@ -1451,31 +1467,36 @@
         if (opts.requiresMentalState && !pawn.mentalState) return 'done';
         if (opts.maxTicks && s.total > opts.maxTicks) return 'done';
 
-        if (s.pause > 0) {
-          s.pause--;
-          if ((s.pause & 15) === 0) pawn.dir = U.randInt(0, 3);
-          if (opts.onPauseTick) opts.onPauseTick(pawn, job, s);
-          return 'stay';
-        }
-        if (isMoving(pawn)) {
+        if (s.phase === 'walk') {
           /* A leg that never ends means the path leads somewhere the
              pawn cannot actually walk; take the pause instead. */
-          if (++s.walkTicks < 600) return 'stay';
+          if (isMoving(pawn) && ++s.walkTicks < 600) return 'stay';
           stopMoving(pawn);
-        }
-        if (s.walkTicks > 0 || s.started) {
-          s.walkTicks = 0;
-          if (--s.legs <= 0) return 'done';
-        }
-        s.started = 1;
-        var cell = randomNearbyCell(pawn, opts.radius || 6);
-        if (!cell || !walkTo(pawn, cell.x, cell.y, PE.ON_CELL)) {
+          s.phase = 'pause';
           s.pause = opts.pause ? opts.pause() : U.randInt(40, 140);
-          if (--s.legs <= 0) return 'done';
           return 'stay';
         }
-        s.pause = 0;
-        s.walkTicks = 1;
+
+        if (s.phase === 'pause') {
+          if (--s.pause > 0) {
+            if ((s.pause & 15) === 0) pawn.dir = U.randInt(0, 3);
+            if (opts.onPauseTick) opts.onPauseTick(pawn, job, s);
+            return 'stay';
+          }
+          if (--s.legs <= 0) return 'done';
+          s.phase = 'pick';
+        }
+
+        var cell = randomNearbyCell(pawn, opts.radius || 6);
+        if (cell && walkTo(pawn, cell.x, cell.y, PE.ON_CELL)) {
+          s.phase = 'walk';
+          s.walkTicks = 0;
+          return 'stay';
+        }
+        /* Boxed in. Stand and look around rather than burning a tick
+           per frame on a search that will fail again. */
+        s.phase = 'pause';
+        s.pause = opts.pause ? opts.pause() : U.randInt(40, 140);
         return 'stay';
       }
     });
@@ -2039,12 +2060,15 @@
             var H = sys('Health');
             if (!H || !H.tend) return 'fail';
             var medicine = (pawn.carried && pawn.carried.def.isMedicine) ? pawn.carried : null;
-            var ok = H.tend(patient, pawn, medicine);
+            H.tend(patient, pawn, medicine);
             if (medicine) {
               medicine.stack -= 1;
               if (medicine.stack <= 0) { pawn.carried = null; map.despawnThing(medicine); }
             }
-            return ok ? 'done' : 'done';
+            /* Done either way: a patient whose last wound closed while
+               the doctor walked over needed no treatment, and that is
+               not a failure worth restarting the job over. */
+            return 'done';
           }
         })
       ];
@@ -2114,13 +2138,20 @@
         if (++s.ticks > CARRY_TIMEOUT) return 'fail';
 
         dragCarriedPawn(pawn);
-        if (pawn.x === bed.x && pawn.y === bed.y) { stopMoving(pawn); return 'next'; }
+        if (pawn.x === bed.x && pawn.y === bed.y) {
+          stopMoving(pawn);
+          s.delivered = true;
+          return 'next';
+        }
         if (!isMoving(pawn) && !walkTo(pawn, bed.x, bed.y, PE.ON_CELL)) return 'fail';
         return 'stay';
       },
-      end: function (pawn) {
+      end: function (pawn, job, s) {
         /* Dropped mid-carry - interrupted, downed, killed - leaves the
-           patient on the floor where the carrier stopped. */
+           patient on the floor where the carrier stopped. Arriving at
+           the bed is not a drop: the next toil still needs both of them
+           in hand to tuck the patient in. */
+        if (s.delivered) return;
         var patient = pawn.carriedPawn;
         if (!patient) return;
         dragCarriedPawn(pawn);
@@ -2292,7 +2323,7 @@
     toils: function () {
       return [Toils.custom({
         name: 'tantrum',
-        init: function (pawn, job, s) { s.target = null; s.cool = 0; s.ticks = 0; },
+        init: function (pawn, job, s) { s.target = null; s.cool = 0; s.ticks = 0; s.scan = 0; },
         tick: function (pawn, job, s) {
           var map = pawn.map;
           if (!pawn.mentalState) return 'done';
@@ -2301,9 +2332,13 @@
 
           var victim = s.target && map.things.get(s.target);
           if (!victim || !victim.spawned || victim.hp <= 0) {
-            victim = nearestSmashable(map, pawn);
+            /* Sweeping every building on the map is not a per-tick
+               question. When there is nothing in reach, ask again in
+               half a second and storm about in the meantime. */
+            if (s.scan > 0) { s.scan--; victim = null; }
+            else victim = nearestSmashable(map, pawn);
             if (!victim) {
-              /* Nothing worth kicking: storm about instead. */
+              if (s.scan <= 0) s.scan = 30;
               var cell = randomNearbyCell(pawn, 6);
               if (cell && !isMoving(pawn)) walkTo(pawn, cell.x, cell.y, PE.ON_CELL);
               return 'stay';
@@ -2362,7 +2397,7 @@
     toils: function () {
       return [Toils.custom({
         name: 'berserk',
-        init: function (pawn, job, s) { s.ticks = 0; s.victim = 0; },
+        init: function (pawn, job, s) { s.ticks = 0; s.victim = 0; s.tx = -1; s.ty = -1; s.scan = 0; },
         tick: function (pawn, job, s) {
           var map = pawn.map;
           if (!pawn.mentalState) return 'done';
@@ -2370,15 +2405,23 @@
 
           var victim = s.victim ? pawnIndex(map).get(s.victim) : null;
           if (!victim || victim.dead || victim.downed || U.dist(pawn.x, pawn.y, victim.x, victim.y) > 22) {
+            if (s.scan > 0) { s.scan--; return 'stay'; }
             victim = nearestVictim(map, pawn);
-            if (!victim) return 'stay';
+            if (!victim) { s.scan = 20; return 'stay'; }
             s.victim = victim.id;
+            s.tx = -1; s.ty = -1;
           }
 
           var d = U.dist(pawn.x, pawn.y, victim.x, victim.y);
           if (d > 1.45) {
-            if (!isMoving(pawn) || pawn.destX !== victim.x || pawn.destY !== victim.y) {
-              if (!walkTo(pawn, victim.x, victim.y, PE.TOUCH)) { s.victim = 0; }
+            /* Repath only when the path ran out or the quarry left the
+               cell it was aimed at. Comparing the pawn's own path end
+               against the victim's cell would never match - a TOUCH
+               path ends beside them - and would rebuild the path every
+               tick, which resets the step and freezes the chase. */
+            if (!isMoving(pawn) || U.cheb(victim.x, victim.y, s.tx, s.ty) > 1) {
+              if (walkTo(pawn, victim.x, victim.y, PE.TOUCH)) { s.tx = victim.x; s.ty = victim.y; }
+              else s.victim = 0;
             }
             return 'stay';
           }
@@ -2417,7 +2460,7 @@
     toils: function () {
       return [Toils.custom({
         name: 'binge',
-        init: function (pawn, job, s) { s.ticks = 0; s.chew = 0; s.target = 0; },
+        init: function (pawn, job, s) { s.ticks = 0; s.chew = 0; s.target = 0; s.scan = 0; },
         tick: function (pawn, job, s) {
           var map = pawn.map;
           if (!pawn.mentalState) return 'done';
@@ -2437,8 +2480,12 @@
 
           var food = s.target ? map.things.get(s.target) : null;
           if (!food || !food.spawned || food.stack <= 0) {
+            /* Same reasoning as the tantrum: the food search walks every
+               edible stack on the map, so an empty larder is asked
+               about on a slow beat rather than sixty times a second. */
+            if (s.scan > 0) { s.scan--; return 'stay'; }
             food = findFood(map, pawn, { forOther: true });
-            if (!food) return 'stay';
+            if (!food) { s.scan = 60; return 'stay'; }
             s.target = food.id;
           }
 
