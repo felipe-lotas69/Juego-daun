@@ -48,6 +48,7 @@
   var RARE_TICKS = 250;
   var BREED_PER_DAY = 0.07;
   var TAME_CAP = 30;
+  var FOOD_FALL_PER_DAY = 1.6;        /* only used when needs.js is absent */
 
   /* ---------- species data ----------
      def_pawns.js owns the pawnKind defs and its numbers always win. This
@@ -89,8 +90,24 @@
         else if (nested && nested[key] !== undefined && nested[key] !== null) out[key] = nested[key];
       }
       out.label = def.label || kindId;
+      /* Whether a species grazes is read off what it eats, not off the
+         grazer flag: def_pawns.js states that flag once, in the defaults
+         block every animal kind shares, so it says the same thing about a
+         wolf as about a deer whichever way it is set. Diet and predator
+         are the fields that actually vary per kind. */
+      out.grazer = out.predator !== true && def.diet !== 'carnivore';
+      /* def_pawns.js spells the boomrat's party trick two ways and states
+         the blast it makes; both are taken so the numbers live in one
+         place rather than being repeated here. */
+      if (def.explodeOnDeath === true || def.explosionRadius > 0) out.explodes = true;
+      if (def.explosionRadius > 0) out.explosionRadius = def.explosionRadius;
+      if (def.explosionDamage > 0) out.explosionDamage = def.explosionDamage;
+      if (def.explosionType) out.explosionType = def.explosionType;
     }
     if (!out.label) out.label = kindId;
+    if (!out.explosionRadius) out.explosionRadius = 2.9;
+    if (!out.explosionDamage) out.explosionDamage = 10;
+    if (!out.explosionType) out.explosionType = 'flame';
     out.id = kindId;
     /* Meat and leather scale off body size unless the def says otherwise.
        0.05 nutrition per unit of raw meat means a deer is worth about two
@@ -124,7 +141,7 @@
     m = pawn.animalMind = {
       manhunterTicks: 0, revengeId: 0, threatId: 0, fleeUntil: 0, nextScan: 0,
       fleeSince: 0, windedUntil: 0,
-      preyId: 0, nextPrey: 0, grazeIdx: 0, nextGraze: 0, releaseTargetId: 0,
+      preyId: 0, nextPrey: 0, nextRare: 0, grazeIdx: 0, nextGraze: 0, releaseTargetId: 0,
       tameWork: 0, trainWork: 0, slaughterWork: 0, releaseWork: 0,
       desType: '', desX: -1, desY: -1,
       lastJob: '', lastJobTick: -99, repeats: 0, deathDone: 0, ownNeeds: 0
@@ -243,11 +260,17 @@
     return true;
   }
 
+  /* pawn.js's own stopPath is the one that leaves the pawn in a state
+     tickMove and onStepBlocked agree about - it clears moveProgress and
+     snaps fx/fy back onto the tile, so a pawn halted mid-step does not
+     stay drawn between two of them. */
   function stopMoving(pawn) {
+    if (typeof pawn.stopPath === 'function') { pawn.stopPath(); return; }
     pawn.path = null;
     pawn.pathIdx = 0;
-    pawn.pathDest = null;
-    pawn.destX = pawn.x; pawn.destY = pawn.y;
+    pawn.moveProgress = 0;
+    pawn.pathDest = -1;
+    pawn.fx = pawn.x; pawn.fy = pawn.y;
   }
 
   function cellOk(map, pawn, x, y) {
@@ -289,6 +312,12 @@
 
   Animals.think = function (pawn) {
     if (!pawn || pawn.isAnimal !== true || pawn.dead || pawn.downed || !pawn.map) return null;
+    /* The rare tick is driven from here as well as from pawn.js, because
+       an animal whose rare tick never runs never stops being a manhunter,
+       never drags its designation along behind it and never breeds. Both
+       callers go through the same 250-tick stamp, so whichever arrives
+       first does the work and the other costs one comparison. */
+    Animals.tickRare(pawn);
     return vet(pawn, decide(pawn));
   };
 
@@ -381,16 +410,21 @@
 
     if (wantsSleep(pawn, k)) return Jobs.make('layDown', T.cell(pawn.x, pawn.y));
 
-    var cell = randomNearbyCell(pawn, map, 8);
-    if (cell) return Jobs.make('wander', T.cell(cell.x, cell.y));
-    return waitJob(pawn, U.randInt(60, 180));
+    return wanderJob();
   }
 
+  /* jobs.js's wander toil picks its own legs and its own cells and never
+     looks at a target, so handing it one is work thrown away - and worse,
+     an animal that momentarily could not find a cell would sit down
+     instead of browsing. All it reads is the number of legs. */
+  function wanderJob() {
+    return Jobs.make('wander', null, null, { count: U.randInt(2, 4) });
+  }
+
+  /* jobs.js's wait def reads its length off job.count, and the Job
+     constructor keeps no other field that could carry one. */
   function waitJob(pawn, ticks) {
-    /* jobs.js decides how it reads a wait length; every plausible field
-       is filled so a nap is a nap whichever one it looks at. */
-    return Jobs.make('wait', T.cell(pawn.x, pawn.y), null,
-      { count: ticks, ticks: ticks, workLeft: ticks });
+    return Jobs.make('wait', T.cell(pawn.x, pawn.y), null, { count: ticks });
   }
 
   /* ---------- fear ---------- */
@@ -451,15 +485,11 @@
       });
       if (victim) mind.revengeId = victim.id;
     }
-    if (!victim) {
-      var cell = randomNearbyCell(pawn, map, 10);
-      return cell ? Jobs.make('wander', T.cell(cell.x, cell.y)) : waitJob(pawn, 120);
-    }
+    if (!victim) return wanderJob();
     var R = root.Regions;
     if (R && R.sameArea && !R.sameArea(map, pawn.x, pawn.y, victim.x, victim.y)) {
       mind.revengeId = 0;
-      var away = randomNearbyCell(pawn, map, 8);
-      return away ? Jobs.make('wander', T.cell(away.x, away.y)) : waitJob(pawn, 120);
+      return wanderJob();
     }
     return Jobs.make('attackMelee', T.pawn(victim));
   }
@@ -617,17 +647,25 @@
       if (!cellOk(map, pawn, x, y)) continue;
       bestScore = score; best = pl;
       /* The ring is sorted nearest-first, so once something decent is in
-         hand there is no point walking the whole disc. */
-      if (i > 90) break;
+         hand there is no point walking the whole disc. Stopping before
+         anything was found would quietly shrink the search radius. */
+      if (best && i > 90) break;
     }
     return best;
   }
 
-  function bitePlant(pawn, k, plant, map) {
+  /* Taking the mouthful and standing still to chew it are separate, because
+     the rare tick eats what is already underfoot without wanting to cancel
+     whatever the animal was walking towards. */
+  function eatPlant(pawn, k, plant, map) {
     var take = Math.min(plant.growth, U.clamp(0.3 * k.bodySize, 0.15, 1));
     plant.growth -= take;
     addFood(pawn, (plant.def.nutrition * take * 2.2) / Math.max(0.5, Math.sqrt(k.bodySize)));
     if (plant.growth <= 0.04) map.destroyThing(plant, 'eaten');
+  }
+
+  function bitePlant(pawn, k, plant, map) {
+    eatPlant(pawn, k, plant, map);
     stopMoving(pawn);
     return waitJob(pawn, U.randInt(90, 170));
   }
@@ -656,8 +694,16 @@
      THE COLONY'S SIDE: hunting, taming, training, slaughter
      ============================================================ */
 
+  /* Combat.weaponOf is asked first because it also resolves a weapon that
+     came back from a save carrying only its defId; reading equipment.def
+     alone would disarm every hunter across a reload. */
   function weaponRange(pawn) {
-    var eq = pawn.equipment, w = eq && eq.def ? eq.def.weapon : null;
+    var Combat = root.Combat;
+    var w = (Combat && Combat.weaponOf) ? Combat.weaponOf(pawn) : null;
+    if (!w) {
+      var eq = pawn && pawn.equipment;
+      w = eq && eq.def ? eq.def.weapon : null;
+    }
     if (!w || !w.ranged) return 0;
     return w.range > 1.5 ? w.range : 0;
   }
@@ -685,10 +731,32 @@
      itself is worth, paid once when the quarry goes down, so a hunt still
      teaches a colonist something even when the kill came from one lucky
      shot at the treeline. */
-  function creditKill(pawn, job, s) {
+  function creditKill(pawn, s) {
     if (s.credited) return;
     s.credited = 1;
     gainSkill(pawn, weaponRange(pawn) ? 'shooting' : 'melee', 40);
+  }
+
+  /* The quarry of every hunt in progress, by job id.
+
+     A bullet kills between one tick and the next, and the moment it does
+     pawn.js takes the animal off map.pawns and T.resolve starts answering
+     null - so by the time the driver notices, the only way back to the
+     pawn that just died is a reference kept from the tick before. It is
+     held here rather than in job.state because save.js writes a job
+     straight out and a pawn in there would drag the map through the
+     serialiser. The toil's end handler always runs, on the step to the
+     next toil and on any failure, so nothing outlives its hunt. */
+  var _quarry = new Map();
+
+  function makeCorpse(map, state) {
+    if (!Defs.has('thing', 'corpse') || !map.spawnThing) return null;
+    return map.spawnThing('corpse', state.x, state.y, {
+      corpse: {
+        name: state.preyName, kindId: state.preyKind, faction: 'wild',
+        rotTicks: 0, pawnId: state.preyId
+      }
+    });
   }
 
   function corpseOf(map, pawnId) {
@@ -700,21 +768,12 @@
     return null;
   }
 
-  /* pawn.js spawns the corpse when something dies. If a kill somehow left
-     nothing behind, the meat is not allowed to vanish with it. */
-  function makeCorpse(map, state) {
-    if (!Defs.has('thing', 'corpse') || !map.spawnThing) return null;
-    var c = map.spawnThing('corpse', state.x, state.y, {});
-    if (!c) return null;
-    c.corpse = { name: state.preyName, kindId: state.preyKind, faction: 'wild', rotTicks: 0, pawnId: state.preyId };
-    return c;
-  }
 
   /* ---------- hunt ---------- */
 
   Jobs.register('hunt', {
     label: 'hunt',
-    reportString: 'Hunting.',
+    reportString: 'Hunting {A}.',
     suspendable: true,
     toils: function () {
       var PE = root.Path.PE;
@@ -740,6 +799,7 @@
           job.state.preyKind = prey.kindId;
           job.state.preyName = labelOf(prey);
           job.state.x = prey.x; job.state.y = prey.y;
+          _quarry.set(job.id, prey);
         }
         if (!weaponRange(pawn) && prey) {
           msg(nameOf(pawn) + ' is hunting ' + labelOf(prey) + ' with no ranged weapon.', 'threat', pawn);
@@ -747,23 +807,24 @@
       },
       tick: function (pawn, job, s) {
         var map = pawn.map, prey = T.resolve(job.targetA, map);
-        /* A quarry that stops resolving mid-hunt died and was cleared off
-           the map; the corpse is still ours to fetch. */
+        /* A quarry that stops resolving mid-hunt has died - T.resolve
+           answers null for a dead pawn and pawn.js has already taken it
+           off the map. The corpse is still ours to fetch, and the animal
+           itself still has to be told it is dead, because nothing between
+           the trigger and here does that: a shot boomrat only detonates
+           because of this call. */
         if (!prey) {
-          if (!s.engaged) return 'next';
+          if (!s.engaged) { _quarry.delete(job.id); return 'next'; }
           job.state.killed = 1;
-          if (map.undesignate) map.undesignate(job.state.x, job.state.y, 'hunt');
-          creditKill(pawn, job, s);
+          var shot = _quarry.get(job.id);
+          if (shot) Animals.notifyDeath(shot, pawn);
+          else if (map.undesignate) map.undesignate(job.state.x, job.state.y, 'hunt');
+          creditKill(pawn, s);
           return 'next';
         }
         s.engaged = 1;
+        _quarry.set(job.id, prey);
         job.state.x = prey.x; job.state.y = prey.y;
-        if (prey.dead) {
-          job.state.killed = 1;
-          Animals.notifyDeath(prey, pawn);
-          creditKill(pawn, job, s);
-          return 'next';
-        }
         if (++s.ticks > HUNT_GIVE_UP) return 'fail';
 
         var range = weaponRange(pawn);
@@ -778,7 +839,7 @@
           faceToward(pawn, prey);
           killAnimal(prey, pawn, 'hunted');
           job.state.killed = 1;
-          creditKill(pawn, job, s);
+          creditKill(pawn, s);
           return 'next';
         }
 
@@ -812,7 +873,7 @@
         if (Combat && Combat.tryAttack) Combat.tryAttack(pawn, prey);
         return 'stay';
       },
-      end: function (pawn) { clearStance(pawn); }
+      end: function (pawn, job) { clearStance(pawn); _quarry.delete(job.id); }
     });
   }
 
@@ -888,14 +949,14 @@
   }
 
   handlerJob('tame', {
-    key: 'tame', label: 'tame', report: 'Taming the animal.', progress: 'tameWork',
+    key: 'tame', label: 'tame', report: 'Taming {A}.', progress: 'tameWork',
     work: function (a) { return 350 + info(a.kindId).wildness * 750; },
     valid: function (a) { return !a.tame && !isManhunter(a) && a.faction !== 'player'; },
     done: function (a, pawn) { Animals.tryTame(a, pawn); }
   });
 
   handlerJob('slaughter', {
-    key: 'slaughter', label: 'slaughter', report: 'Slaughtering the animal.', progress: 'slaughterWork',
+    key: 'slaughter', label: 'slaughter', report: 'Slaughtering {A}.', progress: 'slaughterWork',
     work: function (a) { return 300 + info(a.kindId).bodySize * 260; },
     valid: function (a) { return a.tame === true && a.faction === 'player'; },
     done: function (a, pawn) {
@@ -907,7 +968,7 @@
   });
 
   handlerJob('trainAnimal', {
-    key: 'train', label: 'train', report: 'Training the animal.', progress: 'trainWork',
+    key: 'train', label: 'train', report: 'Training {A}.', progress: 'trainWork',
     work: function () { return 420; },
     valid: function (a) { return a.tame === true && !!Animals.trainingNeeded(a); },
     done: function (a, pawn) {
@@ -926,7 +987,7 @@
   });
 
   handlerJob('releaseAnimal', {
-    key: 'release', label: 'release', report: 'Releasing the animal.', progress: 'releaseWork',
+    key: 'release', label: 'release', report: 'Releasing {A}.', progress: 'releaseWork',
     work: function () { return 200; },
     valid: function (a) { return a.tame === true && a.faction === 'player'; },
     done: function (a, pawn) {
@@ -1096,9 +1157,21 @@
   function syncDesignation(animal, mind) {
     var map = animal.map;
     if (!map || !map.designate || !mind.desType) return;
-    if (mind.desX === animal.x && mind.desY === animal.y) return;
+    if (mind.desX === animal.x && mind.desY === animal.y) {
+      /* save.js writes a designation back out as type and defId only, so
+         a mirror that came from a file has forgotten whose it is and the
+         sweep below would never recognise it again. Re-stamp it. */
+      var standing = map.designationAt ? map.designationAt(animal.x, animal.y, mind.desType) : null;
+      if (standing && standing.pawnId !== animal.id) standing.pawnId = animal.id;
+      return;
+    }
     if (mind.desX >= 0 && map.undesignate) map.undesignate(mind.desX, mind.desY, mind.desType);
-    map.designate(animal.x, animal.y, mind.desType, { defId: animal.kindId, pawnId: animal.id });
+    /* map.designate copies only defId out of its options, so the owning
+       pawn goes onto the record it hands back - that record is the one
+       stored in map.designations, and sweepDesignations reads the id off
+       it to tell an animal's mirror from a mining or chopping mark. */
+    var d = map.designate(animal.x, animal.y, mind.desType, { defId: animal.kindId });
+    if (d) d.pawnId = animal.id;
     mind.desX = animal.x; mind.desY = animal.y;
   }
 
@@ -1144,7 +1217,11 @@
 
   /* ---------- spawning ---------- */
 
-  Animals.wildCap = function (map) { return 20 + Math.floor(map.size / 2400); };
+  /* How many wild animals the map carries before ambient packs stop
+     arriving. mapgen.js seeds three to five herds of up to six at world
+     gen, so a cap that a fresh 140x140 map already sits on would mean no
+     births and no wildlife incidents for the rest of the game. */
+  Animals.wildCap = function (map) { return 18 + Math.floor(map.size / 900); };
 
   Animals.wildCount = function (map) {
     var n = 0, list = map.pawns;
@@ -1186,10 +1263,18 @@
     var out = [], MG = root.MapGen;
     if (!map || !MG || typeof MG.makePawn !== 'function') return out;
     var k = info(kindId);
-    if (count === undefined || count === null) count = U.randInt(k.packSize[0], k.packSize[1]);
-    var room = Animals.wildCap(map) - Animals.wildCount(map);
-    if (room <= 0) return out;
-    if (count > room) count = room;
+    /* The cap is what stops ambient packs from filling the map, so it
+       binds the pack this function picks for itself. A caller that names
+       a count is a scripted arrival - mapgen's two predators, the
+       predatorAttack and animalSelfTame incidents - and gets what it
+       asked for, or the first wolf to walk out of the trees after the map
+       filled up would never arrive at all. */
+    if (count === undefined || count === null) {
+      count = U.randInt(k.packSize[0], k.packSize[1]);
+      var room = Animals.wildCap(map) - Animals.wildCount(map);
+      if (room <= 0) return out;
+      if (count > room) count = room;
+    }
     for (var i = 0; i < count; i++) {
       var c = spawnCellNear(map, x + U.randInt(-3, 3), y + U.randInt(-3, 3), 7);
       if (!c) break;
@@ -1266,13 +1351,18 @@
     mind.manhunterTicks = 0;
     mind.releaseTargetId = 0;
 
-    /* A boomrat takes the room with it. This fires for deaths animals.js
-       causes; a boomrat shot by a raider is pawn.js's death to announce. */
-    if (info(animal.kindId).explodes && animal.map) {
+    /* A boomrat takes the room with it. Every death this file causes -
+       a hunt, a slaughter, a predator finishing its meal - comes through
+       here. A boomrat killed by anything else only detonates if whoever
+       owns that death hook calls this too. */
+    var k = info(animal.kindId);
+    if (k.explodes && animal.map) {
       var Combat = root.Combat;
       if (Combat && Combat.explosion) {
-        Combat.explosion(animal.map, animal.x, animal.y, 2.9, 10, 'flame', { instigator: killer || null });
-        msg('The ' + info(animal.kindId).label + ' went up.', 'threat', animal);
+        Combat.explosion(animal.map, animal.x, animal.y,
+          k.explosionRadius, k.explosionDamage, k.explosionType,
+          { instigator: killer || null });
+        msg('The ' + k.label + ' went up.', 'threat', animal);
       }
     }
 
@@ -1291,18 +1381,23 @@
   /* ---------- the rare tick ----------
      needs.js already decays food for every pawn it knows about; this only
      fills in for an animal that was never given needs, then handles what
-     is specific to being an animal. */
+     is specific to being an animal. Safe to call more often than every
+     250 ticks: the stamp on the animal holds the real cadence, which is
+     what lets think() drive it as well as pawn.js. */
 
   Animals.tickRare = function (pawn) {
     if (!pawn || pawn.isAnimal !== true || pawn.dead) return;
     var mind = mindOf(pawn), k = info(pawn.kindId);
+    var beat = now();
+    if (beat && mind.nextRare > beat) return;
+    mind.nextRare = beat + RARE_TICKS;
 
     if (!pawn.needs) {
       pawn.needs = { food: 0.8, rest: 0.8, joy: 1, comfort: 0.5, outdoors: 1 };
       mind.ownNeeds = 1;
     }
     if (mind.ownNeeds) {
-      pawn.needs.food = U.clamp01(pawn.needs.food - (1.0 * RARE_TICKS) / 60000);
+      pawn.needs.food = U.clamp01(pawn.needs.food - (FOOD_FALL_PER_DAY * RARE_TICKS) / 60000);
     }
 
     /* Starvation is not handled here on purpose: health.js reads
@@ -1311,10 +1406,12 @@
        colonist who runs out of meals does. */
 
     /* Grazing while standing still: think() walks an animal to its food,
-       this is the mouthful it takes when the food is already underfoot. */
+       this is the mouthful it takes when the food is already underfoot.
+       It must not stop a walking animal, so it eats without ending the
+       walk the way the grazing job does. */
     if (k.grazer && pawn.needs.food < GRAZE_AT && !pawn.downed && pawn.map) {
       var here = pawn.map.plantAt(pawn.x, pawn.y);
-      if (edible(here)) bitePlant(pawn, k, here, pawn.map);
+      if (edible(here)) eatPlant(pawn, k, here, pawn.map);
     }
 
     if (mind.manhunterTicks > 0) {
@@ -1323,13 +1420,12 @@
         mind.manhunterTicks = 0;
         pawn.manhunter = false;
         mind.revengeId = 0;
-        mind.fleeUntil = now() + 900;
+        mind.fleeUntil = beat + 900;
       }
     }
 
     if (mind.desType) syncDesignation(pawn, mind);
-    var t = now();
-    if (t - _sweepTick >= 2000) { _sweepTick = t; sweepDesignations(pawn.map); }
+    if (beat - _sweepTick >= 2000) { _sweepTick = beat; sweepDesignations(pawn.map); }
 
     tryBreed(pawn, mind, k);
   };

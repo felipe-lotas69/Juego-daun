@@ -255,6 +255,11 @@
     pointer.inside = true;
     closeFloatMenu();
 
+    /* A second button pressed mid-drag takes the drag over, and the
+       release of the first one is then ignored. Drop the old drag's
+       rectangle here or render.js keeps drawing it forever. */
+    if (drag.active) { drag.active = false; drag.mode = 'none'; endDragVisuals(); }
+
     var m = theMap();
 
     if (e.button === 1) {
@@ -348,27 +353,37 @@
     setPointer(e);
 
     var mode = drag.mode, moved = drag.moved;
+
+    if (mode === 'pan' || mode === 'rightpan') {
+      drag.active = false;
+      drag.mode = 'none';
+      drag.button = -1;
+      /* A right-drag that actually panned is not also an order. */
+      if (mode === 'rightpan' && !moved) handleRightClick(e);
+      return;
+    }
+
+    /* The release can land on a different cell than the last mousemove
+       reported, so the end of the drag is read here while drag.mode is
+       still what updateDragEnd tests for. */
+    updateDragEnd();
     drag.active = false;
     drag.mode = 'none';
     drag.button = -1;
 
-    if (mode === 'pan') return;
-
-    if (mode === 'rightpan') {
-      /* A right-drag that actually panned is not also an order. */
-      if (!moved) handleRightClick(e);
-      return;
-    }
-
-    updateDragEnd();
     var rect = { x0: dragRect.x0, y0: dragRect.y0, x1: dragRect.x1, y1: dragRect.y1 };
+    /* render.js draws a single-cell ghost under the cursor, so a tool
+       that places one thing has to place it there and not at the
+       rectangle's far corner - dragging right to left is otherwise a
+       ghost in one cell and a blueprint in another. */
+    var atX = drag.x1, atY = drag.y1;
     endDragVisuals();
 
     /* The modifier is read at release: reaching for shift mid-drag is
        a change of mind, and an honest one. */
     var additive = drag.additive || pointer.shift;
     if (mode === 'select') finishSelectDrag(rect, moved, additive);
-    else if (mode === 'tool') applyTool(rect, drag.erase || pointer.shift);
+    else if (mode === 'tool') applyTool(rect, atX, atY, drag.erase || pointer.shift);
   }
 
   function onWheel(e) {
@@ -552,14 +567,9 @@
     return !!(b && (b.isConduit || b.isSandbag || b.isTrap));
   }
 
-  function rectCells(rect, hollow, out) {
+  function rectCells(rect, out) {
     var x, y;
     out.length = 0;
-    if (hollow && rect.x1 > rect.x0 && rect.y1 > rect.y0) {
-      for (x = rect.x0; x <= rect.x1; x++) { out.push(x, rect.y0); out.push(x, rect.y1); }
-      for (y = rect.y0 + 1; y < rect.y1; y++) { out.push(rect.x0, y); out.push(rect.x1, y); }
-      return out;
-    }
     for (y = rect.y0; y <= rect.y1; y++) {
       for (x = rect.x0; x <= rect.x1; x++) {
         out.push(x, y);
@@ -571,20 +581,20 @@
 
   var cellScratch = [];
 
-  function applyTool(rect, erase) {
+  function applyTool(rect, atX, atY, erase) {
     var m = theMap(), t = tool();
     if (!m || !t) return;
     switch (t.kind) {
-      case 'build': applyBuild(m, t, rect); break;
+      case 'build': applyBuild(m, t, rect, atX, atY); break;
       case 'designate': applyDesignate(m, t, rect); break;
       case 'zone': applyZone(m, t, rect, erase); break;
       case 'cancel': applyCancel(m, rect); break;
-      case 'order': applyOrderTool(m, rect); break;
+      case 'order': applyOrderTool(m, atX, atY); break;
       default: break;
     }
   }
 
-  function applyBuild(m, t, rect) {
+  function applyBuild(m, t, rect, atX, atY) {
     var C = root.Construct;
     var def = buildDefOf(t.defId);
     if (!C || !C.placeBlueprint || !def) return;
@@ -592,12 +602,14 @@
     var multi = rect.x1 > rect.x0 || rect.y1 > rect.y0;
     var cells;
     if (multi && draggableDef(def)) {
-      /* Floors fill what you dragged over; walls, conduits and sandbags
-         trace its edge, which is how you raise a room in one sweep. */
-      cells = rectCells(rect, def.defCategory !== 'terrain', cellScratch);
+      /* Walls, floors, conduits and sandbags fill the rectangle. This
+         has to match render.js:drawBuildGhost, which previews every
+         cell of it: an outline here would place half of what the
+         player was shown. */
+      cells = rectCells(rect, cellScratch);
     } else {
       cellScratch.length = 0;
-      cellScratch.push(rect.x1, rect.y1);
+      cellScratch.push(atX, atY);
       cells = cellScratch;
     }
 
@@ -611,8 +623,12 @@
     if (!placed && cells.length === 2 && C.canPlace) {
       var x = cells[0], y = cells[1];
       /* Dragging a wall over your own wall means "take that down", and
-         placeBlueprint answers that with a designation, not a plan. */
-      if (!m.designationAt(x, y, 'deconstruct')) {
+         placeBlueprint answers that with a designation, not a plan. The
+         mark lands on the building's origin cell, which for anything
+         bigger than one tile is not the cell that was clicked. */
+      var standing = m.buildingAt(x, y);
+      var markX = standing ? standing.x : x, markY = standing ? standing.y : y;
+      if (!m.designationAt(markX, markY, 'deconstruct')) {
         var res = C.canPlace(m, def.id, x, y, rot);
         if (res && res.ok === false) notify(res.reason);
       }
@@ -662,11 +678,21 @@
   /* What the mark points at, so map.js can drop it when that thing
      stops existing rather than leaving orders on bare ground. */
   function designationSubject(m, type, x, y) {
-    var C = root.Construct;
-    if (type === 'mine') return C && C.canMine ? C.canMine(m, x, y) : null;
-    if (type === 'deconstruct') return m.buildingAt(x, y);
     if (type === 'chop' || type === 'harvest' || type === 'cut') return m.plantAt(x, y);
     return null;
+  }
+
+  /* Rock and buildings are construct.js's to mark: a 2x2 table clicked
+     on its bottom-right corner has to be designated at its origin, and
+     Construct.designate* is the only code that knows that. */
+  function markCell(m, type, x, y) {
+    var C = root.Construct;
+    if (type === 'mine') return !!(C && C.designateMine && C.designateMine(m, x, y));
+    if (type === 'deconstruct') {
+      return !!(C && C.designateDeconstruct && C.designateDeconstruct(m, x, y));
+    }
+    var subject = designationSubject(m, type, x, y);
+    return !!m.designate(x, y, type, subject ? { defId: subject.defId } : null);
   }
 
   function applyDesignate(m, t, rect) {
@@ -675,14 +701,12 @@
 
     if (ANIMAL_DESIGNATIONS[type]) { designateAnimals(m, type, rect); return; }
 
-    var cells = rectCells(rect, false, cellScratch), marked = 0;
+    var cells = rectCells(rect, cellScratch), marked = 0;
     for (var i = 0; i < cells.length; i += 2) {
       var x = cells[i], y = cells[i + 1];
       if (!canDesignateCell(m, type, x, y)) continue;
       if (m.designationAt(x, y, type)) continue;
-      var subject = designationSubject(m, type, x, y);
-      m.designate(x, y, type, subject ? { defId: subject.defId } : null);
-      marked++;
+      if (markCell(m, type, x, y)) marked++;
     }
     if (!marked && cells.length === 2) notify(NOTHING_TO[type] || 'Nothing to mark there.');
   }
@@ -723,7 +747,7 @@
     var Z = root.Zones;
     if (!Z) return;
     var kind = t.zoneKind || (t.zone && t.zone.kind) || 'stockpile';
-    var cells = rectCells(rect, false, cellScratch);
+    var cells = rectCells(rect, cellScratch);
     var picked = [], i, x, y;
 
     for (i = 0; i < cells.length; i += 2) {
@@ -755,7 +779,7 @@
 
   function applyCancel(m, rect) {
     var C = root.Construct, A = root.Animals;
-    var cells = rectCells(rect, false, cellScratch), i, x, y;
+    var cells = rectCells(rect, cellScratch), i, x, y;
 
     for (i = 0; i < cells.length; i += 2) {
       x = cells[i]; y = cells[i + 1];
@@ -777,10 +801,10 @@
     }
   }
 
-  function applyOrderTool(m, rect) {
+  function applyOrderTool(m, atX, atY) {
     var pawns = selectedColonists();
     if (!pawns.length) { clearTool(); return; }
-    issueDirectOrder(m, pawns, rect.x1, rect.y1);
+    issueDirectOrder(m, pawns, atX, atY);
     clearTool();
   }
 
@@ -896,10 +920,14 @@
     return null;
   }
 
-  function weaponRange(pawn) {
+  /* {range, min} of the equipped weapon, or a zero range for a pawn who
+     has to close. minRange matches the band combat.js actually fires
+     in, so a shot is never ordered that Combat.tryAttack would refuse. */
+  function weaponBand(pawn) {
     var C = root.Combat;
     var w = C && C.weaponOf ? C.weaponOf(pawn) : null;
-    return (w && w.ranged) ? (w.range || 0) : 0;
+    if (!w || !w.ranged) return { range: 0, min: 0 };
+    return { range: w.range || 0, min: w.minRange || 0 };
   }
 
   /* A shooter told to attack something out of range walks into range
@@ -914,20 +942,29 @@
       ? T.pawn(target) : T.thing(target);
     pawn.draftTarget = tgt;
 
-    var range = weaponRange(pawn);
+    var band = weaponBand(pawn);
     var d = U.dist(pawn.x, pawn.y, target.x, target.y);
     var los = !C.lineOfSight || C.lineOfSight(m, pawn.x, pawn.y, target.x, target.y);
 
-    if (range > 0) {
-      if (d <= range && los) return order(pawn, makeJob('attackStatic', tgt));
-      var spot = firingSpot(m, pawn, target, range);
+    if (band.range > 0) {
+      if (d <= band.range && d >= band.min && los) {
+        return order(pawn, makeJob('attackStatic', tgt));
+      }
+      var spot = firingSpot(m, pawn, target, band.range);
       if (spot) {
         var walk = makeJob('goto', T.cell(spot.x, spot.y));
         if (order(pawn, walk)) {
-          /* The shot is queued behind the walk, so arriving in range is
-             the same order continuing rather than a second click. */
-          var shoot = makeJob('attackStatic', tgt);
-          if (shoot && pawn.jobQueue) { shoot.playerForced = true; pawn.jobQueue.push(shoot); }
+          /* Drafted, the walk is enough: think.js reads draftTarget every
+             time the job ends and re-issues the shot from the new spot.
+             Queueing one as well would leave a stale order in jobQueue,
+             which undraft() does not clear - the pawn would run off and
+             shoot something minutes later for no visible reason.
+             Undrafted, nothing re-issues it, so the queue is the only
+             way the shot survives the walk. */
+          if (!pawn.drafted && pawn.jobQueue) {
+            var shoot = makeJob('attackStatic', tgt);
+            if (shoot) { shoot.playerForced = true; pawn.jobQueue.push(shoot); }
+          }
           return true;
         }
       }
@@ -1186,7 +1223,9 @@
       return;
     }
 
-    var ripe = p.harvestedThing &&
+    /* The same ripeness tests Plants.harvestable makes, minus the
+       designation one - taking this order is what adds that. */
+    var ripe = p.harvestedThing && p.harvestYield > 0 && !plant.blighted &&
       (plant.growth || 0) >= (p.harvestMinGrowth === undefined ? 1 : p.harvestMinGrowth);
     if (ripe) {
       var grower = worker(pawns, 'grow', x, y);
@@ -1372,12 +1411,12 @@
       case 'c': setTool({ kind: 'cancel' }); return;
       case 'g': setTool({ kind: 'zone', zoneKind: 'growing' }); return;
       case 'k': setTool({ kind: 'zone', zoneKind: 'stockpile' }); return;
-      case 'b': architect('structure'); return;
-      case 'e': architect('power'); return;
-      case 'p': architect('production'); return;
-      case 'u': architect('furniture'); return;
-      case 'y': architect('security'); return;
-      case 'l': architect('floor'); return;
+      case 'b': architect('structure', 'Structure'); return;
+      case 'e': architect('power', 'Power'); return;
+      case 'p': architect('production', 'Production'); return;
+      case 'u': architect('furniture', 'Furniture'); return;
+      case 'y': architect('security', 'Security'); return;
+      case 'l': architect('floor', 'Floors'); return;
       default: return;
     }
   }
@@ -1388,11 +1427,29 @@
     return panelOpen('menu') || panelOpen('modal');
   }
 
-  /* ui.js owns the architect panel, so a category key asks it to open
-     that category and does nothing at all if it has no such door. */
-  function architect(category) {
+  /* ui.js keeps the open architect category in a variable of its own and
+     exposes no setter, so the hotkey presses the button the player would
+     have clicked. The buttons carry their category's label as their only
+     text, which is what makes them findable from here. */
+  var ARCH_BUTTON_CLASS = 'arch-cat';
+
+  function architect(category, label) {
     var UIx = ui();
-    if (UIx && UIx.openArchitect) UIx.openArchitect(category);
+    if (UIx && UIx.openArchitect) { UIx.openArchitect(category); return; }
+    var panelNode = panel('architect');
+    if (!panelNode || !panelNode.querySelectorAll) return;
+    /* The class is read off className rather than asked for as a
+       selector, so this works the same against a real DOM and against
+       the stub tools/domstub.js boots the client with. */
+    var buttons = panelNode.querySelectorAll('button');
+    var want = label.toLowerCase();
+    for (var i = 0; i < buttons.length; i++) {
+      var b = buttons[i];
+      if (String(b.className || '').indexOf(ARCH_BUTTON_CLASS) < 0) continue;
+      if (String(b.textContent || '').trim().toLowerCase() !== want) continue;
+      if (typeof b.click === 'function') b.click();
+      return;
+    }
   }
 
   function toggleDraft() {
@@ -1408,11 +1465,11 @@
   }
 
   function rotateGhost() {
+    var UIx = ui();
+    if (UIx && UIx.rotateTool) { UIx.rotateTool(1); return; }
     var t = tool();
     if (!t || t.kind !== 'build') return;
     t.rot = ((t.rot | 0) + 1) & 3;
-    var UIx = ui();
-    if (UIx && UIx.onToolChanged) UIx.onToolChanged(t);
   }
 
   /* Delete cancels: the selected plans first, since that is what the

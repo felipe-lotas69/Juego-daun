@@ -616,6 +616,7 @@
   /* The renderer calls this for every visible cell every frame, so the
      body is a flag test, an array read and an add. */
   Power.lightAt = function (map, x, y) {
+    x = x | 0; y = y | 0;
     if (!map || x < 0 || y < 0 || x >= map.w || y >= map.h) return 0;
     var st = stateOf(map);
     if (st.lampDirty) rebuildLamps(map, st);

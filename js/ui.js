@@ -72,13 +72,14 @@
   var billsBuilding = null;
   var chipMap = new Map();
   var liveMessages = [];
+  var messageScratch = [];
   var seenMessages = new WeakSet();
   var alertCache = [];
   var lastAutosaveDay = -1;
   var floatCloser = null;
   var paintingSchedule = null;
   var lastSelected = null;
-  var started = false;
+  var speedBeforeMenu = 1;
 
   /* ------------------------------------------------------------------
      DOM helpers
@@ -253,27 +254,39 @@
   function workTypes() { return Defs.all('workType') || []; }
   function skillDefs() { return Defs.all('skill') || []; }
 
+  function defLabel(category, id) {
+    var d = id ? Defs.maybe(category, id) : null;
+    return (d && d.label) || id || '';
+  }
+
   function researchProgress() {
     var R = root.Research;
-    if (!R) return 0;
-    var cur = R.current ? R.current() : null;
-    if (!cur) return 0;
-    if (typeof R.progressOf === 'function') return R.progressOf(cur.id) || 0;
-    if (typeof R.progress === 'number') return R.progress;
-    if (R.progress && typeof R.progress === 'object') return R.progress[cur.id] || 0;
-    return 0;
+    var cur = R && R.current ? R.current() : null;
+    return cur ? (R.progressOf(cur.id) || 0) : 0;
   }
   function researchDone(id) {
     var R = root.Research;
     return !id || (R && R.isDone ? !!R.isDone(id) : true);
   }
+  /* researchPrerequisite may be a string or a list of them, so the gate
+     is asked of Research rather than compared here. */
+  function researchUnlocked(def) {
+    var R = root.Research;
+    return (R && R.isUnlocked) ? !!R.isUnlocked(def) : true;
+  }
+  function researchNeededFor(def) {
+    var R = root.Research;
+    var r = (R && R.requiredFor) ? R.requiredFor(def.id) : null;
+    return (r && (r.label || r.id)) || null;
+  }
 
+  /* Jobs.make always hands back a Job; Jobs.start is the one that can
+     refuse it, so its answer is what the caller has to be told. */
   function forceJob(pawn, defId, targetA, targetB) {
     if (!pawn || !root.Jobs || !root.T) return false;
     var job = Jobs.make(defId, targetA || null, targetB || null, { playerForced: true });
     if (!job) return false;
-    Jobs.start(pawn, job);
-    return true;
+    return !!Jobs.start(pawn, job);
   }
 
   function lookAt(x, y) {
@@ -313,6 +326,15 @@
   UI.rotateTool = function (delta) {
     if (UI.tool.kind !== 'build') return;
     UI.tool.rot = ((UI.tool.rot + (delta < 0 ? 3 : 1)) & 3);
+    sig.arch = '';
+  };
+
+  /* input.js rotates the build ghost by writing UI.tool.rot in place,
+     which no setter sees, so it says so afterwards and the architect
+     redraws instead of showing the row it drew before the turn. */
+  UI.onToolChanged = function () {
+    sig.arch = '';
+    return UI.tool;
   };
 
   UI.setOverlay = function (name) {
@@ -674,7 +696,7 @@
           1 - t.rotProgress, t.rotProgress > 0.7 ? 'bad' : ''));
       }
     } else {
-      if (t.stuff) rows.push(row('kv', 'Made of', t.stuff, 0));
+      if (t.stuff) rows.push(row('kv', 'Made of', defLabel('thing', t.stuff), 0));
       if (def.building && (def.building.powerConsumed || def.building.powerProduced)) {
         var powered = root.Power && Power.isPowered ? Power.isPowered(t) : !!t.powered;
         rows.push(row('kv', 'Power', (def.building.powerProduced
@@ -815,10 +837,16 @@
 
   function buildPawnButtons(foot, p) {
     if (p.faction === 'player' && !p.isAnimal) {
+      /* Drafting is the pawn's own business: it drops the current job,
+         stops the path and clears the combat stance. Writing the flag
+         by hand would leave a drafted colonist walking to a stockpile. */
       foot.appendChild(btn(p.drafted ? 'Undraft' : 'Draft', p.drafted ? 'on' : '', function () {
-        p.drafted = !p.drafted;
-        if (!p.drafted) p.draftTarget = null;
-        if (root.Jobs && Jobs.end) Jobs.end(p, 'interrupted');
+        if (p.toggleDraft) p.toggleDraft();
+        else {
+          p.drafted = !p.drafted;
+          p.draftTarget = null;
+          if (root.Jobs && Jobs.end) Jobs.end(p, 'interrupted');
+        }
         sig.inspect = '';
       }));
       foot.appendChild(tip(btn('Prioritise', '', function () {
@@ -853,31 +881,31 @@
     /* Only a blueprint can still change material: once a frame has taken
        delivery of wood, swapping it to steel would strand the wood. */
     if (t.isBlueprint && root.Construct && Construct.stuffOptions) {
-      var opts = Construct.stuffOptions(t.buildDefId);
-      opts.forEach(function (s) {
-        var b = btn(s, t.stuff === s ? 'on mini' : 'mini', function () {
+      Construct.stuffOptions(t.buildDefId).forEach(function (s) {
+        foot.appendChild(btn(defLabel('thing', s), t.stuff === s ? 'on mini' : 'mini', function () {
           t.stuff = s;
           sig.inspect = '';
-        });
-        foot.appendChild(b);
+        }));
       });
     }
     foot.appendChild(btn('Go to', '', function () { lookAt(t.x, t.y); }));
   }
 
   function buildZoneButtons(foot, z) {
+    var Z = root.Zones;
     if (z.kind === 'stockpile') {
       for (var i = 0; i <= 4; i++) {
         (function (pr) {
-          foot.appendChild(btn(String(pr), (z.priority === pr ? 'on ' : '') + 'mini', function () {
-            z.priority = pr;
+          var label = (Z && Z.priorityLabel) ? Z.priorityLabel(pr) : String(pr);
+          foot.appendChild(tip(btn(String(pr), (z.priority === pr ? 'on ' : '') + 'mini', function () {
+            if (Z && Z.setPriority) Z.setPriority(Game.map, z, pr);
+            else z.priority = pr;
             sig.inspect = '';
-          }));
+          }), 'Priority ' + pr + ' - ' + label));
         })(i);
       }
     } else {
       var plants = Defs.plants().filter(function (d) { return d.plant && d.plant.sowable; });
-      if (!plants.length) plants = Defs.plants().filter(function (d) { return /^plant/.test(d.id); });
       var sel = el('select', 'mini-select');
       plants.forEach(function (d) {
         var o = el('option', null, d.label || d.id);
@@ -885,13 +913,16 @@
         if (z.plantDefId === d.id) o.selected = true;
         sel.appendChild(o);
       });
-      sel.addEventListener('change', function () { z.plantDefId = sel.value; sig.inspect = ''; });
+      sel.addEventListener('change', function () {
+        if (!Z || !Z.setPlant || !Z.setPlant(z, sel.value)) UI.toast('That crop cannot be sown.');
+        sig.inspect = '';
+      });
       foot.appendChild(sel);
       foot.appendChild(btn(z.allowSow ? 'Sowing on' : 'Sowing off', z.allowSow ? 'on mini' : 'mini',
         function () { z.allowSow = !z.allowSow; sig.inspect = ''; }));
     }
     foot.appendChild(btn('Delete zone', 'bad', function () {
-      if (root.Zones && Zones['delete']) Zones['delete'](Game.map, z);
+      if (Z && Z['delete']) Z['delete'](Game.map, z);
       Game.deselectAll();
       sig.inspect = '';
     }));
@@ -1023,7 +1054,8 @@
     });
     items.appendChild(tip(archButton(iconEl('des-cancel', 20), 'Cancel', null,
       UI.tool.kind === 'cancel', function () { UI.setTool({ kind: 'cancel' }); }),
-      'Remove designations, plans and zone tiles you drag over.'));
+      'Remove designations and unbuilt plans you drag over. ' +
+      'Select a zone and use Delete zone to get rid of one of those.'));
   }
 
   function renderZoneTools(items) {
@@ -1044,11 +1076,9 @@
       return;
     }
     list.forEach(function (def) {
-      var locked = def.researchPrerequisite && !researchDone(def.researchPrerequisite);
       var reason = null;
-      if (locked) {
-        var r = Defs.maybe('research', def.researchPrerequisite);
-        reason = 'Needs research: ' + ((r && r.label) || def.researchPrerequisite);
+      if (!researchUnlocked(def)) {
+        reason = 'Needs research: ' + (researchNeededFor(def) || 'something earlier');
       }
       var stuff = root.Construct && Construct.defaultStuff ? Construct.defaultStuff(def.id) : null;
       var active = UI.tool.kind === 'build' && UI.tool.defId === def.id;
@@ -1060,6 +1090,19 @@
       items.appendChild(b);
     });
   }
+
+  /* The architect category hotkeys in input.js (B, E, P, U, Y, L) come
+     through here, because the panel and which page of it is open are
+     ui.js's state and nothing outside should be reaching into them. */
+  UI.openArchitect = function (category) {
+    for (var i = 0; i < ARCH_CATEGORIES.length; i++) {
+      if (ARCH_CATEGORIES[i].id !== category) continue;
+      archCategory = category;
+      sig.arch = '';
+      return true;
+    }
+    return false;
+  };
 
   /* ------------------------------------------------------------------
      Overlay tabs: work, research, colonists, schedule, bills
@@ -1076,6 +1119,7 @@
   UI.closeTab = function () {
     openTabName = null;
     billsBuilding = null;
+    resProgress = null;
     P.tabPanel.classList.add('hidden');
   };
 
@@ -1117,9 +1161,14 @@
         s += colonists[i].id + ':' + JSON.stringify(colonists[i].workPriority || {}) + ';';
       }
     } else if (openTabName === 'research') {
+      /* The banked points climb every tick. They drive one line of text
+         and one bar, which are written in place below; rebuilding the
+         whole tree for them would re-measure every card three times a
+         second and throw away the mouse wherever it was. */
       var cur = root.Research && Research.current ? Research.current() : null;
-      s += (cur ? cur.id : '-') + ':' + Math.round(researchProgress()) + ':' +
+      s += (cur ? cur.id : '-') + ':' +
         (root.Research && Research.done ? Research.done.size : 0);
+      syncResearchProgress();
     } else if (openTabName === 'colonists') {
       for (i = 0; i < colonists.length; i++) {
         s += colonists[i].id + ':' + Math.round(moodOf(colonists[i]) * 20) + ':' +
@@ -1208,6 +1257,9 @@
     body.appendChild(grid);
   }
 
+  /* Every project carries a uiPosition whose x is the depth of its
+     prerequisite chain and whose y is the row the author wanted it on.
+     The depth is recomputed only for a project that has no such field. */
   function researchTiers() {
     var all = root.Research && Research.projects ? Research.projects() : [];
     var memo = {}, tiers = [];
@@ -1223,23 +1275,48 @@
       return t;
     }
     all.forEach(function (d) {
-      var t = tierOf(d);
+      var t = (d.uiPosition && d.uiPosition.x >= 0) ? (d.uiPosition.x | 0) : tierOf(d);
       if (!tiers[t]) tiers[t] = [];
       tiers[t].push(d);
     });
+    for (var i = 0; i < tiers.length; i++) {
+      if (!tiers[i]) { tiers[i] = []; continue; }
+      tiers[i].sort(function (a, b) {
+        var ay = a.uiPosition ? a.uiPosition.y : 0, by = b.uiPosition ? b.uiPosition.y : 0;
+        return ay - by;
+      });
+    }
     return tiers;
+  }
+
+  /* The two nodes the banked points are written into between rebuilds.
+     Both belong to the tab panel, so they die with it and are replaced
+     the next time the tree is drawn. */
+  var resProgress = null;
+
+  function syncResearchProgress() {
+    if (!resProgress) return;
+    var cur = root.Research && Research.current ? Research.current() : null;
+    if (!cur || cur.id !== resProgress.id) { sig.tab = ''; return; }
+    var prog = researchProgress(), cost = cur.cost || 1;
+    resProgress.head.textContent = 'Researching ' + (cur.label || cur.id) + ' - ' +
+      Math.round(prog) + ' / ' + Math.round(cost) + ' work';
+    resProgress.fill.style.width = Math.round(U.clamp01(prog / cost) * 100) + '%';
   }
 
   function renderResearch() {
     var body = tabFrame('Research');
     var cur = root.Research && Research.current ? Research.current() : null;
     var head = el('div', 'tp-note');
+    resProgress = null;
     if (cur) {
       var prog = researchProgress(), cost = cur.cost || 1;
       head.textContent = 'Researching ' + (cur.label || cur.id) + ' - ' +
         Math.round(prog) + ' / ' + Math.round(cost) + ' work';
       body.appendChild(head);
-      body.appendChild(barEl('wide', prog / cost, null));
+      var bar = barEl('wide', prog / cost, null);
+      body.appendChild(bar);
+      resProgress = { id: cur.id, head: head, fill: bar.querySelector('.nbar-fill') };
     } else {
       head.textContent = 'Nothing is being researched. Pick a project and put someone on the research bench.';
       body.appendChild(head);
@@ -1620,7 +1697,11 @@
 
   function renderLetters() {
     var list = Game.letters || [];
-    var s = list.length + '|' + list.map(function (l) { return l.id; }).join(',');
+    /* This runs every frame, so the signature is built by concatenation
+       rather than map/join, which would leave an array and a closure
+       behind sixty times a second for a stack that rarely changes. */
+    var s = list.length + '|';
+    for (var k = 0; k < list.length; k++) s += list[k].id + ',';
     if (s === sig.letters) return;
     sig.letters = s;
     clear(P.letters);
@@ -1639,9 +1720,13 @@
     var list = Game.messages || [];
     var now = root.performance ? performance.now() : 0;
     /* Walk back to the first line already on screen, then replay forward,
-       because the log reads top-down and the newest line belongs last. */
-    var fresh = [];
-    for (var i = list.length - 1; i >= 0; i--) {
+       because the log reads top-down and the newest line belongs last.
+       The walk stops after a screenful: a freshly loaded save arrives
+       with a hundred-odd messages nobody has seen, and every one of them
+       would be a DOM node built only to be trimmed on the same frame. */
+    var fresh = messageScratch;
+    fresh.length = 0;
+    for (var i = list.length - 1; i >= 0 && fresh.length < 12; i--) {
       if (seenMessages.has(list[i])) break;
       seenMessages.add(list[i]);
       fresh.push(list[i]);
@@ -1657,15 +1742,17 @@
         })(m.x, m.y);
       }
       P.messages.appendChild(node);
-      liveMessages.push({ node: node, born: now });
+      liveMessages.push({ node: node, born: now, fading: false });
     }
     while (liveMessages.length && now - liveMessages[0].born > MESSAGE_MS) {
       var old = liveMessages.shift();
       if (old.node.parentNode) old.node.parentNode.removeChild(old.node);
     }
     for (i = 0; i < liveMessages.length; i++) {
-      var age = now - liveMessages[i].born;
-      if (age > MESSAGE_MS - 2000) liveMessages[i].node.classList.add('fade');
+      var live = liveMessages[i];
+      if (live.fading || now - live.born <= MESSAGE_MS - 2000) continue;
+      live.fading = true;
+      live.node.classList.add('fade');
     }
     while (liveMessages.length > 10) {
       var extra = liveMessages.shift();
@@ -1676,7 +1763,9 @@
   UI.toast = function (text) {
     var node = el('div', 'msg toast', text);
     P.messages.appendChild(node);
-    liveMessages.push({ node: node, born: root.performance ? performance.now() : 0 });
+    liveMessages.push({
+      node: node, born: root.performance ? performance.now() : 0, fading: false
+    });
   };
 
   /* ------------------------------------------------------------------
@@ -1860,14 +1949,35 @@
     menuFields = { biome: biome.input, size: size.input, diff: diff.input, seed: seed };
 
     var actions = el('div', 'menu-actions');
-    actions.appendChild(btn('New colony', 'big-btn primary', function () {
+    /* Escape with nothing selected opens this screen, so a colony that
+       is still running needs the door back out before anything else on
+       it; without it the only way home is to reload the page. */
+    var running = Game.started && !Game.gameOver;
+    if (running) {
+      actions.appendChild(btn('Back to the colony', 'big-btn primary', function () {
+        UI.hideMenu();
+      }));
+      actions.appendChild(btn('Save colony', 'big-btn', function () {
+        UI.toast(UI.save() ? 'Colony saved.' : 'Could not save - storage is unavailable.');
+        UI.hideMenu();
+      }));
+    }
+    actions.appendChild(btn('New colony', 'big-btn' + (running ? '' : ' primary'), function () {
       var parts = menuFields.diff.value.split('|');
-      UI.startGame({
-        biome: menuFields.biome.value,
-        size: parseInt(menuFields.size.value, 10),
-        difficulty: { threatScale: parseFloat(parts[0]), name: parts[1] },
-        seed: seedValue(menuFields.seed.value)
-      });
+      var start = function () {
+        UI.startGame({
+          biome: menuFields.biome.value,
+          size: parseInt(menuFields.size.value, 10),
+          difficulty: { threatScale: parseFloat(parts[0]), name: parts[1] },
+          seed: seedValue(menuFields.seed.value)
+        });
+      };
+      if (!running) { start(); return; }
+      showModal('Leave this colony?',
+        'Starting a new one abandons the colonists you have now. Anything you have not ' +
+        'saved goes with them.',
+        [['Start a new colony', function () { closeModal(); start(); }, 'bad'],
+         ['Cancel', closeModal]]);
     }));
     /* Continue only exists when there is something to continue: an
        always-present grey button reads as a broken feature. */
@@ -1973,6 +2083,9 @@
   }
 
   UI.showMenu = function () {
+    /* The colony holds still while the menu is up, and picks up at the
+       speed it was running at rather than being shoved back to 1x. */
+    if (Game.speed > 0) speedBeforeMenu = Game.speed;
     Game.setSpeed(0);
     buildMenu();
     P.menu.classList.remove('hidden');
@@ -1983,7 +2096,7 @@
   UI.hideMenu = function () {
     P.menu.classList.add('hidden');
     closeModal();
-    if (Game.speed === 0) Game.setSpeed(1);
+    if (Game.speed === 0) Game.setSpeed(speedBeforeMenu || 1);
     resetPanels();
   };
 
@@ -1997,7 +2110,6 @@
         '. Try a different seed or map size.', [['Back', closeModal]]);
       return;
     }
-    started = true;
     lastAutosaveDay = Game.day();
     UI.hideMenu();
     centerOnColony();
@@ -2065,7 +2177,6 @@
       var raw = s.getItem(SAVE_KEY);
       if (!raw) return false;
       if (!Save.deserialize(JSON.parse(raw))) return false;
-      started = true;
       lastAutosaveDay = Game.day();
       resetPanels();
       centerOnColony();
@@ -2148,7 +2259,10 @@
     }
     renderLetters();
     pumpMessages();
-    if (openTabName && frame % TAB_FRAMES === 0) renderTab();
+    /* A click inside a tab invalidates its signature, and waiting up to
+       a third of a second to see the cell change reads as a dropped
+       click, so an invalidated tab redraws on the very next frame. */
+    if (openTabName && (frame % TAB_FRAMES === 0 || sig.tab === '')) renderTab();
     autosave();
   };
 

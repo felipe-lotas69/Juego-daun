@@ -59,12 +59,22 @@ if (growCells.length) {
   orders.growing = growCells.length;
 } else warn('no fertile ground near the colonists for a growing zone');
 
-/* Chop some trees and mine some rock. */
+/* Chop some trees and mine some rock. A player clicks the exposed face of
+   a mountain, not a cell buried three deep inside it, so only designate
+   rock a colonist could actually stand next to. */
+function minable(t) {
+  if (!t.def || !t.def.mineable) return false;
+  for (const [dx, dy] of U.ADJ8) {
+    const x = t.x + dx, y = t.y + dy;
+    if (map.inBounds(x, y) && map.passable(x, y) && sb.Regions.sameArea(map, home.x, home.y, x, y)) return true;
+  }
+  return false;
+}
 for (const t of map.things.values()) {
   if (orders.chop < 6 && t.def && t.def.plant && t.def.plant.isTree && U.cheb(t.x, t.y, home.x, home.y) < 18) {
     map.designate(t.x, t.y, 'chop'); orders.chop++;
   }
-  if (orders.mine < 6 && t.def && t.def.mineable && U.cheb(t.x, t.y, home.x, home.y) < 22) {
+  if (orders.mine < 6 && U.cheb(t.x, t.y, home.x, home.y) < 30 && minable(t)) {
     map.designate(t.x, t.y, 'mine'); orders.mine++;
   }
 }
@@ -78,19 +88,27 @@ for (let i = 0; i < 6; i++) {
   }
 }
 
-/* And a cooking bill wherever there is something to cook on. */
-const benches = ['campfire', 'stove'].flatMap(d => map.byDef(d) || []);
-if (benches.length && Production.addBill) {
-  const bill = Production.addBill(benches[0], 'cookSimpleMeal', { repeatMode: 'forever' });
-  if (bill) orders.bills++;
-} else {
-  /* No campfire in the starting kit: build one so cooking gets exercised. */
-  const spot = cellsAround(home.x, home.y + 3, 2, (x, y) => map.passable(x, y) && !map.buildingAt(x, y))[0];
-  if (spot !== undefined) {
-    const bp = Construct.placeBlueprint(map, 'campfire', map.xOf(spot), map.yOf(spot), 0, 'wood');
-    if (bp) orders.blueprints++;
-  }
+/* Cooking needs somewhere to cook. The starting kit has no campfire, and
+   waiting for one to be built would make this test depend on construction
+   finishing first, so stand one up directly and put a bill on it. */
+let bench = ['campfire', 'stove'].flatMap(d => map.byDef(d) || [])[0];
+if (!bench) {
+  const spot = cellsAround(home.x, home.y + 3, 3, (x, y) =>
+    map.passable(x, y) && !map.buildingAt(x, y) && !map.plantAt(x, y))[0];
+  if (spot !== undefined) bench = map.spawnThing('campfire', map.xOf(spot), map.yOf(spot), { faction: 'player' });
 }
+/* Cooking also needs raw ingredients, and nothing is harvested on day one.
+   Drop a sack of rice by the stockpile the way a real colony would have
+   after its first harvest, so the bill has something to work with. */
+if (stockCells.length) {
+  map.addItem('riceRaw', map.xOf(stockCells[0]), map.yOf(stockCells[0]), 60);
+  map.addItem('meatRaw', map.xOf(stockCells[1] ?? stockCells[0]), map.yOf(stockCells[1] ?? stockCells[0]), 20);
+}
+if (bench && Production.addBill) {
+  const bill = Production.addBill(bench, 'cookSimpleMeal', { repeatMode: 'forever' });
+  if (bill) orders.bills++;
+  else warn('could not put a cooking bill on the ' + bench.defId);
+} else warn('nowhere to cook: no bench could be placed');
 console.log('orders:', JSON.stringify(orders));
 
 /* ---------- run ---------- */

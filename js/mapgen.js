@@ -958,10 +958,11 @@
     };
 
     if (animal) {
+      /* An animal is its kind and nothing else: no backstory, no traits,
+         no skill table. pawn.js already knows that, so the only thing
+         added here is an age drawn from the kind's own range. */
       if (build.ageYears === undefined) build.ageYears = ageFor(kind, true);
-      var beast = new root.Pawn(kindId, faction || 'wild', build);
-      if (opts.tame !== undefined) beast.tame = !!opts.tame;
-      return beast;
+      return new root.Pawn(kindId, faction || 'wild', build);
     }
 
     var gender = opts.gender || (U.chance(0.5) ? 'male' : 'female');
@@ -1002,15 +1003,17 @@
      Raid points buy quality, not just numbers: a fifty-point raid is
      tribals with clubs, a thousand-point raid arrives in flak vests. */
   var RAIDER_WEAPONS = [
-    { id: 'club', lo: -0.3, peak: 0.05, hi: 0.45 },
-    { id: 'knife', lo: -0.3, peak: 0.05, hi: 0.45 },
-    { id: 'spear', lo: -0.2, peak: 0.15, hi: 0.55 },
-    { id: 'shortBow', lo: -0.2, peak: 0.2, hi: 0.6 },
-    { id: 'pistol', lo: 0.0, peak: 0.35, hi: 0.9 },
-    { id: 'shotgun', lo: 0.15, peak: 0.5, hi: 1.1 },
-    { id: 'boltRifle', lo: 0.2, peak: 0.6, hi: 1.2 },
-    { id: 'autoRifle', lo: 0.45, peak: 1.0, hi: 1.6 },
-    { id: 'sniperRifle', lo: 0.55, peak: 1.1, hi: 1.7 }
+    { id: 'club', lo: -0.3, peak: 0.05, hi: 0.45, w: 1 },
+    { id: 'knife', lo: -0.3, peak: 0.05, hi: 0.45, w: 1 },
+    { id: 'spear', lo: -0.2, peak: 0.15, hi: 0.55, w: 1 },
+    { id: 'shortBow', lo: -0.2, peak: 0.2, hi: 0.6, w: 0.9 },
+    { id: 'pistol', lo: 0.0, peak: 0.35, hi: 0.9, w: 1 },
+    { id: 'shotgun', lo: 0.15, peak: 0.5, hi: 1.1, w: 0.9 },
+    { id: 'boltRifle', lo: 0.2, peak: 0.6, hi: 1.2, w: 1 },
+    { id: 'autoRifle', lo: 0.45, peak: 1.0, hi: 1.6, w: 0.75 },
+    /* A rifle that opens the fight at forty-five tiles is a story, not a
+       standard issue: even a rich raid mostly turns up without one. */
+    { id: 'sniperRifle', lo: 0.55, peak: 1.1, hi: 1.7, w: 0.25 }
   ];
   var PRIMITIVE_WEAPONS = { club: 1, knife: 1, spear: 1, shortBow: 1 };
   /* Apparel that pawn.js puts in the same layer over the torso: at most
@@ -1021,7 +1024,7 @@
     if (tier <= entry.lo || tier >= entry.hi) return 0;
     var span = tier < entry.peak ? entry.peak - entry.lo : entry.hi - entry.peak;
     if (span <= 0) return 0;
-    return 1 - Math.abs(tier - entry.peak) / span;
+    return (1 - Math.abs(tier - entry.peak) / span) * (entry.w === undefined ? 1 : entry.w);
   }
 
   MapGen.equipRaider = function (pawn, points, opts) {

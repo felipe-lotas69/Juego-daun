@@ -55,7 +55,7 @@
     isStove: false, isCampfire: false, isTrap: false, isSandbag: false,
     powerProduced: 0, powerConsumed: 0, batteryCapacity: 0, lightRadius: 0,
     tempPushTarget: null, tempPushRate: 0,
-    bedRestEffectiveness: 0, bedComfort: 0,
+    bedRestEffectiveness: 0, bedComfort: 0, canBeForPrisoners: false,
     fuelDefId: null, fuelCapacity: 0, fuelBurnPerDay: 0,
     turretRange: 0, turretWeapon: null, interactionOffset: null,
     openTicks: 0
@@ -622,7 +622,10 @@
       beauty: 2, comfort: 0.75,
       stuffable: true, buildCost: { wood: 30 }, workToBuild: 800,
       buildCategory: 'furniture',
-      building: bld({ isBed: true, bedRestEffectiveness: 1, bedComfort: 0.75 })
+      building: bld({
+        isBed: true, bedRestEffectiveness: 1, bedComfort: 0.75,
+        canBeForPrisoners: true
+      })
     },
 
     sleepingSpot: {
@@ -633,7 +636,10 @@
       passable: true, pathCost: 0, fillPercent: 0,
       beauty: -1, comfort: 0.4,
       buildCost: {}, workToBuild: 15, buildCategory: 'furniture',
-      building: bld({ isBed: true, bedRestEffectiveness: 0.7, bedComfort: 0.4 })
+      building: bld({
+        isBed: true, bedRestEffectiveness: 0.7, bedComfort: 0.4,
+        canBeForPrisoners: true
+      })
     },
 
     table: {
@@ -990,6 +996,44 @@
         cooldownTicks: 0, armorPen: 0.2,
         accuracy: { touch: 0.85, short: 0, medium: 0, long: 0 }
       })
+    }
+
+  }, BUILDING);
+
+  /* ============================================================
+     MARKERS
+     Neither of these does anything by itself. They are places the
+     player names on the map so that a system with no other way to ask
+     "where?" has an answer: which stockpile a trade ship can reach,
+     and where a caravan forms up before it leaves.
+     ============================================================ */
+  Defs.add('thing', {
+
+    tradeBeacon: {
+      label: 'trade beacon',
+      description: 'A transponder that tells passing traders what is for sale. Goods stacked within twelve tiles of one can be sold without hauling them anywhere.',
+      sprite: 'box', color: '#8f97a3', color2: '#ffc23c',
+      hp: 100, mass: 30, flammable: false,
+      passable: false, fillPercent: 0.3, beauty: 0,
+      buildCost: { steel: 40, components: 2 }, workToBuild: 700,
+      buildCategory: 'misc',
+      leavings: { steel: 20, components: 1 },
+      /* Passive on purpose: it draws no power, so a beacon that is
+         built is a beacon that works. Trade.beaconCells only asks
+         whether one is spawned, and a power draw it could not see
+         would make the two disagree the first time a net browned out. */
+      building: bld({})
+    },
+
+    caravanPackspot: {
+      label: 'caravan packing spot',
+      description: 'A marked patch of ground where a departing caravan gathers. Put it by the door and the pack animals stop walking through the dining room.',
+      sprite: 'spot', color: '#b9a06a', color2: '#6b5a33',
+      hp: 20, mass: 0, flammable: false,
+      passable: true, pathCost: 0, fillPercent: 0, beauty: 0,
+      buildCost: {}, workToBuild: 15,
+      buildCategory: 'misc',
+      building: bld({})
     }
 
   }, BUILDING);

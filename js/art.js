@@ -1235,7 +1235,8 @@
   function apparelColor(t) {
     var d = t.def || (t.defId && Defs.maybe('thing', t.defId));
     if (!d) return null;
-    var stuff = t.stuffId && Defs.maybe('thing', t.stuffId);
+    var sid = t.stuff || t.stuffId;
+    var stuff = sid && Defs.maybe('thing', sid);
     return stuff ? mix(d.color, stuff.color, 0.45) : d.color;
   }
 
@@ -1459,7 +1460,7 @@
     sickle: function (g, c) { for (var y = 2; y < 9; y++) fill(g, 3 + ((y - 2) * (y - 2) >> 2), y, 2, 1, c); line(g, 4, 9, 8, 14, P.woodFloor, 2); },
     scissors: function (g, c) { line(g, 3, 2, 11, 11, c, 1); line(g, 12, 2, 4, 11, c, 1); disc(g, 4, 13, 2, shade(c, -0.2)); disc(g, 11, 13, 2, shade(c, -0.2)); },
     hammer: function (g, c) { fill(g, 3, 2, 9, 4, c); fill(g, 3, 2, 9, 1, shade(c, 0.25)); line(g, 8, 6, 8, 14, P.woodFloor, 2); },
-    upArrow: function (g, c) { tri(g, 8, 2, 5, c); fill(g, 7, 7, 3, 8, c); },
+    upArrow: function (g, c) { for (var i = 0; i < 6; i++) fill(g, 8 - i, 2 + i, 1 + i * 2, 1, c); fill(g, 6, 8, 5, 7, c); },
     crosshair: function (g, c) { box(g, 3, 3, 10, 10, c); fill(g, 7, 0, 2, 5, c); fill(g, 7, 11, 2, 5, c); fill(g, 0, 7, 5, 2, c); fill(g, 11, 7, 5, 2, c); dot(g, 7, 7, c); },
     heart: function (g, c) { disc(g, 5, 6, 3, c); disc(g, 11, 6, 3, c); for (var i = 0; i < 7; i++) fill(g, 2 + i, 8 + i, 13 - i * 2, 1, c); },
     knifeIcon: function (g, c) { line(g, 3, 12, 11, 3, c, 2); line(g, 4, 13, 7, 10, P.woodFloor, 2); dot(g, 12, 2, shade(c, 0.35)); },
@@ -1583,29 +1584,58 @@
            (isWallLike(map, x - 1, y) ? 8 : 0);
   };
 
+  function isLinkOf(map, x, y, defId) {
+    if (!map.inBounds(x, y)) return false;
+    var b = map.buildingAt(x, y);
+    return !!(b && b.defId === defId);
+  }
+
   /* The same join logic for anything that links to its own kind, which
      in practice means power conduits. */
   Art.linkVariant = function (map, x, y, defId) {
     if (!map || !map.inBounds) return 0;
-    function has(cx, cy) {
-      if (!map.inBounds(cx, cy)) return false;
-      var b = map.buildingAt(cx, cy);
-      return !!(b && b.defId === defId);
-    }
-    return (has(x, y - 1) ? 1 : 0) | (has(x + 1, y) ? 2 : 0) |
-           (has(x, y + 1) ? 4 : 0) | (has(x - 1, y) ? 8 : 0);
+    return (isLinkOf(map, x, y - 1, defId) ? 1 : 0) |
+           (isLinkOf(map, x + 1, y, defId) ? 2 : 0) |
+           (isLinkOf(map, x, y + 1, defId) ? 4 : 0) |
+           (isLinkOf(map, x - 1, y, defId) ? 8 : 0);
   };
 
   var LINKED = { wall: 1, rockWall: 1, oreWall: 1, door: 1, conduit: 1 };
 
+  function cellBuildingId(map, x, y) {
+    return map.inBounds(x, y) ? map.buildingId[map.idx(x, y)] : -1;
+  }
+
+  /* A join mask is a pure function of which building ids sit in the four
+     orthogonal cells, and an id never changes what it points at. Those
+     four ids are one typed-array read each, against four registry
+     lookups to rebuild the mask, so a wall whose neighbours have not
+     changed since last frame keeps the mask it already had. On a screen
+     full of mountain that is the difference between sixteen thousand
+     hash lookups a frame and none. */
+  var maskMemo = new WeakMap();
+
   function variantOf(def, thing) {
-    if (!LINKED[def.sprite]) return 0;
-    if (thing && typeof thing.wallVariant === 'number') return thing.wallVariant & 15;
-    var map = thing && (thing.map || (root.Game && root.Game.map));
-    if (!map || !map.inBounds || thing.x === undefined) return 0;
-    return def.sprite === 'conduit'
-      ? Art.linkVariant(map, thing.x, thing.y, def.id)
-      : Art.wallVariant(map, thing.x, thing.y);
+    if (!LINKED[def.sprite] || !thing) return 0;
+    if (typeof thing.wallVariant === 'number') return thing.wallVariant & 15;
+    var map = thing.map || (root.Game && root.Game.map);
+    if (!map || !map.inBounds || !map.buildingId || thing.x === undefined) return 0;
+    var x = thing.x, y = thing.y;
+    var n0 = cellBuildingId(map, x, y - 1), n1 = cellBuildingId(map, x + 1, y);
+    var n2 = cellBuildingId(map, x, y + 1), n3 = cellBuildingId(map, x - 1, y);
+    var m = maskMemo.get(thing);
+    if (m && m.map === map && m.n0 === n0 && m.n1 === n1 && m.n2 === n2 && m.n3 === n3) {
+      return m.mask;
+    }
+    var mask = def.sprite === 'conduit'
+      ? Art.linkVariant(map, x, y, def.id)
+      : Art.wallVariant(map, x, y);
+    if (m) {
+      m.map = map; m.n0 = n0; m.n1 = n1; m.n2 = n2; m.n3 = n3; m.mask = mask;
+    } else {
+      maskMemo.set(thing, { map: map, n0: n0, n1: n1, n2: n2, n3: n3, mask: mask });
+    }
+    return mask;
   }
 
   function stuffOf(def, thing) {
@@ -1642,40 +1672,52 @@
     }
   }
 
+  function plantSprite(def, thing) {
+    var stage = plantStage(thing);
+    var pl = def.plant || {};
+    var ripe = stage === 2 && !!pl.harvestedThing;
+    var tree = !!pl.isTree;
+    /* A tuft of grass differs from its neighbour; a tree does not need
+       to, because at 2x2 the silhouette already carries the variety. */
+    var variant = tree ? 0 : (thing && thing.id ? thing.id : 0) % 3;
+    var blighted = !!(thing && thing.blighted);
+    var key = 'pl|' + def.id + '|' + stage + '|' + variant + (ripe ? 'r' : '') +
+      (blighted ? 'b' : '');
+    var size = tree ? PX * 2 : PX;
+    return cached(key, size, size, function (g, rnd) {
+      paintPlant(g, rnd, def, stage, variant, ripe);
+      if (blighted) {
+        g.globalCompositeOperation = 'source-atop';
+        g.globalAlpha = 0.55;
+        fill(g, 0, 0, size, size, '#6b6046');
+        g.globalAlpha = 1;
+        g.globalCompositeOperation = 'source-over';
+      }
+    }, tree ? -PX / 2 : 0, tree ? -PX / 2 : 0);
+  }
+
+  /* Everything a variable sprite can vary along is a small number, so
+     they pack into one integer and a per-def table answers the lookup
+     without building a string. That matters because drawing one frame of
+     a mountain colony asks for a few thousand walls, and a key string
+     per wall per frame is garbage the player feels as a stutter. The
+     string key is still built, but only when the variant is new. */
+  var varCache = new Map();
+
+  function stuffCode(stuffId) {
+    return stuffId ? Defs.index('thing', stuffId) + 1 : 0;
+  }
+
   Art.thing = function (def, thing) {
     var plain = plainCache.get(def);
     if (plain) return plain;
-
-    if (def.category === 'plant') {
-      var stage = plantStage(thing);
-      var pl = def.plant || {};
-      var ripe = stage === 2 && !!pl.harvestedThing;
-      var tree = !!pl.isTree;
-      /* A tuft of grass differs from its neighbour; a tree does not need
-         to, because at 2x2 the silhouette already carries the variety. */
-      var variant = tree ? 0 : (thing && thing.id ? thing.id : 0) % 3;
-      var key = 'pl|' + def.id + '|' + stage + '|' + variant + (ripe ? 'r' : '') +
-        (thing && thing.blighted ? 'b' : '');
-      var size = tree ? PX * 2 : PX;
-      var c = cached(key, size, size, function (g, rnd) {
-        paintPlant(g, rnd, def, stage, variant, ripe);
-        if (thing && thing.blighted) {
-          g.globalCompositeOperation = 'source-atop';
-          g.globalAlpha = 0.55;
-          fill(g, 0, 0, size, size, '#6b6046');
-          g.globalAlpha = 1;
-          g.globalCompositeOperation = 'source-over';
-        }
-      }, tree ? -PX / 2 : 0, tree ? -PX / 2 : 0);
-      return c;
-    }
+    if (def.category === 'plant') return plantSprite(def, thing);
 
     var sw = (def.size && def.size.w) || 1, sh = (def.size && def.size.h) || 1;
     var rot = (def.rotatable && thing) ? ((thing.rot | 0) & 3) : 0;
     var mask = variantOf(def, thing);
     var stuffId = stuffOf(def, thing);
-    var open = def.building && def.building.isDoor &&
-      !!(thing && (thing.open || thing.doorOpen || thing.openTicksLeft > 0));
+    var open = !!(def.building && def.building.isDoor && thing && thing.open);
     var lit = !(def.building && def.building.isLamp) || !thing || thing.powered !== false;
     var frame = def.sprite === 'fire' || def.sprite === 'campfire'
       ? ((((root.Game && root.Game.tick) || 0) >> 3) + (thing && thing.id ? thing.id : 0)) % 3 : 0;
@@ -1691,6 +1733,19 @@
       rot = target.rotatable ? ((thing.rot | 0) & 3) : 0;
     }
 
+    /* A ghost and a corpse carry a whole def id in their identity, which
+       does not fit an integer; both are rare enough to keep paying for
+       the string. */
+    var row = null, code = 0;
+    if (!target && !kindId) {
+      code = mask | (rot << 4) | (open ? 64 : 0) | (lit ? 128 : 0) |
+        (frame << 8) | (noise << 10) | (stuffCode(stuffId) << 12);
+      row = varCache.get(def);
+      if (!row) varCache.set(def, (row = new Map()));
+      var hit = row.get(code);
+      if (hit) return hit;
+    }
+
     var key = 'th|' + def.id + '|' + sw + 'x' + sh + '|' + mask + '|' + (stuffId || '-') +
       '|' + (open ? 'o' : 'c') + (lit ? 'L' : 'd') + '|' + frame + '|' + noise +
       (kindId ? '|' + kindId : '');
@@ -1698,15 +1753,17 @@
     var base = cached(key, sw * PX, sh * PX, function (g, rnd) {
       var c1 = stuffId ? Defs.thing(stuffId).color : def.color;
       var a = {
-        def: def, thing: thing, rnd: rnd, variant: mask, open: open, lit: lit,
+        def: def, rnd: rnd, variant: mask, open: open, lit: lit,
         frame: frame, kindId: kindId, w: sw * PX, h: sh * PX,
         c1: c1, c2: def.color2 || shade(c1, -0.25)
       };
       (SPRITE[def.sprite] || SPRITE.item)(g, a);
     });
 
-    if (isPlain(def) && !target) plainCache.set(def, base);
-    return rot ? cachedRotation(base, rot) : base;
+    var out = rot ? cachedRotation(base, rot) : base;
+    if (row) row.set(code, out);
+    if (isPlain(def) && !target) plainCache.set(def, out);
+    return out;
   };
 
   var rotCache = new Map();
@@ -1727,13 +1784,22 @@
   }
 
   /* The sprite a build ghost shows: the finished building, at the
-     rotation and material the player currently has selected. */
+     rotation and material the player currently has selected.
+
+     Dragging a wall asks for this once per cell under the drag, several
+     hundred times a frame, so the stand-in thing is one reused object
+     rather than a fresh one per cell. Art.thing never keeps a reference
+     to it: only the canvas it returns is cached. */
+  var ghostStand = { rot: 0, stuffId: null, wallVariant: 0, x: 0, y: 0 };
+
   Art.ghost = function (defId, rot, stuffId) {
     var floor = Defs.maybe('terrain', defId);
     if (floor) return Art.terrain(floor, 0);
     var def = Defs.maybe('thing', defId);
     if (!def) return Art.icon('cat-misc');
-    return Art.thing(def, { rot: rot | 0, stuffId: stuffId || null, wallVariant: 0, x: 0, y: 0 });
+    ghostStand.rot = rot | 0;
+    ghostStand.stuffId = stuffId || null;
+    return Art.thing(def, ghostStand);
   };
 
   Art.pawn = function (pawn, dir, frame) {
@@ -1790,8 +1856,10 @@
   };
 
   Art.icon = function (key) {
+    key = String(key);
     var ck = 'ic|' + key;
-    if (cache.has(ck)) return cache.get(ck);
+    var hit = cache.get(ck);
+    if (hit) return hit;
     if (/^mood-[0-4]$/.test(key)) {
       var lvl = parseInt(key.slice(5), 10);
       return cached(ck, PX, PX, function (g) { paintFace(g, lvl); });
@@ -1812,20 +1880,31 @@
     });
   };
 
+  /* Callers animate from a wall clock, so the frame number that arrives
+     here climbs for as long as the page is open. Folding it into range
+     before it reaches a cache key is what stops the cache growing by one
+     canvas every tenth of a second for as long as something is on fire. */
   Art.effect = function (key, frame) {
     frame = frame | 0;
+    switch (key) {
+      case 'fire': frame = ((frame % 3) + 3) % 3; break;
+      case 'blood': frame = frame & 3; break;
+      case 'explosion': frame = U.clamp(frame, 0, 3); break;
+      default: frame = 0;
+    }
     var ck = 'fx|' + key + '|' + frame;
-    if (cache.has(ck)) return cache.get(ck);
+    var hit = cache.get(ck);
+    if (hit) return hit;
     switch (key) {
       case 'fire':
-        return cached(ck, PX, PX, function (g) { flame(g, 8, 14, frame % 3, 9); });
+        return cached(ck, PX, PX, function (g) { flame(g, 8, 14, frame, 9); });
       case 'blood':
         return cached(ck, PX, PX, function (g, rnd) {
           paintBlood(g, rnd, P.blood, shade(P.blood, -0.35));
         });
       case 'explosion':
         return cached(ck, PX * 3, PX * 3, function (g) {
-          paintExplosion(g, U.clamp(frame, 0, 3));
+          paintExplosion(g, frame);
         }, -PX, -PX);
       case 'bullet':
       case 'arrow':

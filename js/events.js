@@ -533,9 +533,9 @@
      and when half of them are on the ground the rest go home.
      ============================================================ */
 
-  /* A raider's price, in threat points. The numbers are calibrated to
-     the contract's points curve: 35 points on day 5 buys two people with
-     clubs, 200 points late buys a real problem. */
+  /* A raider's price, in threat points, calibrated against the contract's
+     points curve: the 35 points a day-5 colony is worth buys one person
+     with a club, 400 points buys ten with rifles. */
   var RAIDER_KIT = [
     { weapon: 'club', cost: 16, industrial: false },
     { weapon: 'knife', cost: 18, industrial: false },
@@ -557,21 +557,17 @@
     return Math.max(0.03, 1 - Math.abs(quality - centre) * 1.7);
   }
 
+  /* One raider's kit, drawn from the same ladder the pricing uses, so a
+     fallback raid looks like the raid the points paid for. */
   function rollLoadout(quality, neolithic) {
     var kit = U.pickWeighted(RAIDER_KIT, function (k) {
       return kitWeight(k, quality, neolithic);
     });
-    var lo = { weapon: kit.weapon, apparel: ['shirt', 'pants'], cost: kit.cost };
-    if (!neolithic && U.chance(0.12 + quality * 0.55)) {
-      lo.apparel.push('armorVest');
-      lo.cost += 18;
-    }
-    if (U.chance(0.10 + quality * 0.45)) {
-      lo.apparel.push('helmet');
-      lo.cost += 10;
-    }
-    if (U.chance(0.35)) lo.apparel.push('jacket');
-    return lo;
+    var wear = ['shirt', 'pants'];
+    if (!neolithic && U.chance(0.12 + quality * 0.55)) wear.push('armorVest');
+    if (U.chance(0.10 + quality * 0.45)) wear.push('helmet');
+    if (U.chance(0.35)) wear.push('jacket');
+    return { weapon: kit.weapon, apparel: wear };
   }
 
   /* What one raider costs on average at this quality. Sizing the roster
@@ -650,9 +646,15 @@
     });
   }
 
-  function makeRaider(map, kindId, factionId, x, y) {
+  function makeRaider(map, kindId, factionId, x, y, points) {
     var MG = sys('MapGen'), P = sys('Pawn'), p = null;
-    if (MG && MG.makePawn) p = MG.makePawn(kindId, factionId, { x: x, y: y, map: map });
+    /* Telling mapgen the raid's points is what makes it arm the raider
+       rather than merely clothe them, and it is the arrangement mapgen
+       documents: dressed exactly once, so nothing is dropped and left
+       lying at the map edge. */
+    if (MG && MG.makePawn) {
+      p = MG.makePawn(kindId, factionId, { x: x, y: y, map: map, points: points });
+    }
     if (!p && P && P.make) p = P.make(kindId, factionId, { x: x, y: y, map: map });
     if (!p) return null;
     p.faction = factionId;
@@ -664,13 +666,13 @@
     return p;
   }
 
-  /* mapgen.js dresses raiders for the world it built - it knows the
-     biome, the pawn kind's own arsenal and that a brawler will not use a
-     rifle - so it gets first refusal. The ladder above is the fallback,
-     and the two agree on what a given points total buys. */
-  function gearUp(map, pawn, points, quality, neolithic) {
-    var MG = sys('MapGen');
-    if (MG && MG.equipRaider && MG.equipRaider(pawn, points)) return;
+  /* mapgen.js arms raiders for the world it built - it knows the biome,
+     the pawn kind's own arsenal and that a brawler will not use a rifle -
+     so a raider that arrived already kitted is left alone. This is the
+     fallback for a game without mapgen, and the two ladders agree on
+     what a given points total buys. */
+  function gearUp(map, pawn, quality, neolithic) {
+    if (pawn.equipment || pawn.apparel.length) return;
     var lo = rollLoadout(quality, neolithic);
     if (lo.weapon && Defs.has('thing', lo.weapon)) {
       var w = map.spawnThing(lo.weapon, pawn.x, pawn.y);
@@ -778,9 +780,9 @@
       var anchor = anchors[i % anchors.length];
       var cell = freeCellNear(map, anchor.x + U.randInt(-2, 2), anchor.y + U.randInt(-2, 2), 8);
       if (!cell) continue;
-      var raider = makeRaider(map, kindId, faction.id, cell.x, cell.y);
+      var raider = makeRaider(map, kindId, faction.id, cell.x, cell.y, points);
       if (!raider) continue;
-      gearUp(map, raider, points, roster.quality, faction.neolithic);
+      gearUp(map, raider, roster.quality, faction.neolithic);
       spawned.push(raider);
       group.pawnIds.push(raider.id);
     }
@@ -887,6 +889,7 @@
   }
 
   function startFlee(g, grp, live) {
+    if (grp.fleeing) return;
     grp.fleeing = true;
     var at = live && live.length ? live[0] : null;
     letter(g, 'The raiders are breaking',
@@ -1049,6 +1052,16 @@
       return;
     }
 
+    /* Standing on the objective with nothing in sight means the colonist
+       they were walking at has moved on. Re-aim now: waiting for the
+       group's own refresh would have them issue the same dead walk over
+       and over for the next twenty seconds. */
+    if (U.cheb(pawn.x, pawn.y, grp.objX, grp.objY) <= 3) {
+      var fresh = colonyPoint(map, pawn.x, pawn.y);
+      grp.objX = fresh.x; grp.objY = fresh.y; grp.objTick = g.tick;
+      if (U.cheb(pawn.x, pawn.y, grp.objX, grp.objY) <= 3) { holdPosition(pawn); return; }
+    }
+
     var Path = sys('Path');
     var canReach = true;
     if (Path && Path.reachable) {
@@ -1118,10 +1131,12 @@
     var cell = freeCellNear(map, arrival.anchor.x, arrival.anchor.y, 10);
     if (!cell) return false;
 
+    /* Whoever walks in becomes a colonist, so they are built as one:
+       the wanderer kind is what a visiting trader arrives as. */
     var MG = sys('MapGen'), P = sys('Pawn'), pawn = null;
-    var kindId = Defs.has('pawnKind', 'colonist') ? 'colonist' : 'colonist';
-    if (MG && MG.makePawn) pawn = MG.makePawn(kindId, 'player', { x: cell.x, y: cell.y, map: map });
-    if (!pawn && P && P.make) pawn = P.make(kindId, 'player', { x: cell.x, y: cell.y, map: map });
+    var build = { x: cell.x, y: cell.y, map: map, cold: g.outdoorTemp() < 0 };
+    if (MG && MG.makePawn) pawn = MG.makePawn('colonist', 'player', build);
+    if (!pawn && P && P.make) pawn = P.make('colonist', 'player', build);
     if (!pawn) return false;
     pawn.faction = 'player';
     if (!map.addPawn(pawn, cell.x, cell.y)) return false;

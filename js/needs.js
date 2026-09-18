@@ -46,7 +46,6 @@
   var REST_FALL = 1.0 / TICKS_PER_DAY;
   var REST_GAIN = 2.6 / TICKS_PER_DAY;
   var JOY_FALL = 0.9 / TICKS_PER_DAY;
-  var JOY_GAIN = 5.0 / TICKS_PER_DAY;
   var COMFORT_RATE = 8.0 / TICKS_PER_DAY;
   var OUTDOORS_FALL = 0.45 / TICKS_PER_DAY;
   var OUTDOORS_GAIN = 2.2 / TICKS_PER_DAY;
@@ -68,22 +67,34 @@
      that loads needs.js on its own. Mood is in need units (0..1), so
      -0.06 here is RimWorld's -6.
      ------------------------------------------------------------------ */
+  var NO_TRAITS = [];
+  var ASCETIC = ['ascetic'];
+  var PSYCHOPATH = ['psychopath'];
+
   var FALLBACK = {
     hungry: { stages: [{ label: 'Hungry', mood: -0.06 }, { label: 'Urgently hungry', mood: -0.12 }] },
     starving: { label: 'Starving', mood: -0.20 },
     ateRawFood: { label: 'Ate raw food', mood: -0.05, durationDays: 1 },
     ateFineMeal: { label: 'Ate a fine meal', mood: 0.05, durationDays: 1 },
-    ateWithoutTable: { label: 'Ate without a table', mood: -0.03, durationDays: 0.5 },
+    ateWithoutTable: {
+      label: 'Ate without a table', mood: -0.03, durationDays: 0.5, nullifiedByTrait: ASCETIC
+    },
     ateInImpressiveRoom: {
-      durationDays: 1,
+      durationDays: 1, nullifiedByTrait: ASCETIC,
       stages: [{ label: 'Ate in a decent room', mood: 0.02 },
                { label: 'Ate in a fine room', mood: 0.04 },
                { label: 'Ate in an impressive room', mood: 0.06 }]
     },
     sleptOutside: { label: 'Slept outside', mood: -0.05, durationDays: 0.6 },
-    sleptOnGround: { label: 'Slept on the ground', mood: -0.04, durationDays: 0.6 },
-    sleptInBarracks: { label: 'Slept in a barracks', mood: -0.03, durationDays: 0.6 },
-    sleptInBedroom: { label: 'Slept in own bedroom', mood: 0.03, durationDays: 0.6 },
+    sleptOnGround: {
+      label: 'Slept on the ground', mood: -0.04, durationDays: 0.6, nullifiedByTrait: ASCETIC
+    },
+    sleptInBarracks: {
+      label: 'Slept in a barracks', mood: -0.03, durationDays: 0.6, nullifiedByTrait: ASCETIC
+    },
+    sleptInBedroom: {
+      label: 'Slept in own bedroom', mood: 0.03, durationDays: 0.6, nullifiedByTrait: ASCETIC
+    },
     coldRoom: {
       stages: [{ label: 'A bit chilly', mood: -0.04 },
                { label: 'Cold', mood: -0.07 },
@@ -96,18 +107,29 @@
     },
     darkness: { label: 'In the dark', mood: -0.05 },
     uglyRoom: {
+      nullifiedByTrait: ASCETIC,
       stages: [{ label: 'Ugly surroundings', mood: -0.03 },
                { label: 'Very ugly surroundings', mood: -0.05 },
                { label: 'Hideous surroundings', mood: -0.08 }]
     },
     prettyRoom: {
+      nullifiedByTrait: ASCETIC,
       stages: [{ label: 'Pretty surroundings', mood: 0.03 },
                { label: 'Beautiful surroundings', mood: 0.05 },
                { label: 'Stunning surroundings', mood: 0.08 }]
     },
-    colonistDied: { label: 'A colonist died', mood: -0.15, durationDays: 8, stackLimit: 5 },
-    colonistLost: { label: 'A colonist left us', mood: -0.10, durationDays: 6, stackLimit: 3 },
-    observedCorpse: { label: 'Saw a corpse', mood: -0.04, durationDays: 0.6, stackLimit: 3 },
+    colonistDied: {
+      label: 'A colonist died', mood: -0.15, durationDays: 8, stackLimit: 5,
+      nullifiedByTrait: PSYCHOPATH
+    },
+    colonistLost: {
+      label: 'A colonist left us', mood: -0.10, durationDays: 6, stackLimit: 3,
+      nullifiedByTrait: PSYCHOPATH
+    },
+    observedCorpse: {
+      label: 'Saw a corpse', mood: -0.04, durationDays: 0.6, stackLimit: 3,
+      nullifiedByTrait: ['psychopath', 'bloodlust']
+    },
     pain: {
       stages: [{ label: 'Minor pain', mood: -0.04 },
                { label: 'Pain', mood: -0.10 },
@@ -125,14 +147,26 @@
     newColonistJoined: { label: 'A new colonist joined', mood: 0.06, durationDays: 3 },
     raidBeaten: { label: 'We beat off a raid', mood: 0.10, durationDays: 3 },
     catharsis: { label: 'Catharsis', mood: 0.10, durationDays: 2 },
-    insulted: { label: 'Insulted me', mood: -0.06, durationDays: 2, stackLimit: 3 },
-    chatted: { label: 'Chatted with a friend', mood: 0.02, durationDays: 0.6, stackLimit: 3 },
+    insulted: {
+      label: 'Insulted me', mood: -0.06, durationDays: 2, stackLimit: 3,
+      nullifiedByTrait: PSYCHOPATH
+    },
+    chatted: {
+      label: 'Chatted with a friend', mood: 0.02, durationDays: 0.6, stackLimit: 3,
+      nullifiedByTrait: PSYCHOPATH
+    },
     killedHumanBloodlust: { label: 'I killed someone', mood: 0.10, durationDays: 2, stackLimit: 3 },
-    witnessedDeathAlly: { label: 'Witnessed an ally die', mood: -0.10, durationDays: 5, stackLimit: 3 },
+    witnessedDeathAlly: {
+      label: 'Witnessed an ally die', mood: -0.10, durationDays: 5, stackLimit: 3,
+      nullifiedByTrait: PSYCHOPATH
+    },
     naturalMoodBuff: { label: 'Natural optimism', mood: 0.12 },
     naturalMoodDebuff: { label: 'Natural pessimism', mood: -0.12 },
-    hadNiceMeal: { label: 'Had a nice meal', mood: 0.03, durationDays: 1 },
+    hadNiceMeal: {
+      label: 'Had a nice meal', mood: 0.03, durationDays: 1, nullifiedByTrait: ASCETIC
+    },
     comfortableBed: {
+      nullifiedByTrait: ASCETIC,
       stages: [{ label: 'Comfortable bed', mood: 0.02 },
                { label: 'Very comfortable bed', mood: 0.04 }]
     },
@@ -146,6 +180,7 @@
     if (d.label === undefined) d.label = (d.stages && d.stages[0] && d.stages[0].label) || id;
     if (d.durationDays === undefined) d.durationDays = 1;
     if (d.stackLimit === undefined) d.stackLimit = 1;
+    if (d.nullifiedByTrait === undefined) d.nullifiedByTrait = NO_TRAITS;
   });
 
   /* Thoughts that are recomputed from the world instead of remembered. */
@@ -153,11 +188,6 @@
     hungry: 1, starving: 1, pain: 1, sick: 1, coldRoom: 1, hotRoom: 1, darkness: 1,
     uglyRoom: 1, prettyRoom: 1, comfortableBed: 1,
     naturalMoodBuff: 1, naturalMoodDebuff: 1
-  };
-
-  /* A psychopath feels nothing about any of these; bloodlust shrugs off corpses. */
-  var DEATH_THOUGHTS = {
-    colonistDied: 1, colonistLost: 1, observedCorpse: 1, witnessedDeathAlly: 1
   };
 
   /* Nutrition per unit when def_things.js has not stated it. */
@@ -180,16 +210,24 @@
   Needs.JOY_WANT = 0.30;
   Needs.CABIN_FEVER = 0.10;
 
-  /* Break threshold shifts, by trait. Summed, so a volatile neurotic is
-     genuinely fragile. */
-  var BREAK_SHIFT = { ironWilled: -0.06, volatile: 0.06, neurotic: 0.04, psychopath: -0.03 };
+  /* def_pawns.js states mentalBreakThresholdOffset on every trait and that
+     is the authority. This stand-in only answers when the trait defs are
+     not loaded, which is the harness and nothing else. */
+  var BREAK_SHIFT = {
+    ironWilled: -0.06, volatile: 0.06, neurotic: 0.04, psychopath: -0.03,
+    pyromaniac: 0.02, toosmart: 0.02
+  };
+
+  /* Same story for hungerFactor, the one per-trait multiplier the drift
+     reads on every tick. */
+  var TRAIT_HUNGER = { gourmand: 1.25, ascetic: 0.85 };
 
   /* ---------- def reading ---------- */
 
   /* Memoised, but only once def_pawns.js has actually registered the def:
      a fallback answer is never cached, so a lookup that happened early
      does not pin the stand-in table for the rest of the game. */
-  var _defCache = {};
+  var _defCache = Object.create(null);
 
   function thoughtDef(id) {
     var d = _defCache[id];
@@ -206,6 +244,24 @@
   /* Thoughts hold their def id, never the def object, so save.js can
      serialise pawn.thoughts as it stands. */
   function defOfThought(t) { return thoughtDef(t.defId); }
+
+  /* def_pawns.js names the traits that make a thought land on nobody -
+     an ascetic does not mind the bare floor, a psychopath does not mind
+     the funeral. A def that states an empty list has answered; only a
+     def with no list at all borrows the stand-in table's. */
+  function nullifiedBy(def) {
+    if (!def) return null;
+    if (def.nullifiedByTrait) return def.nullifiedByTrait;
+    var fb = fallbackFor(def);
+    return (fb && fb.nullifiedByTrait) || null;
+  }
+
+  function nullified(pawn, def) {
+    var list = nullifiedBy(def);
+    if (!list || !list.length) return false;
+    for (var i = 0; i < list.length; i++) if (hasTrait(pawn, list[i])) return true;
+    return false;
+  }
 
   /* def_pawns.js may state mood in need units or in RimWorld mood points;
      anything past 1.5 can only be the latter. */
@@ -303,16 +359,12 @@
 
   function isHuman(pawn) { return pawn.isAnimal !== true && pawn.isHuman !== false; }
 
-  /* Sleeping means the rest need is being refilled. A downed pawn counts:
-     they are flat on their back either way. */
+  /* jobs.js sets pawn.asleep from the rest toil and clears it when the
+     job ends, so that flag is the only honest answer: reading the job id
+     instead would have a pawn gaining rest while still walking to the bed.
+     A downed pawn counts, being flat on their back either way. */
   function isAsleep(pawn) {
-    if (pawn.asleep === true) return true;
-    if (pawn.downed === true) return true;
-    var j = pawn.job;
-    if (!j) return false;
-    if (j.defId === 'sleep') return true;
-    if (j.defId === 'layDown') return !j.state || j.state.asleep !== false;
-    return false;
+    return pawn.asleep === true || pawn.downed === true;
   }
   Needs.isAsleep = isAsleep;
 
@@ -446,49 +498,57 @@
     else n.rest = clamp01(n.rest - REST_FALL * restFallFactor(fx));
 
     if (human) {
-      var kind = asleep ? null : joyJobKind(pawn);
-      if (kind) Needs.gainJoy(pawn, JOY_GAIN, kind);
-      else if (!asleep) n.joy = clamp01(n.joy - JOY_FALL);
+      /* Recreation is paid for by whatever job is providing it - jobs.js
+         calls gainJoy from the relax toil - so all that is owed here is
+         to stop charging for the time. Adding a second helping would
+         count one tick of horseshoes twice. */
+      if (!asleep && !joyJobKind(pawn)) n.joy = clamp01(n.joy - JOY_FALL);
 
-      if (!fx.ascetic) {
-        /* The comfort source only changes when the pawn does, so the
-           lookup is two integer compares on most ticks. */
-        if (pawn.x !== pawn._comfortX || pawn.y !== pawn._comfortY) {
-          pawn._comfortX = pawn.x;
-          pawn._comfortY = pawn.y;
-          pawn._comfortTarget = comfortHere(pawn);
-        }
-        n.comfort = U.approach(n.comfort, pawn._comfortTarget, COMFORT_RATE);
+      /* The comfort source only changes when the pawn does, so the lookup
+         is two integer compares on most ticks. */
+      if (pawn.x !== pawn._comfortX || pawn.y !== pawn._comfortY) {
+        pawn._comfortX = pawn.x;
+        pawn._comfortY = pawn.y;
+        pawn._comfortTarget = comfortHere(pawn);
       }
+      n.comfort = U.approach(n.comfort, pawn._comfortTarget, COMFORT_RATE);
     }
 
-    pawn._needTick = (pawn._needTick + 1) | 0;
+    pawn._needTick = (pawn._needTick + 1) % RARE;
     if (((pawn._needTick + (pawn.id | 0)) % RARE) === 0) rareTick(pawn, human);
   };
 
-  /* The three traits the per-tick drift asks about, answered once instead
-     of walking the trait list on every pawn on every tick. Refreshed each
-     rare tick so a trait gained after generation still counts. */
+  /* What the per-tick drift asks of the trait list, answered once per rare
+     tick instead of on every pawn on every tick. Refreshed there too, so a
+     trait gained after generation still counts. */
   function refreshTraitCache(pawn) {
-    pawn._traitFx = {
-      ascetic: hasTrait(pawn, 'ascetic'),
-      gourmand: hasTrait(pawn, 'gourmand'),
-      nightOwl: hasTrait(pawn, 'nightOwl')
-    };
-    return pawn._traitFx;
+    var tr = pawn.traits || [];
+    var fx = { nightOwl: false, hunger: 1, rest: 1 };
+    for (var i = 0; i < tr.length; i++) {
+      var id = (tr[i] && tr[i].id) || tr[i];
+      if (id === 'nightOwl') fx.nightOwl = true;
+      var def = traitDefOf(tr[i]);
+      fx.hunger *= (def && typeof def.hungerFactor === 'number')
+        ? def.hungerFactor : (TRAIT_HUNGER[id] || 1);
+      if (def && typeof def.restFallFactor === 'number') fx.rest *= def.restFallFactor;
+    }
+    pawn._traitFx = fx;
+    return fx;
   }
 
   function foodFallFactor(pawn, fx) {
-    var f = fx.gourmand ? 1.25 : 1;
+    var f = fx.hunger;
     if (pawn.kind && typeof pawn.kind.hungerRateFactor === 'number') f *= pawn.kind.hungerRateFactor;
     return f;
   }
 
-  /* Night owls are wide awake after dark and drag through the morning. */
+  /* Night owls are wide awake after dark and drag through the morning. The
+     trait def states the day average and leaves the swing here, which is
+     why the clock is read rather than a flat number. */
   function restFallFactor(fx) {
-    if (!fx.nightOwl) return 1;
+    if (!fx.nightOwl) return fx.rest;
     var h = hourNow();
-    return (h >= 18 || h < 4) ? 0.80 : 1.20;
+    return fx.rest * ((h >= 18 || h < 4) ? 0.80 : 1.20);
   }
 
   /* 2.6/day is what a bed gives, so def_things' bed (effectiveness 1)
@@ -555,6 +615,7 @@
     if (!pawn || !pawn.thoughts) return null;
     var def = thoughtDef(thoughtId);
     if (!def) return null;
+    if (nullified(pawn, def)) return null;
     opts = opts || {};
 
     var degree = opts.degree | 0;
@@ -562,10 +623,10 @@
     var duration = typeof opts.duration === 'number' ? opts.duration : durationTicksOf(def);
     var limit = stackLimitOf(def);
     var list = pawn.thoughts;
-    /* health.js fires pain and sick as plain memories. Both are things
-       this file reads straight off the world, so the entry is marked
-       situational whoever asked for it and refreshSituationalThoughts
-       clears it the moment the cause is gone. */
+    /* pain, sick, hunger and the room are read straight off the world
+       every rare tick, so an entry with one of those ids is marked
+       situational whoever fired it and refreshSituationalThoughts clears
+       it the moment the cause is gone. */
     var situational = !!opts.situational || !!SITUATIONAL[thoughtId];
 
     /* One entry per (def, other pawn). Re-firing refreshes the clock and
@@ -664,8 +725,10 @@
     else if (n.food < TH.urgentlyHungry) want('hungry', 1);
     else if (n.food < TH.hungry) want('hungry', 0);
 
-    /* Same degree boundaries health.js uses, so the two never disagree
-       about how much a wound hurts. */
+    /* health.js reports pain as one number and leaves the wording alone,
+       so the four bands the thought def carries are set here. The lowest
+       one starts above a scratch: every injury hurts a little and a mood
+       hit for every graze would never clear. */
     var H = sys('Health');
     if (H && H.painLevel) {
       var p = H.painLevel(pawn) || 0;
@@ -683,8 +746,9 @@
     }
 
     /* Beauty only reads as a room when there is a room; the great outdoors
-       has no decorator to blame. */
-    if (room && !room.outdoor && !hasTrait(pawn, 'ascetic')) {
+       has no decorator to blame. An ascetic never keeps either thought -
+       addThought drops it on the def's nullifiedByTrait. */
+    if (room && !room.outdoor) {
       var b = room.beauty || 0;
       if (b <= -1) want('uglyRoom', b <= -8 ? 2 : (b <= -4 ? 1 : 0));
       else if (b >= 2) want('prettyRoom', b >= 10 ? 2 : (b >= 5 ? 1 : 0));
@@ -692,7 +756,7 @@
 
     if (!asleep && lightHere(pawn) < 0.30) want('darkness', 0);
 
-    if (asleep && !hasTrait(pawn, 'ascetic')) {
+    if (asleep) {
       var bed = bedUnder(pawn);
       var c = comfortOfBuilding(bed);
       if (c >= 0.6) want('comfortableBed', c >= 0.75 ? 1 : 0);
@@ -763,29 +827,19 @@
       Needs.addThought(pawn, 'sleptOnGround', opt);
       return;
     }
+    /* regions.js already counts the beds in a room and names the room
+       from them, so rescanning the cells here would only find a second
+       way to disagree with it. */
     var room = roomOf(pawn);
     if (!room || room.outdoor) return;
-    var owned = pawn.ownedBedId && bed.id === pawn.ownedBedId;
-    if (owned && room.role === 'bedroom') Needs.addThought(pawn, 'sleptInBedroom', opt);
-    else if (countBedsIn(pawn.map, room) > 1) Needs.addThought(pawn, 'sleptInBarracks', opt);
-  }
-
-  /* Rooms are small and this only runs for a sleeping pawn once per rare
-     tick, so a straight scan of the cells beats keeping another index. */
-  function countBedsIn(map, room) {
-    if (!map || !room || !room.cells || !map.buildingAt) return 0;
-    var seen = null, n = 0;
-    for (var i = 0; i < room.cells.length; i++) {
-      var c = room.cells[i];
-      var b = map.buildingAt(map.xOf(c), map.yOf(c));
-      if (!b || !bedDef(b.def)) continue;
-      if (seen === null) seen = {};
-      if (seen[b.id]) continue;
-      seen[b.id] = 1;
-      n++;
-      if (n > 1) return n;
+    /* regions.js only calls a room a bedroom when one bed stands in it,
+       so sleeping in it is enough; a pawn who owns a bed somewhere else
+       is a guest here and gets nothing. */
+    var elsewhere = pawn.ownedBedId && bed.id !== pawn.ownedBedId;
+    if (room.role === 'bedroom' && !elsewhere) Needs.addThought(pawn, 'sleptInBedroom', opt);
+    else if (room.role === 'barracks' || room.bedCount > 1) {
+      Needs.addThought(pawn, 'sleptInBarracks', opt);
     }
-    return n;
   }
 
   function worstSickness(pawn) {
@@ -795,9 +849,9 @@
     for (var i = 0; i < h.hediffs.length; i++) {
       var hd = h.hediffs[i];
       var id = hd.id || (hd.def && hd.def.id) || hd.defId;
-      /* health.js already marks the hediffs that make a pawn feel ill by
-         hanging the sick thought off the def; the id table is only for a
-         hand-made hediff in a test. */
+      /* health.js flags flu, infection and food poisoning as diseases;
+         hypothermia and heatstroke carry no flag and still make a pawn
+         feel ill, which is what the id table is for. */
       var disease = (hd.def && (hd.def.thought === 'sick' || hd.def.isDisease)) || DISEASE_HEDIFFS[id];
       if (!disease) continue;
       var sev = typeof hd.severity === 'number' ? hd.severity : 0.3;
@@ -812,20 +866,6 @@
   }
 
   /* ---------- mood ---------- */
-
-  /* Worked out once per pass rather than per thought: a psychopath feels
-     nothing about a death, and bloodlust shrugs off the corpse. */
-  function moodFilter(pawn) {
-    return {
-      psycho: hasTrait(pawn, 'psychopath'),
-      blood: hasTrait(pawn, 'bloodlust')
-    };
-  }
-
-  function blocked(flags, defId) {
-    if (flags.psycho && DEATH_THOUGHTS[defId]) return true;
-    return flags.blood && defId === 'observedCorpse';
-  }
 
   function entryMood(t, occurrence) {
     var def = defOfThought(t);
@@ -859,10 +899,9 @@
     var list = pawn.thoughts;
     var total = MOOD_BASE + traitMoodTotal(pawn);
     if (list && list.length) {
-      var seen = {}, flags = moodFilter(pawn);
+      var seen = Object.create(null);
       for (var i = 0; i < list.length; i++) {
         var t = list[i];
-        if (blocked(flags, t.defId)) continue;
         var occ = seen[t.defId] || 0;
         seen[t.defId] = occ + 1;
         total += entryMood(t, occ);
@@ -885,10 +924,9 @@
     var out = [];
     if (!pawn || !pawn.thoughts) return out;
 
-    var list = pawn.thoughts, seen = {}, flags = moodFilter(pawn), i;
+    var list = pawn.thoughts, seen = Object.create(null), i;
     for (i = 0; i < list.length; i++) {
       var t = list[i];
-      if (blocked(flags, t.defId)) continue;
       var occ = seen[t.defId] || 0;
       seen[t.defId] = occ + 1;
       var v = entryMood(t, occ);
@@ -922,7 +960,10 @@
     var shift = 0, tr = pawn.traits || [];
     for (var i = 0; i < tr.length; i++) {
       var id = (tr[i] && tr[i].id) || tr[i];
-      if (BREAK_SHIFT[id]) shift += BREAK_SHIFT[id];
+      var def = traitDefOf(tr[i]);
+      var off = (def && typeof def.mentalBreakThresholdOffset === 'number')
+        ? normMood(def.mentalBreakThresholdOffset) : BREAK_SHIFT[id];
+      if (off) shift += off;
     }
     var minor = U.clamp(Needs.breakBase.minor + shift, 0.08, 0.90);
     var major = U.clamp(Needs.breakBase.major + shift, 0.05, minor - 0.02);
@@ -1046,30 +1087,36 @@
 
   function applyMealThoughts(pawn, thing, def) {
     var id = def.id || thing.defId;
-    var ascetic = hasTrait(pawn, 'ascetic');
 
     if (isKibble(def)) {
       Needs.addThought(pawn, 'ateKibble');
     } else if (isRawFood(def)) {
       Needs.addThought(pawn, 'ateRawFood');
     } else if (id === 'mealFine') {
-      /* An ascetic takes no pleasure in a fancy plate. */
-      if (!ascetic) Needs.addThought(pawn, 'ateFineMeal');
-    } else if (isCookedMeal(def) && !ascetic && typeof thing.quality === 'number' && thing.quality >= 4) {
+      Needs.addThought(pawn, 'ateFineMeal');
+    } else if (isCookedMeal(def) && (hasTrait(pawn, 'gourmand') || mealIsFineWork(thing))) {
+      /* production.js stamps a poison chance on a cooked meal but no
+         quality, so quality alone would make this thought unreachable in
+         a real colony. A gourmand is the other way to earn it: a plain
+         cooked dinner is an event to them. */
       Needs.addThought(pawn, 'hadNiceMeal');
     }
 
     var room = roomOf(pawn);
     if (tableAdjacent(pawn)) {
-      if (room && !room.outdoor && room.role === 'dining' && !ascetic) {
+      if (room && !room.outdoor && room.role === 'dining') {
         var b = room.beauty || 0;
         if (b >= 2) Needs.addThought(pawn, 'ateInImpressiveRoom', { degree: b >= 10 ? 2 : (b >= 5 ? 1 : 0) });
       }
-    } else if (!ascetic) {
+    } else {
       Needs.addThought(pawn, 'ateWithoutTable');
     }
 
     rollFoodPoisoning(pawn, thing, def);
+  }
+
+  function mealIsFineWork(thing) {
+    return typeof thing.quality === 'number' && thing.quality >= 4;
   }
 
   /* A badly cooked meal is the colony's most reliable source of misery.

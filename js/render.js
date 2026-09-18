@@ -38,13 +38,13 @@
 
   /* View state, all recomputed once per frame by syncView(). */
   var pixelScale = 1;          /* device pixels per CSS pixel, forced to an integer */
-  var cssW = 0, cssH = 0;      /* view size in CSS pixels */
   var cw = 0, ch = 0;          /* canvas size in device pixels */
   var TS = 32;                 /* tile size in device pixels */
   var originX = 0, originY = 0;
   var b0x = 0, b0y = 0, b1x = 0, b1y = 0;   /* visible tile rect, inclusive */
 
   var frameCount = 0, clock = 0;
+  /* The live cursor, refreshed from Input.pointer once a frame. */
   var mouse = { sx: 0, sy: 0, x: 0, y: 0, inside: false };
   Render.mouse = mouse;
   Render.camera = { x: 0, y: 0, zoom: 2 };
@@ -52,6 +52,7 @@
   /* Hoisted scratch. Nothing in a per-cell loop may allocate. */
   var fp = { w: 1, h: 1 };
   var ONE = { w: 1, h: 1 };
+  var ONE_SIZE_RANGE = [0.6, 1.0];
   var visPawns = [];
   var fireList = [];
   var ghostList = [];
@@ -61,6 +62,11 @@
     id: 0, defId: '', def: null, x: 0, y: 0, rot: 0, stack: 1, hp: 100,
     faction: 'player', quality: null, growth: 1, spawned: false, stuff: null
   };
+
+  function gameTick() {
+    var G = root.Game;
+    return (G && G.tick) || 0;
+  }
 
   var warned = {};
   function warnOnce(key, err) {
@@ -222,24 +228,12 @@
   /* ---------- canvas and view ---------- */
 
   Render.init = function (c) {
+    if (!c || !c.getContext) return Render;
     canvas = c;
     ctx = canvas.getContext('2d', { alpha: false });
-    if (canvas.addEventListener) {
-      canvas.addEventListener('mousemove', onMouseMove, { passive: true });
-      canvas.addEventListener('mouseleave', onMouseLeave, { passive: true });
-      canvas.addEventListener('mousedown', onMouseMove, { passive: true });
-    }
     Render.resize();
     return Render;
   };
-
-  function onMouseMove(e) {
-    var r = canvas.getBoundingClientRect();
-    mouse.sx = e.clientX - r.left;
-    mouse.sy = e.clientY - r.top;
-    mouse.inside = true;
-  }
-  function onMouseLeave() { mouse.inside = false; }
 
   Render.resize = function () {
     if (!canvas || !ctx) return;
@@ -249,7 +243,6 @@
        it to an integer and let the browser do the last small downscale:
        slightly soft on a 1.5x screen, perfectly sharp everywhere else. */
     pixelScale = Math.max(1, Math.min(3, Math.round(root.devicePixelRatio || 1)));
-    cssW = w; cssH = h;
     cw = Math.round(w * pixelScale);
     ch = Math.round(h * pixelScale);
     if (canvas.width !== cw) canvas.width = cw;
@@ -286,9 +279,19 @@
       if (b1y > map.h - 1) b1y = map.h - 1;
     }
 
-    if (mouse.inside) {
-      mouse.x = Math.floor((mouse.sx * pixelScale - originX) / TS);
-      mouse.y = Math.floor((mouse.sy * pixelScale - originY) / TS);
+    /* input.js owns the pointer, canvas rect and all. Converting its CSS
+       pixels here rather than trusting the tile it cached keeps the build
+       ghost under the cursor on a frame where the camera moved and the
+       mouse did not. */
+    var ptr = root.Input && Input.pointer;
+    if (ptr) {
+      mouse.sx = ptr.sx;
+      mouse.sy = ptr.sy;
+      mouse.inside = !!ptr.inside;
+      mouse.x = Math.floor((ptr.sx * pixelScale - originX) / TS);
+      mouse.y = Math.floor((ptr.sy * pixelScale - originY) / TS);
+    } else {
+      mouse.inside = false;
     }
   }
 
@@ -529,11 +532,14 @@
 
   /* ---------- zones ---------- */
 
-  var zoneCache = new Map(), zoneCacheFrame = -1, zoneFills = new Map();
+  var zoneCache = new Map(), zoneCacheFrame = -1, zoneFills = new Map(), zoneOwner = null;
 
   function rebuildZoneCache(map) {
+    /* The id lookup is rebuilt every frame a zone is drawn; the colours
+       are not, because a zone's hue is fixed for its whole life and
+       building two strings per zone per frame is pure garbage. */
+    if (zoneOwner !== map) { zoneFills.clear(); zoneOwner = map; }
     zoneCache.clear();
-    zoneFills.clear();
     var list = map.zones || [];
     for (var i = 0; i < list.length; i++) if (list[i]) zoneCache.set(list[i].id, list[i]);
     zoneCacheFrame = frameCount;
@@ -551,7 +557,9 @@
     if (c) return c;
     var hue = z.kind === 'growing' ? 96 : 38;
     hue = (hue + (tileHash(z.id, 17) % 40) - 20 + 360) % 360;
-    c = ['hsla(' + hue + ',55%,45%,0.22)', 'hsla(' + hue + ',70%,62%,0.75)'];
+    c = z.color
+      ? [z.color, z.color]
+      : ['hsla(' + hue + ',55%,45%,0.22)', 'hsla(' + hue + ',70%,62%,0.75)'];
     zoneFills.set(z.id, c);
     return c;
   }
@@ -651,23 +659,25 @@
       ctx.globalAlpha = 1;
     }
   }
-  var ONE_SIZE_RANGE = [0.6, 1.0];
 
   function drawItems(map) {
     var grid = map.itemGrid;
+    if (!grid) return;
     var w = map.w;
     for (var y = b0y; y <= b1y; y++) {
       var base = y * w, py = originY + y * TS;
       for (var x = b0x; x <= b1x; x++) {
-        var list = grid ? grid[base + x] : (map.itemsIdx ? map.itemsIdx(base + x) : null);
+        var list = grid[base + x];
         if (!list || !list.length) continue;
         var px = originX + x * TS, shown = 0;
-        for (var k = 0; k < list.length && shown < 3; k++) {
+        /* The whole stack is walked even though only three of it is drawn,
+           because fire is an item on this grid and burns above the pile it
+           is eating, not in its place in the queue. */
+        for (var k = 0; k < list.length; k++) {
           var t = list[k];
           if (!t) continue;
           if (t.defId === 'fire') { fireList.push(t); continue; }
-          if (t.isBlueprint || t.isFrame) { pushGhost(t); continue; }
-          if (t.defId === 'filthBlood') continue;   /* map.blood is the filth layer */
+          if (shown >= 3) continue;
           drawItem(t, px + shown * (TS >> 3), py + shown * (TS >> 3), x, y);
           shown++;
         }
@@ -706,7 +716,6 @@
         if (!id) continue;
         var t = thingById(map, id);
         if (!t || t.x !== x || t.y !== y) continue;
-        if (t.isBlueprint || t.isFrame) { pushGhost(t); continue; }
         drawBuilding(t);
       }
     }
@@ -736,34 +745,49 @@
     }
     /* A building that has taken a beating says so, because a wall at a
        fifth of its hit points is a raid about to come through. */
-    var max = maxHpOf(t, def);
+    var max = t.maxHp || (def && def.hp) || 0;
     if (t.hp !== undefined && max > 0 && t.hp < max * 0.7) {
       var bw = Math.max(4, dw - 4), bh = Math.max(2, pixelScale * 2);
       bar(px + 2, py + dh - bh - 2, bw, bh, t.hp / max, '#c0392b');
     }
   }
 
-  function maxHpOf(t, def) {
-    var C = root.Construct;
-    if (C && C.maxHp) {
-      try { return C.maxHp(t); } catch (e) { warnOnce('Construct.maxHp', e); }
-    }
-    return t.maxHp || (def && def.hp) || 0;
-  }
-
   /* ---------- blueprints and frames ---------- */
 
+  /* map.js keeps blueprints and frames on their own cell grid, so the
+     visible rectangle finds them exactly the way it finds buildings -
+     no walk of every plan on the map, and nothing to de-duplicate. */
   function collectGhosts(map) {
+    var gid = map.ghostId;
+    if (!gid) { collectGhostsFromIndex(map); return; }
+    var w = map.w;
+    var x0 = Math.max(0, b0x - 3), x1 = Math.min(map.w - 1, b1x + 3);
+    var y0 = Math.max(0, b0y - 3), y1 = Math.min(map.h - 1, b1y + 3);
+    for (var y = y0; y <= y1; y++) {
+      var base = y * w;
+      for (var x = x0; x <= x1; x++) {
+        var id = gid[base + x];
+        if (!id) continue;
+        var t = thingById(map, id);
+        if (t && t.x === x && t.y === y) ghostList.push(t);
+      }
+    }
+  }
+
+  function collectGhostsFromIndex(map) {
     var C = root.Construct;
-    if (!C || !C.blueprints) return;
-    var a = C.blueprints(map), b = C.frames(map), i;
-    for (i = 0; i < a.length; i++) if (a[i] && a[i].spawned) pushGhost(a[i]);
-    for (i = 0; i < b.length; i++) if (b[i] && b[i].spawned) pushGhost(b[i]);
+    if (!C || !C.blueprints || !C.frames) return;
+    var a, b, i;
+    try { a = C.blueprints(map); b = C.frames(map); }
+    catch (e) { warnOnce('Construct.blueprints', e); return; }
+    for (i = 0; i < a.length; i++) pushGhost(a[i]);
+    for (i = 0; i < b.length; i++) pushGhost(b[i]);
   }
 
   function pushGhost(g) {
+    if (!g || !g.spawned) return;
     if (g.x > b1x + 3 || g.y > b1y + 3 || g.x < b0x - 3 || g.y < b0y - 3) return;
-    if (ghostList.indexOf(g) < 0) ghostList.push(g);
+    ghostList.push(g);
   }
 
   function buildDefOf(g) {
@@ -832,7 +856,7 @@
       pawnRecs.set(p.id, rec);
     }
     rec.seen = frameCount;
-    var gt = root.Game ? Game.tick : 0;
+    var gt = gameTick();
     if (rec.tick !== gt) {
       rec.px = rec.cx; rec.py = rec.cy;
       rec.cx = fx; rec.cy = fy;
@@ -888,7 +912,7 @@
     var px = Math.round(originX + ppx * TS);
     var py = Math.round(originY + ppy * TS);
     var dir = p.dir | 0;
-    var anim = rec.moving ? (Math.floor(clock / 150) & 1) : 0;
+    var anim = rec.moving ? ((gameTick() / 9 | 0) & 1) : 0;
     var art = artPawn(p, dir, anim);
 
     if (art) {
@@ -899,14 +923,16 @@
       var body = (p.kind && p.kind.bodySize) || (p.isAnimal ? 0.8 : 1);
       var dw = Math.max(4, Math.round(TS * Math.max(0.5, Math.min(2.2, body))));
       var ox = px + ((TS - dw) >> 1), oy = py + ((TS - dw) >> 1);
+      /* Laid out flat, without save/restore: an exception between the two
+         would leave every later frame drawn on its side. */
       if (p.downed) {
-        ctx.save();
-        ctx.translate(px + TS * 0.5, py + TS * 0.5);
+        var mx = px + TS * 0.5, my = py + TS * 0.5;
+        ctx.translate(mx, my);
         ctx.rotate(1.5707963267948966);
-        ctx.translate(-(px + TS * 0.5), -(py + TS * 0.5));
+        ctx.translate(-mx, -my);
       }
       drawPawnFallback(p, ox, oy, dw, dw, dir);
-      if (p.downed) ctx.restore();
+      if (p.downed) ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
 
     if (p.carried) drawCarried(p, px, py, dir);
@@ -960,13 +986,15 @@
 
   function drawProjectiles(map, interp) {
     var C = root.Combat;
-    var list = (map.projectiles && map.projectiles.length !== undefined)
-      ? map.projectiles
-      : (C && C.projectiles && C.projectiles.length !== undefined ? C.projectiles : null);
+    var list = C && C.projectiles;
     if (!list || !list.length) return;
     for (var i = 0; i < list.length; i++) {
       var p = list[i];
       if (!p || p.dead) continue;
+      /* combat.js holds one list for the world and only sweeps another
+         map's rounds out on its next tick; a colony that has just been
+         restarted must not fly the old one's bullets. */
+      if (p.map && p.map !== map) continue;
       var x = p.x, y = p.y;
       if (x === undefined || y === undefined) continue;
       /* The projectile only moves on a tick, so lean on its own heading to
@@ -1016,7 +1044,7 @@
 
   /* ---------- light and night ---------- */
 
-  var lightGrid = null, lightOwner = null, lightFrame = -999;
+  var lightGrid = null, lightOwner = null, lightFrame = -999, powerOff = false;
   var lightB = [0, 0, 0, 0];
   var darkLUT = null, tintRamp = null, tintKey = -1;
   var glowSprite = null;
@@ -1059,7 +1087,7 @@
     lightB[0] = b0x; lightB[1] = b0y; lightB[2] = b1x; lightB[3] = b1y;
 
     var P = root.Power;
-    var useLightAt = !!(P && P.lightAt);
+    var useLightAt = !powerOff && !!(P && P.lightAt);
     var roof = map.roof, w = map.w;
     for (var y = b0y; y <= b1y; y++) {
       var base = y * w;
@@ -1070,6 +1098,7 @@
             l = P.lightAt(map, x, y);
           } catch (e) {
             useLightAt = false;
+            powerOff = true;
             warnOnce('Power.lightAt', e);
             l = day;
           }
@@ -1156,72 +1185,25 @@
     var x = info && info.x !== undefined ? info.x : i % map.w;
     var y = info && info.y !== undefined ? info.y : (i - (i % map.w)) / map.w;
     if (x < b0x || x > b1x || y < b0y || y > b1y) return;
-    var type = (info && info.type) || info;
-    var px = originX + x * TS, py = originY + y * TS;
-    var icon = artIcon('des-' + type);
-    if (icon) { blitAt(icon, px, py); return; }
-    drawDesignationGlyph(type, px, py);
+    drawDesignationMark((info && info.type) || info, originX + x * TS, originY + y * TS);
   }
 
-  /* Hand-drawn marks, one per designation type. They have to read at a
-     16 pixel tile, so each one is a couple of strokes and no more. */
-  function drawDesignationGlyph(type, px, py) {
-    var m = TS * 0.22, s = TS - m * 2;
-    var t = Math.max(1, pixelScale * (TS >= 32 ? 2 : 1));
-    var cx = px + TS * 0.5, cy = py + TS * 0.5;
-    ctx.lineCap = 'butt';
-    ctx.lineWidth = t;
-    ctx.strokeStyle = 'rgba(8,10,16,0.85)';
-    ctx.fillStyle = 'rgba(8,10,16,0.55)';
-    ctx.fillRect(px + m - t, py + m - t, s + t * 2, s + t * 2);
+  function desigColor(type) {
+    if (type === 'hunt' || type === 'slaughter' || type === 'deconstruct') return '#e07a5a';
+    if (type === 'tame') return '#7ec24a';
+    if (type === 'haulUrgent') return '#6fa8dc';
+    return GOLD;
+  }
 
-    var col = '#ffc23c';
-    if (type === 'hunt' || type === 'slaughter' || type === 'deconstruct') col = '#e07a5a';
-    else if (type === 'tame') col = '#7ec24a';
-    else if (type === 'haulUrgent') col = '#6fa8dc';
-    ctx.strokeStyle = col;
-    ctx.fillStyle = col;
-    ctx.beginPath();
-
-    if (type === 'mine') {
-      ctx.moveTo(px + m, py + m); ctx.lineTo(px + m + s, py + m + s);
-      ctx.moveTo(px + m + s, py + m); ctx.lineTo(px + m, py + m + s);
-    } else if (type === 'chop') {
-      ctx.moveTo(px + m, py + m + s); ctx.lineTo(cx + s * 0.2, cy - s * 0.25);
-      ctx.moveTo(cx, cy - s * 0.35); ctx.lineTo(px + m + s, py + m);
-      ctx.lineTo(px + m + s, py + m + s * 0.35);
-    } else if (type === 'harvest') {
-      ctx.arc(cx, cy, s * 0.42, 2.2, 5.4);
-      ctx.moveTo(px + m, py + m + s); ctx.lineTo(cx - s * 0.1, cy + s * 0.1);
-    } else if (type === 'cut') {
-      ctx.moveTo(px + m, py + m); ctx.lineTo(px + m + s, py + m + s);
-      ctx.moveTo(px + m + s, py + m); ctx.lineTo(cx, cy);
-      ctx.moveTo(px + m, py + m + s * 0.5); ctx.lineTo(px + m + s * 0.5, py + m + s * 0.5);
-    } else if (type === 'deconstruct') {
-      ctx.rect(px + m, py + m, s, s);
-      ctx.moveTo(px + m, py + m + s); ctx.lineTo(px + m + s, py + m);
-    } else if (type === 'haulUrgent') {
-      ctx.moveTo(cx, py + m); ctx.lineTo(cx, py + m + s);
-      ctx.moveTo(cx - s * 0.3, py + m + s * 0.32); ctx.lineTo(cx, py + m);
-      ctx.lineTo(cx + s * 0.3, py + m + s * 0.32);
-    } else if (type === 'hunt') {
-      ctx.arc(cx, cy, s * 0.36, 0, 6.283185307179586);
-      ctx.moveTo(cx - s * 0.5, cy); ctx.lineTo(cx + s * 0.5, cy);
-      ctx.moveTo(cx, cy - s * 0.5); ctx.lineTo(cx, cy + s * 0.5);
-    } else if (type === 'tame') {
-      ctx.arc(cx - s * 0.16, cy - s * 0.1, s * 0.2, 3.34, 0.2);
-      ctx.arc(cx + s * 0.16, cy - s * 0.1, s * 0.2, 2.94, 6.08);
-      ctx.moveTo(cx - s * 0.36, cy); ctx.lineTo(cx, cy + s * 0.42);
-      ctx.lineTo(cx + s * 0.36, cy);
-    } else if (type === 'slaughter') {
-      ctx.moveTo(px + m, py + m + s); ctx.lineTo(px + m + s * 0.75, py + m + s * 0.25);
-      ctx.moveTo(px + m + s * 0.55, py + m + s * 0.05); ctx.lineTo(px + m + s, py + m + s * 0.5);
-      ctx.lineTo(px + m + s * 0.7, py + m + s * 0.55);
-    } else {
-      ctx.rect(px + m, py + m, s, s);
-      ctx.moveTo(px + m, py + m); ctx.lineTo(px + m + s, py + m + s);
-    }
-    ctx.stroke();
+  /* art.js has a sprite for every designation type, so the bracket below is
+     only ever seen if art.js is missing or has been switched off: it says
+     the cell is marked and roughly for what, and no more. */
+  function drawDesignationMark(type, px, py) {
+    var icon = artIcon('des-' + type);
+    if (icon) { blitAt(icon, px, py); return; }
+    var m = TS * 0.22, s = TS - m * 2, t = Math.max(1, pixelScale);
+    outlineRect(px + m, py + m, s, s, t, 'rgba(8,10,16,0.75)');
+    outlineRect(px + m + t, py + m + t, s - t * 2, s - t * 2, t, desigColor(type));
   }
 
   /* ---------- selection, status bars, orders ---------- */
@@ -1253,6 +1235,7 @@
   }
 
   function drawPawnRing(p, interp) {
+    if (p.dead) return;
     pawnRec(p, interp);
     if (ppx < b0x - 2 || ppx > b1x + 2 || ppy < b0y - 2 || ppy > b1y + 2) return;
     var cx = originX + (ppx + 0.5) * TS, cy = originY + (ppy + 0.75) * TS;
@@ -1293,7 +1276,7 @@
   }
 
   function bodyHealth(p, rec) {
-    var gt = root.Game ? Game.tick : 0;
+    var gt = gameTick();
     if (rec.hpTick === gt) return rec.hp;
     rec.hpTick = gt;
     var h = p.health, cur = 0, max = 0;
@@ -1402,13 +1385,10 @@
   function toolDragRect() {
     if (selBoxOn) return selBox;
     var I = root.Input;
-    var d = I && (I.drag || I.dragRect);
-    if (!d) return null;
-    var x0 = d.x0 !== undefined ? d.x0 : d.sx, y0 = d.y0 !== undefined ? d.y0 : d.sy;
-    var x1 = d.x1 !== undefined ? d.x1 : d.ex, y1 = d.y1 !== undefined ? d.y1 : d.ey;
-    if (x0 === undefined || x1 === undefined) return null;
-    selBox.x0 = Math.min(x0, x1); selBox.x1 = Math.max(x0, x1);
-    selBox.y0 = Math.min(y0, y1); selBox.y1 = Math.max(y0, y1);
+    var d = I && I.drag;
+    if (!d || d.x0 === undefined || d.x1 === undefined) return null;
+    selBox.x0 = Math.min(d.x0, d.x1); selBox.x1 = Math.max(d.x0, d.x1);
+    selBox.y0 = Math.min(d.y0, d.y1); selBox.y1 = Math.max(d.y0, d.y1);
     return selBox;
   }
 
@@ -1432,9 +1412,14 @@
     var rot = tool.rot | 0;
     var drag = toolDragRect();
     if (drag && draggable(def)) {
+      /* A drag can cover the whole map, so the run is clipped to the view
+         first and then capped: the budget is spent on cells somebody is
+         looking at rather than on the half of the rectangle off screen. */
+      var y0 = Math.max(drag.y0, b0y - 4), y1 = Math.min(drag.y1, b1y + 1);
+      var x0 = Math.max(drag.x0, b0x - 4), x1 = Math.min(drag.x1, b1x + 1);
       var budget = 0;
-      for (var y = drag.y0; y <= drag.y1 && budget < 400; y++) {
-        for (var x = drag.x0; x <= drag.x1 && budget < 400; x++) {
+      for (var y = y0; y <= y1 && budget < 400; y++) {
+        for (var x = x0; x <= x1 && budget < 400; x++) {
           budget++;
           ghostAt(map, def, x, y, rot, tool.stuffId);
         }
@@ -1496,9 +1481,7 @@
     ctx.globalAlpha = 1;
     outlineRect(px, py, TS, TS, Math.max(1, pixelScale), col);
     if (tool.kind === 'designate' && tool.designation) {
-      var icon = artIcon('des-' + tool.designation);
-      if (icon) blitAt(icon, px, py);
-      else drawDesignationGlyph(tool.designation, px, py);
+      drawDesignationMark(tool.designation, px, py);
     }
   }
 
@@ -1754,8 +1737,10 @@
       /* main.js counts frame errors and pauses the game after four, so a
          renderer that swallows its own is the difference between one ugly
          frame and a dead colony. Report the first few and carry on. */
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
+      ctx.imageSmoothingEnabled = false;
       frameErrors++;
       if (frameErrors <= 3 && typeof console !== 'undefined') console.error('render frame:', err);
     }

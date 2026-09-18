@@ -67,6 +67,7 @@
     ORDERED: 3.8,      /* jobs the player queued with a right click */
     DRAFTED: 4,
     ANIMAL: 5,
+    DEFEND: 5.4,       /* something is attacking this colonist right now */
     FIGHT: 5.5,        /* a raider between jobs looks for someone to shoot */
     EMERGENCY: 6,
     URGENT: 7,
@@ -97,17 +98,6 @@
     runWild: 'mentalWander'
   };
 
-  /* Fallback durations, used when def_pawns.js does not state one. */
-  var DURATION = {
-    sadWander: [9000, 18000],
-    tantrum: [4000, 9000],
-    berserk: [3000, 7000],
-    foodBinge: [6000, 12000],
-    daze: [7000, 14000],
-    panicFlee: [2000, 5000],
-    runWild: [20000, 40000]
-  };
-
   /* Which break a mood band produces, and how likely it is per hour
      spent under that line. Extreme is deliberately fast: a colonist
      left at rock bottom for an afternoon should cost the player
@@ -122,6 +112,7 @@
      unhappy colony is a warning, high enough that ignoring one costs. */
   var BREAK_CHANCE_PER_HOUR = { extreme: 0.35, major: 0.12, minor: 0.04 };
   var DEFAULT_THRESHOLDS = { minor: 0.35, major: 0.25, extreme: 0.15 };
+  var DEFAULT_DURATION = [6000, 12000];
 
   var BREAK_TEXT = {
     sadWander: {
@@ -175,10 +166,9 @@
         ticks: (pawn.id || 0) % RARE,   /* stagger the rare tick by pawn */
         immuneUntil: 0,
         pendingTier: 0,
-        lastTier: 0,
         suppress: {},
         shelterTick: -SHELTER_RESCAN,
-        lastBreakTick: -1
+        lastLevel: 'none'
       };
     }
     return m;
@@ -286,22 +276,22 @@
     return bleed > 0.02 || pain > 0.30 || (pawn.health.bloodLoss || 0) > 0.15;
   }
 
+  /* A plan that just failed is not a better plan for being asked again
+     fifteen ticks later. Every level that can hand out the same job over
+     and over checks this first. */
+  function justFailed(pawn, defId, within) {
+    if (pawn.lastJobDefId !== defId || pawn.lastJobEndReason !== 'failed') return false;
+    return (tickNow() - (pawn.lastJobEndTick || 0)) < within;
+  }
+
   /* The last eat job failed, so there is nothing edible the pawn can
-     reach. Asking again every fifteen ticks would only keep them still. */
+     reach: go and cook, hunt or haul instead of standing still. */
   function foodHuntFailed(pawn) {
-    if (pawn.lastJobDefId !== 'eat' || pawn.lastJobEndReason !== 'failed') return false;
-    return (tickNow() - (pawn.lastJobEndTick || 0)) < FOOD_RETRY_TICKS;
+    return justFailed(pawn, 'eat', FOOD_RETRY_TICKS);
   }
 
   function aboutToCollapse(pawn) {
     return need(pawn, 'food') < 0.02 || need(pawn, 'rest') < 0.02;
-  }
-
-  function hostileTo(pawn, other) {
-    var C = sys('Combat');
-    if (C && C.hostile) return C.hostile(pawn, other);
-    if (pawn.hostileTo) return pawn.hostileTo(other);
-    return false;
   }
 
   /* ------------------------------------------------------------------
@@ -360,7 +350,7 @@
     }
 
     var fire = fireAt(map, pawn.x, pawn.y) || adjacentFire(map, pawn);
-    if (fire) {
+    if (fire && !justFailed(pawn, 'extinguishFire', 200)) {
       var beat = makeJob('extinguishFire', target('thing', fire));
       if (beat) return beat;
     }
@@ -491,6 +481,69 @@
     var foe = findFoe(pawn);
     if (!foe) return null;
     return attackJob(pawn, foe);
+  }
+
+  /* 5.4 Self-defence. A colonist is not a soldier - the player drafts
+     them for a raid - but standing still while a bear takes the colony
+     apart one person at a time is not restraint, it is a missing
+     behaviour. So: anything already on top of them gets hit back, a
+     hostile animal close enough to be a problem gets shot if there is a
+     gun to hand, and a raider gets run away from, because that one really
+     is the player's decision. */
+  var REACT_MELEE = 1.8;        /* it is already on me */
+  var REACT_ANIMAL = 6;         /* close enough to be coming for me */
+  var REACT_RAIDER = 12;        /* close enough to run from */
+
+  function selfDefenceJob(pawn) {
+    if (!isHuman(pawn) || pawn.drafted || pawn.faction !== 'player') return null;
+    if (pawn.downed || pawn.dead || !pawn.map) return null;
+
+    var map = pawn.map, best = null, bestD = Infinity;
+    for (var i = 0; i < map.pawns.length; i++) {
+      var other = map.pawns[i];
+      if (other === pawn || other.dead || other.downed) continue;
+      if (!hostileTo(pawn, other)) continue;
+      var d = U.dist(pawn.x, pawn.y, other.x, other.y);
+      if (d < bestD) { bestD = d; best = other; }
+    }
+    if (!best) return null;
+
+    if (bestD <= REACT_MELEE) return attackJob(pawn, best);
+
+    if (best.isAnimal) {
+      if (bestD > REACT_ANIMAL) return null;
+      var C = sys('Combat');
+      var w = C && C.weaponOf ? C.weaponOf(pawn) : null;
+      if (w && w.ranged) return attackJob(pawn, best);
+      return fleeJob(pawn, best);
+    }
+
+    /* A hostile human. Undrafted colonists get out of the way and leave
+       the fighting to whoever the player drafts. */
+    if (bestD <= REACT_RAIDER) return fleeJob(pawn, best);
+    return null;
+  }
+
+  function hostileTo(pawn, other) {
+    var G = sys('Game');
+    if (G && G.hostile) return G.hostile(pawn.faction, other.faction) ||
+      (other.isAnimal && other.manhunter === true);
+    var C = sys('Combat');
+    return !!(C && C.hostile && C.hostile(pawn.faction, other.faction));
+  }
+
+  function fleeJob(pawn, from) {
+    var job = makeJob('flee', target('pawn', from), null, {});
+    if (job) return job;
+    /* No flee driver on hand: put ground between them the hard way. */
+    var map = pawn.map;
+    var dx = U.sign(pawn.x - from.x), dy = U.sign(pawn.y - from.y);
+    for (var step = 8; step >= 3; step--) {
+      var tx = U.clamp(pawn.x + dx * step, 0, map.w - 1);
+      var ty = U.clamp(pawn.y + dy * step, 0, map.h - 1);
+      if (map.passable(tx, ty)) return makeJob('goto', target('cell', tx, ty), null, {});
+    }
+    return null;
   }
 
   function findFoe(pawn) {
@@ -626,6 +679,7 @@
     { tier: TIER.ORDERED,   name: 'ordered',   fn: queuedJob },
     { tier: TIER.DRAFTED,   name: 'drafted',   fn: draftedBranch },
     { tier: TIER.ANIMAL,    name: 'animal',    fn: animalJob },
+    { tier: TIER.DEFEND,    name: 'defend',    fn: selfDefenceJob },
     { tier: TIER.FIGHT,     name: 'fight',     fn: fightBackJob },
     { tier: TIER.EMERGENCY, name: 'emergency', fn: emergencyJob },
     { tier: TIER.URGENT,    name: 'urgent',    fn: urgentNeedsJob },
@@ -659,7 +713,6 @@
       mind.suppress[mind.pendingTier] = tickNow() + SUPPRESS_TICKS;
     }
     mind.pendingTier = 0;
-    mind.lastTier = level.tier;
     mind.lastLevel = level.name;
   }
 
@@ -772,7 +825,10 @@
     return (D && D.maybe) ? D.maybe('mentalState', id) : null;
   }
 
-  function durationOf(id, def) {
+  /* How long a break lasts belongs to the def, which states it either as
+     a number of ticks or as a range to roll inside. The fallback is only
+     for a state nobody registered. */
+  function durationOf(def) {
     var v;
     if (def) {
       v = def.durationTicks !== undefined ? def.durationTicks : def.duration;
@@ -782,8 +838,7 @@
         return U.randInt(def.minTicks, def.maxTicks);
       }
     }
-    var range = DURATION[id] || [6000, 12000];
-    return U.randInt(range[0], range[1]);
+    return U.randInt(DEFAULT_DURATION[0], DEFAULT_DURATION[1]);
   }
 
   function nameOf(pawn) {
@@ -831,11 +886,8 @@
     if (pawn.mentalState) return false;
 
     var def = defOf(id);
-    var state = { id: id, ticksLeft: durationOf(id, def), def: def };
+    var state = { id: id, ticksLeft: durationOf(def), def: def };
     pawn.mentalState = state;
-
-    var mind = mindOf(pawn);
-    mind.lastBreakTick = tickNow();
 
     /* Nobody breaks down to order, and nobody takes orders while broken
        down. Undrafting first also clears the stance combat is holding. */
@@ -893,7 +945,7 @@
 
   function tickState(pawn, state) {
     if (!state.def) state.def = defOf(state.id);
-    if (typeof state.ticksLeft !== 'number') state.ticksLeft = durationOf(state.id, state.def);
+    if (typeof state.ticksLeft !== 'number') state.ticksLeft = durationOf(state.def);
     state.ticksLeft--;
 
     if (pawn.downed || (pawn.health && pawn.health.dead)) {

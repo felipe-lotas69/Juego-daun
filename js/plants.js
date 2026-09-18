@@ -4,14 +4,16 @@
    Four ideas hold this file together.
 
    1. Plants are the most numerous thing on the map and the slowest
-      moving, so nothing here runs every tick. game.js walks the plant
-      list a slice at a time and gives each plant a tickRare roughly
-      every 250 ticks; every rate in this file is therefore quoted per
-      tick and multiplied by however many ticks have actually elapsed
-      since that plant was last looked at. The clock is map.tickCount
-      rather than Game.tick, for the same reason map.js ages rot on it:
-      a map ticking in a test without a Game around it must still grow
-      its crops.
+      moving, so nothing here runs every tick. Plants.tickSlice walks the
+      plant list a few entries at a time and gives each plant a tickRare
+      roughly every 250 ticks; every rate in this file is therefore
+      quoted per tick and multiplied by however many ticks have actually
+      elapsed since that plant was last looked at. Nothing assumes the
+      cadence it is called at, so a caller may tick a plant more often,
+      less often or twice in one tick and get the same growth. The clock
+      is map.tickCount rather than Game.tick, for the same reason map.js
+      ages rot on it: a map ticking in a test without a Game around it
+      must still grow its crops.
 
    2. Growth is one multiplier, built from the cell. Fertility, light
       and temperature each independently gate it - below minLightToGrow
@@ -45,8 +47,8 @@
 
   /* ---------- growth ---------- */
 
-  /* The beat game.js walks the plant list on. Used as the assumed
-     elapsed time for a plant nobody has looked at before. */
+  /* The beat the plant list is walked on, and the assumed elapsed time
+     for a plant nobody has looked at before. */
   var RARE_INTERVAL = 250;
 
   /* Growth falls off over the last few degrees at each end of a plant's
@@ -55,16 +57,27 @@
      harvest that is visibly late instead of one that simply froze. */
   var TEMP_TAPER = 6;
 
-  /* How long a frost-sensitive crop survives outside its band. A fifth
-     of a day: long enough to notice the cold snap letter, short enough
-     that ignoring it costs the field. */
-  var COLD_DEATH_TICKS = 12000;
+  /* How long a frost-sensitive crop survives outside its band. Half a
+     day of frost, measured net of the time it spends growing: an
+     ordinary cold night in early spring costs a field some growth and
+     no more, while a cold snap that holds a colony below freezing for a
+     day takes the crop. Heat is tighter because nothing reaches 58C
+     except a heat wave or the inside of a fire, and neither is
+     survivable. */
+  var COLD_DEATH_TICKS = 30000;
   var HEAT_DEATH_TICKS = 20000;
 
   /* Blight rots a crop out over about four fifths of a day, which is
      roughly one working day to cut the field down and re-sow it. */
   var BLIGHT_DEATH_TICKS = 48000;
-  var BLIGHT_SPREAD_CHANCE = 0.02;
+  /* Per rare tick, per blighted plant, at one neighbour. A plant only
+     lives about 190 rare ticks once blighted, so this keeps the infection
+     just under self-sustaining: a blight takes a bite out of a field and
+     burns out, and cutting early is what decides how big the bite is. */
+  var BLIGHT_SPREAD_CHANCE = 0.0025;
+
+  /* One "your crops are freezing" per in-game hour, not one per plant. */
+  var CROP_LOSS_COOLDOWN = 2500;
 
   /* Wild seeding, per tick, before the per-def slowdown. A mature plant
      rolls this about 0.3 times a day; the density cap below is what
@@ -113,6 +126,15 @@
   /* The plant clock. map.tick() runs once per game tick, so this tracks
      Game.tick exactly while also working in a headless map test. */
   function clockOf(map) { return map ? (map.tickCount | 0) : 0; }
+
+  /* Whether an alert of this kind was posted recently enough to skip
+     this one. The stamp lives on the map, so a new colony is never
+     silenced by how far the last one's clock had run; a stamp the map's
+     own clock has not reached yet belongs to that other colony. */
+  function recently(map, key, now, gap) {
+    var last = map[key];
+    return last !== undefined && now >= last && now - last < gap;
+  }
 
   function msg(text, opts) {
     var G = sys('Game');
@@ -220,14 +242,59 @@
     return d > RARE_INTERVAL * 8 ? RARE_INTERVAL * 8 : d;
   }
 
-  /* The per-tick entry point. Everything real happens on the rare beat,
-     staggered by the plant's own id so a thousand plants spread their
-     work across the period instead of landing on one tick. */
+  /* The per-tick entry point for one plant. Everything real happens on
+     the rare beat, staggered by the plant's own id so a thousand plants
+     spread their work across the period instead of landing on one tick.
+     Calling it more often than that is free, and calling it twice in one
+     tick does nothing the second time: tickRare measures the elapsed
+     ticks itself rather than assuming a cadence. */
   Plants.tick = function (map, plant) {
     if (!map || !plant || !plant.spawned) return;
     if ((clockOf(map) + plant.id) % RARE_INTERVAL !== 0) return;
     Plants.tickRare(map, plant);
   };
+
+  /* The whole-map version, and the one a caller should prefer: a rolling
+     slice that visits every plant once per RARE_INTERVAL, a handful per
+     tick, so a map carrying twenty thousand plants costs what a map
+     carrying twenty does.
+
+     The list is rebuilt when the cursor reaches its end rather than
+     being kept forever, because plants are created constantly - sown,
+     seeded, regrown after a harvest - and a cached list that is never
+     refilled is a list in which nothing planted after the first tick
+     ever grows. A plant that appears mid-pass joins on the next one,
+     which costs it at most a quarter of a second of game time. */
+  Plants.tickSlice = function (map) {
+    if (!map) return 0;
+    var st = map._plantSlice;
+    if (!st) { st = map._plantSlice = { list: [], cursor: 0 }; }
+    if (st.cursor >= st.list.length) refillSlice(map, st);
+
+    var n = st.list.length;
+    if (!n) return 0;
+
+    var per = Math.ceil(n / RARE_INTERVAL);
+    var done = 0;
+    for (var k = 0; k < per && st.cursor < n; k++) {
+      var plant = st.list[st.cursor++];
+      /* Stale entries are normal: a plant burned down or harvested since
+         the list was built is simply skipped. */
+      if (plant && plant.spawned) { Plants.tickRare(map, plant); done++; }
+    }
+    return done;
+  };
+
+  function refillSlice(map, st) {
+    var defs = Defs.plants();
+    var list = st.list;
+    list.length = 0;
+    for (var i = 0; i < defs.length; i++) {
+      var of = map.byDef(defs[i].id);
+      for (var j = 0; j < of.length; j++) list.push(of[j]);
+    }
+    st.cursor = 0;
+  }
 
   Plants.tickRare = function (map, plant) {
     if (!map || !plant || !plant.spawned) return;
@@ -282,8 +349,23 @@
     plant._stress = stress;
 
     if (Math.abs(stress) < (cold ? COLD_DEATH_TICKS : HEAT_DEATH_TICKS)) return false;
+    if (plant.sown) noteCropLoss(map, plant, cold);
     killPlant(map, plant, cold ? 'frost' : 'heat');
     return true;
+  }
+
+  /* A field that quietly disappears overnight is a mystery; a field that
+     says why is a lesson. Only sown crops are worth the message - wild
+     plants die of the weather constantly and nobody planted them - and
+     it is rate-limited, because a frost takes a whole field at once. */
+  function noteCropLoss(map, plant, cold) {
+    var now = clockOf(map);
+    if (recently(map, '_cropLossTick', now, CROP_LOSS_COOLDOWN)) return;
+    map._cropLossTick = now;
+    msg(cold
+      ? 'Crops are freezing. Nothing will grow outdoors until it warms up.'
+      : 'Crops are dying of the heat.',
+      { type: 'threat', x: plant.x, y: plant.y });
   }
 
   /* Old age is rolled rather than scheduled, so a stand of pines planted
@@ -861,13 +943,6 @@
     msg('A fire has started.', { type: 'threat', x: fire.x, y: fire.y });
   }
 
-  /* A stamp from a map whose clock has not reached it yet belongs to a
-     different colony, so it is no reason to stay quiet. */
-  function recently(map, key, now, window) {
-    var last = map[key];
-    return last !== undefined && now >= last && now - last < window;
-  }
-
   /* Somewhere the colony actually lives: a colonist in it, or something
      the colony built standing in it. A cave a raider set alight is not. */
   function colonyRoom(map, room) {
@@ -1031,7 +1106,6 @@
     map.despawnThing(fire);
     return true;
   };
-
 
   /* ============================================================
      JOBS

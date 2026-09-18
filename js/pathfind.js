@@ -248,19 +248,35 @@
      is O(number of doors) - a couple of dozen writes - rather than a
      building lookup on every node the search touches.
      ============================================================ */
-  function factionsHostile(a, b) {
-    if (!a || !b || a === b) return false;
-    return (a === 'player' && b === 'raider') || (a === 'raider' && b === 'player');
+  function isBuiltinFaction(id) {
+    return id === 'player' || id === 'raider' || id === 'wild' || id === 'neutral';
   }
 
-  /* Raiders come through doors by breaking them; everyone else who is at
-     war with the owner simply will not use that door. A pawn may carry
-     canBashDoors itself, which is how a manhunter or a berserk colonist
-     gets the same licence without a special case here. */
+  /* The four built-in ids answer out of a two-line table here, because this
+     file has to work in a bare harness and in a game that has not generated
+     a world yet, and because "player versus raider" must never depend on a
+     module that loads fourteen files later. A pawn carrying any other id is
+     a generated civilization, and only factions.js knows whether that
+     civilization is currently at war with the colony, so that pair is asked
+     there - lazily, since factions.js loads long after this one. */
+  function factionsHostile(a, b) {
+    if (!a || !b || a === b) return false;
+    if (isBuiltinFaction(a) && isBuiltinFaction(b)) {
+      return (a === 'player' && b === 'raider') || (a === 'raider' && b === 'player');
+    }
+    var F = root.Factions;
+    return !!(F && typeof F.hostileTo === 'function' && F.hostileTo(a, b));
+  }
+
+  /* Anyone at war with the colony comes through its doors by breaking them;
+     everyone else who is at war with a door's owner simply will not use it.
+     A pawn may carry canBashDoors itself, which is how a manhunter or a
+     berserk colonist gets the same licence without a special case here. */
   function defaultBash(pawn) {
     if (!pawn) return false;
     if (pawn.canBashDoors === true) return true;
-    return pawn.faction === 'raider';
+    if (pawn.faction === 'raider') return true;
+    return factionsHostile(pawn.faction, 'player');
   }
 
   function doorPenalty(door, pawn, canBash) {
@@ -571,8 +587,30 @@
   var MAX_PROBES = 48;          /* once something has been found, stop looking for better */
   var HARD_PROBES = 256;        /* and stop looking at all, even if nothing has been found */
 
-  var cList = [], cX = [], cY = [], cD = [], cOrder = [];
-  var reachOpts = { pawn: null, canBashDoors: undefined, maxCells: 0 };
+  /* One scratch frame per nesting level. scoreFn is caller code, and a work
+     giver is entitled to run a closestReachable of its own inside it - "how
+     good is this stack" can reasonably mean "how far is the stockpile that
+     would take it". Module-wide scratch would let that nested scan hand its
+     own winner back to the outer loop, so each level gets its own frame.
+     Depth is 0 in every call the game makes today, and frame 0 is reused
+     forever, so the ordinary path still allocates nothing. */
+  var frames = [];
+  var depth = 0;
+
+  function frameAt(d) {
+    var f = frames[d];
+    if (!f) {
+      f = frames[d] = {
+        list: [], x: [], y: [], dist: [], order: [],
+        opts: { pawn: null, canBashDoors: undefined, maxCells: 0 }
+      };
+    }
+    return f;
+  }
+
+  /* sort() is synchronous and this comparator cannot reenter the pathfinder,
+     so aiming it at the active frame for the length of one sort is safe. */
+  var sortDist = null;
   var posOut = { x: 0, y: 0 };
 
   /* Candidates come in as Things, Pawns, cell indices, {x,y} or Targets. */
@@ -596,53 +634,66 @@
     return null;
   }
 
-  function orderByDistance(a, b) { return cD[a] - cD[b]; }
+  function orderByDistance(a, b) { return sortDist[a] - sortDist[b]; }
 
   Path.closestReachable = function (map, pawn, candidates, scoreFn) {
     if (!candidates || !candidates.length) return null;
     stats.closestChecks++;
 
-    var px = pawn ? pawn.x : 0, py = pawn ? pawn.y : 0;
-    var n = 0, i;
-    for (i = 0; i < candidates.length; i++) {
-      var pos = posOf(candidates[i], map);
-      if (!pos) continue;
-      var dx = pos.x - px; if (dx < 0) dx = -dx;
-      var dy = pos.y - py; if (dy < 0) dy = -dy;
-      cList[n] = candidates[i]; cX[n] = pos.x; cY[n] = pos.y;
-      /* Rough distance in tiles: octile, cheap, and close enough to order by. */
-      cD[n] = dx < dy ? (dy + 0.41 * dx) : (dx + 0.41 * dy);
-      cOrder[n] = n;
-      n++;
+    var f = frameAt(depth++);
+    try {
+      var cList = f.list, cX = f.x, cY = f.y, cD = f.dist, cOrder = f.order;
+      var px = pawn ? pawn.x : 0, py = pawn ? pawn.y : 0;
+      var n = 0, i;
+      for (i = 0; i < candidates.length; i++) {
+        var pos = posOf(candidates[i], map);
+        if (!pos) continue;
+        var dx = pos.x - px; if (dx < 0) dx = -dx;
+        var dy = pos.y - py; if (dy < 0) dy = -dy;
+        cList[n] = candidates[i]; cX[n] = pos.x; cY[n] = pos.y;
+        /* Rough distance in tiles: octile, cheap, and close enough to order by. */
+        cD[n] = dx < dy ? (dy + 0.41 * dx) : (dx + 0.41 * dy);
+        cOrder[n] = n;
+        n++;
+      }
+      if (!n) return null;
+      cList.length = n; cX.length = n; cY.length = n; cD.length = n; cOrder.length = n;
+      sortDist = cD;
+      cOrder.sort(orderByDistance);
+
+      var reachOpts = f.opts;
+      reachOpts.pawn = pawn;
+      reachOpts.canBashDoors = undefined;
+
+      var best = null, bestScore = -Infinity, limit = Infinity, probes = 0;
+      for (i = 0; i < n; i++) {
+        var j = cOrder[i];
+        if (cD[j] > limit) break;
+        /* `best !== null`, not `best`: cell index 0 is a legitimate
+           candidate and must not reopen the wide probe budget. */
+        if (probes >= (best !== null ? MAX_PROBES : HARD_PROBES)) break;
+        probes++;
+        if (!Path.reachable(map, px, py, cX[j], cY[j], reachOpts)) continue;
+
+        var s = scoreFn ? scoreFn(cList[j], cD[j]) : -cD[j];
+        if (s === null || s === undefined || s === false || s !== s) continue;
+        if (best === null) limit = cD[j] * TOLERANCE_FACTOR + TOLERANCE_FLAT;
+        if (best === null || s > bestScore) { best = cList[j]; bestScore = s; }
+      }
+      return best;
+    } finally {
+      depth--;
     }
-    if (!n) return null;
-    cList.length = n; cX.length = n; cY.length = n; cD.length = n; cOrder.length = n;
-    cOrder.sort(orderByDistance);
-
-    reachOpts.pawn = pawn;
-    reachOpts.canBashDoors = undefined;
-
-    var best = null, bestScore = -Infinity, limit = Infinity, probes = 0;
-    for (i = 0; i < n; i++) {
-      var j = cOrder[i];
-      if (cD[j] > limit) break;
-      if (probes >= (best ? MAX_PROBES : HARD_PROBES)) break;
-      probes++;
-      if (!Path.reachable(map, px, py, cX[j], cY[j], reachOpts)) continue;
-
-      var s = scoreFn ? scoreFn(cList[j], cD[j]) : -cD[j];
-      if (s === null || s === undefined || s === false || s !== s) continue;
-      if (best === null) limit = cD[j] * TOLERANCE_FACTOR + TOLERANCE_FLAT;
-      if (best === null || s > bestScore) { best = cList[j]; bestScore = s; }
-    }
-    return best;
   };
 
   /* ============================================================
      SINGLE STEPS
      pawn.js walks a path one cell at a time and asks how long each step
      takes; the answer has to match what the search charged for it, or
-     the pawn's arrival time drifts from the plan.
+     the pawn's arrival time drifts from the plan. The one deliberate
+     difference is opts.avoidFire: its surcharge steers the route away
+     from a burning tile but is not a real delay, so a pawn who walks
+     through fire anyway pays only the ordinary cost of the tile.
      ============================================================ */
   Path.stepCost = function (map, fromI, toI, pawn) {
     var w = map.w, imp = map.IMPASSABLE || IMPASSABLE;

@@ -75,8 +75,10 @@ const unlocked = new Set();
 Defs.all('research').forEach(p => {
   if (!p.cost) fail(`research/${p.id} has no cost`);
   (p.unlocks || []).forEach(u => {
-    if (!Defs.has('thing', u) && !Defs.has('recipe', u)) {
-      fail(`research/${p.id} unlocks -> missing thing or recipe "${u}"`);
+    /* A buildable floor is a terrain, not a thing, and research unlocks
+       those the same way it unlocks a workbench. */
+    if (!Defs.has('thing', u) && !Defs.has('recipe', u) && !Defs.has('terrain', u)) {
+      fail(`research/${p.id} unlocks -> nothing called "${u}"`);
     }
     unlocked.add(u);
   });
@@ -84,7 +86,7 @@ Defs.all('research').forEach(p => {
     if (!Defs.has('research', q)) fail(`research/${p.id} prerequisite -> missing research/${q}`);
   });
 });
-Defs.all('thing').concat(Defs.all('recipe')).forEach(d => {
+Defs.all('thing').concat(Defs.all('recipe')).concat(Defs.all('terrain')).forEach(d => {
   if (d.researchPrerequisite && !unlocked.has(d.id)) {
     fail(`${d.defCategory}/${d.id} needs research ${d.researchPrerequisite} but no project unlocks it`);
   }

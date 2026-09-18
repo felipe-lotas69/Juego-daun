@@ -349,8 +349,7 @@
       hediffs: [],
       ticks: 0,
       deathCause: null,
-      _capDirty: true,
-      _killing: false
+      _capDirty: true
     };
     pawn.health = h;
     pawn.downed = false;
@@ -510,60 +509,83 @@
 
   /* ------------------------------------------------------------------
      Apparel and armour
+
+     def_things.js keeps every wearable number on `def.apparel`:
+     `slots` (torso/legs/head), `armorSharp`, `armorBlunt`, `coverage`
+     and the two insulation figures. Nothing lives on the def itself.
      ------------------------------------------------------------------ */
-  var APPAREL_COVER = {
-    shirt:     ['torso', 'neck', 'armLeft', 'armRight'],
-    pants:     ['legLeft', 'legRight'],
-    jacket:    ['torso', 'neck', 'armLeft', 'armRight'],
-    parka:     ['torso', 'neck', 'armLeft', 'armRight', 'legLeft', 'legRight'],
-    armorVest: ['torso'],
-    helmet:    ['head', 'neck']
+
+  /* A slot is a region, not a part. These are the parts of a human body
+     that sit in each region; anything deeper is reached by the ancestor
+     walk below. */
+  var SLOT_PARTS = {
+    torso: ['torso', 'neck', 'armLeft', 'armRight'],
+    legs:  ['legLeft', 'legRight'],
+    head:  ['head']
   };
 
   var coverCache = {};
 
+  function apparelOf(thing) {
+    var def = thing && thing.def;
+    return (def && def.apparel) || null;
+  }
+
   function coverageSet(thing) {
     var def = thing && thing.def;
-    if (!def) return null;
+    var ap = apparelOf(thing);
+    if (!def || !ap) return null;
     var key = def.id || thing.defId;
     if (coverCache[key]) return coverCache[key];
-    var list = def.coversParts || def.bodyParts || def.coverage || def.covers ||
-               APPAREL_COVER[key] || null;
+
     var set = {};
-    if (Array.isArray(list)) {
-      list.forEach(function (n) { set[n] = true; });
-    } else if (list && typeof list === 'object') {
-      Object.keys(list).forEach(function (n) { set[n] = true; });
+    var named = Array.isArray(ap.coversParts) ? ap.coversParts : null;
+    if (named) {
+      named.forEach(function (n) { set[n] = true; });
     } else {
-      /* Unknown apparel covers the trunk: better than covering nothing. */
-      set.torso = true;
+      var slots = Array.isArray(ap.slots) ? ap.slots : [];
+      slots.forEach(function (slot) {
+        var parts = SLOT_PARTS[slot] || [slot];
+        parts.forEach(function (n) { set[n] = true; });
+      });
     }
+    /* A garment that names no region still has to stop something, or a
+       data mistake would read in play as armour that silently does nothing. */
+    if (!Object.keys(set).length) set.torso = true;
+
     coverCache[key] = set;
     return set;
   }
 
-  /* A jacket over the torso also stands between a bullet and the heart,
-     so a part counts as covered when any ancestor of it is covered. */
+  /* A jacket over the torso also stands between a bullet and the heart, so
+     the walk climbs out of an organ into whatever encloses it - but it stops
+     at the first part on the surface, because a shirt over the arms is not
+     a glove and pants are not boots. */
   function apparelCovers(h, thing, part) {
     var set = coverageSet(thing);
     if (!set) return false;
     var p = part, guard = 0;
     while (p && guard++ < 16) {
       if (set[p.defName]) return true;
+      if (p.depth !== 'inside') return false;
       p = p.parent === null || p.parent === undefined ? null : partById(h, p.parent);
     }
     return false;
   }
 
   function ratingOf(thing, kind) {
-    var def = thing.def || {};
+    var ap = apparelOf(thing);
+    if (!ap) return 0;
     var base = 0;
-    if (kind === 'sharp') base = def.armorSharp || 0;
-    else if (kind === 'blunt') base = def.armorBlunt || 0;
-    else base = def.armorHeat !== undefined ? def.armorHeat : (def.armorBlunt || 0) * 0.5;
+    if (kind === 'sharp') base = ap.armorSharp || 0;
+    else if (kind === 'blunt') base = ap.armorBlunt || 0;
+    /* def_things.js states no heat armour, so a garment resists burns at
+       half of what it resists clubs with. */
+    else base = ap.armorHeat !== undefined ? ap.armorHeat : (ap.armorBlunt || 0) * 0.5;
     if (!base) return 0;
+    var maxHp = thing.maxHp || (thing.def && thing.def.hp) || 0;
     /* A tattered vest protects worse than a new one. */
-    if (thing.hp && def.maxHp) base *= U.clamp(thing.hp / def.maxHp, 0.35, 1);
+    if (thing.hp && maxHp) base *= U.clamp(thing.hp / maxHp, 0.35, 1);
     return base;
   }
 
@@ -575,7 +597,13 @@
     var apparel = pawn.apparel;
     if (Array.isArray(apparel)) {
       for (i = 0; i < apparel.length; i++) {
-        if (apparelCovers(h, apparel[i], part)) rating += ratingOf(apparel[i], t.armor);
+        if (!apparelCovers(h, apparel[i], part)) continue;
+        /* `coverage` is the chance the garment is actually in the way of a
+           blow that lands in its region, so a flak vest is not a wall. */
+        var ap = apparelOf(apparel[i]);
+        var cov = ap && typeof ap.coverage === 'number' ? ap.coverage : 1;
+        if (cov < 1 && !U.chance(cov)) continue;
+        rating += ratingOf(apparel[i], t.armor);
       }
     }
     var kind = pawn.kind || {};
@@ -765,11 +793,9 @@
   /* combat.js stains the cell where a blow lands. This is the other half:
      the trail a pawn who is still bleeding leaves behind them. */
   function spillBlood(pawn, amount) {
-    if (!amount) return;
     var map = pawn.map;
-    if (!map || !map.blood || !map.idx || !map.inBounds || !map.inBounds(pawn.x, pawn.y)) return;
-    var i = map.idx(pawn.x, pawn.y);
-    map.blood[i] = Math.min(255, map.blood[i] + Math.round(amount));
+    if (!(amount > 0) || !map || !map.addBlood) return;
+    map.addBlood(pawn.x, pawn.y, Math.round(amount));
   }
 
   Health.heal = function (pawn, injury, amount) {
@@ -974,10 +1000,12 @@
     var cold = 0, heat = 0;
     if (Array.isArray(pawn.apparel)) {
       for (var i = 0; i < pawn.apparel.length; i++) {
-        var d = pawn.apparel[i].def || {};
-        var ins = d.insulation || {};
-        cold += d.insulationCold !== undefined ? d.insulationCold : (ins.cold || 0);
-        heat += d.insulationHeat !== undefined ? d.insulationHeat : (ins.heat || 0);
+        var ap = apparelOf(pawn.apparel[i]);
+        if (!ap) continue;
+        cold += ap.insulationCold || 0;
+        /* A parka's heat figure is negative: it is why a colonist in winter
+           gear collapses the moment they walk into a summer field. */
+        heat += ap.insulationHeat || 0;
       }
     }
     return { min: min - cold, max: max + heat };
@@ -1094,7 +1122,7 @@
 
     h.immunityGain = immunityGainPerDay(pawn, h);
     invalidate(pawn);
-    thought(pawn, 'tendedWound', { degree: q >= 0.7 ? 1 : 0 });
+    thought(pawn, 'tendedWound');
 
     var P = PawnLib();
     if (doctor && P && P.gainXp) P.gainXp(doctor, 'medicine', 60);
@@ -1224,9 +1252,9 @@
     h.downed = down;
     pawn.downed = down;
     if (down) {
-      /* A pawn who falls over drops what they were doing and what they held. */
-      pawn.path = null;
-      pawn.pathIdx = 0;
+      /* A pawn who falls over stops where they stand and drops the job. */
+      if (typeof pawn.stopPath === 'function') pawn.stopPath();
+      else { pawn.path = null; pawn.pathIdx = 0; }
       var J = typeof root.Jobs !== 'undefined' ? root.Jobs : null;
       if (J && J.end && pawn.job) J.end(pawn, 'interrupted');
       var R = typeof root.Res !== 'undefined' ? root.Res : null;
@@ -1255,14 +1283,14 @@
 
   Health.kill = function (pawn, cause) {
     var h = ensure(pawn);
-    if (h.dead || h._killing) return;
-    h._killing = true;
+    if (h.dead) return;
     h.dead = true;
     h.downed = false;
     h.deathCause = cause || 'unknown causes';
     pawn.dead = true;
     pawn.downed = false;
-    pawn.path = null;
+    if (typeof pawn.stopPath === 'function') pawn.stopPath();
+    else { pawn.path = null; pawn.pathIdx = 0; }
     pawn.aimTarget = null;
     pawn.mentalState = null;
     var G = Game();
@@ -1277,18 +1305,16 @@
     if (R && R.releaseAll) R.releaseAll(pawn);
 
     /* The corpse, the map bookkeeping and the mood fallout belong to
-       pawn.js; find whichever hook it exposes and let it do that work. */
+       pawn.js. Pawn.onDeath is safe to call twice, so a pawn who dies
+       through pawn.js and lands here still only dies once. */
     var P = PawnLib();
-    if (P) {
-      var hooks = ['onDeath', 'die', 'kill', 'makeCorpse', 'spawnCorpse', 'corpse'];
-      for (var i = 0; i < hooks.length; i++) {
-        if (typeof P[hooks[i]] === 'function') { P[hooks[i]](pawn, h.deathCause); break; }
-      }
-    }
-    h._killing = false;
+    if (P && typeof P.onDeath === 'function') P.onDeath(pawn, h.deathCause);
   };
 
+  /* Apparel stays on the corpse - pawn.js moves it there, and stripping it
+     is a job rather than a death event. */
   function dropCarriedAndEquipment(pawn) {
+    if (typeof pawn.dropAll === 'function') { pawn.dropAll(pawn.x, pawn.y); return; }
     var map = pawn.map;
     if (!map || !map.moveThing) return;
     var drop = [];
@@ -1299,12 +1325,8 @@
       pawn.inventory = [];
     }
     for (var i = 0; i < drop.length; i++) {
-      var t = drop[i];
-      if (!t) continue;
-      t.spawned = true;
-      map.moveThing(t, pawn.x, pawn.y);
+      if (drop[i]) map.moveThing(drop[i], pawn.x, pawn.y);
     }
-    /* Apparel stays on the corpse: stripping it is a job, not a death event. */
   }
 
   Health.resurrectNothing = function () { return false; };

@@ -7,7 +7,7 @@
    and forty, so shuffling the same crate back and forth loses
    money and the only profit is in making something somebody
    else wants. A negotiator's social skill and the civilization's
-   goodwill move that number by a sixth between them, which is
+   goodwill move that number by a quarter between them, which is
    what makes sending your talker and staying on good terms pay.
 
    Three kinds of counter exist and all three go through the same
@@ -39,14 +39,14 @@
 
   var BEACON_RADIUS = 12;          /* how far a trade beacon reaches   */
   var ARRIVE_RADIUS = 6;           /* close enough to count as arrived */
-  var VISIT_GRACE = 2 * TICKS_PER_DAY;
   var FIRST_TRADER_DAY = 3;
   var MAX_VISITS = 2;
+  var GOODWILL_MIN_VALUE = 60;     /* silver a deal must move to count as diplomacy */
 
   Trade.BUY_SPREAD = BUY_SPREAD;
   Trade.SELL_SPREAD = SELL_SPREAD;
   Trade.visitors = [];
-  Trade.state = { nextArrivalTick: 0, lastTick: 0 };
+  Trade.state = { nextArrivalTick: 0, lastTick: 0, map: null };
 
   /* ------------------------------------------------------------------
      Plumbing. Every reach outside this file is guarded: trade.js loads
@@ -56,7 +56,6 @@
 
   function sys(name) { return root[name]; }
   function game() { return root.Game || null; }
-  function tickNow() { var g = game(); return (g && g.tick) || 0; }
   function msg(text, opts) { var g = game(); if (g && g.msg) g.msg(text, opts); }
   function letter(title, text, opts) { var g = game(); if (g && g.letter) g.letter(title, text, opts); }
 
@@ -351,10 +350,24 @@
     return out;
   }
 
+  /* Stockpiles the trader can walk to, plus everything inside any beacon's
+     radius. The beacon adds to that reach rather than replacing it - one
+     built in a far corner should not hide the warehouse.
+
+     Deduplicated, because two beacons whose radii overlap, or a beacon
+     standing over a stockpile, would otherwise hand the same stack to the
+     deal twice and let you sell it twice. */
   function reachableCells(map, anchor) {
+    var raw = stockpileCells(map, anchor);
     var beacons = beaconCells(map);
-    if (beacons && beacons.length) return beacons;
-    return stockpileCells(map, anchor);
+    if (beacons && beacons.length) raw = raw.concat(beacons);
+    var seen = new Set(), out = [];
+    for (var i = 0; i < raw.length; i++) {
+      if (seen.has(raw[i])) continue;
+      seen.add(raw[i]);
+      out.push(raw[i]);
+    }
+    return out;
   }
 
   /* Everything sellable lying on those cells, one row per def. Quality
@@ -372,37 +385,31 @@
         if (accepts && !accepts(t.def)) continue;
         var row = rows.get(t.defId);
         if (!row) {
-          row = { defId: t.defId, def: t.def, count: 0, stacks: [], quality: t.quality };
+          row = { defId: t.defId, def: t.def, count: 0, quality: t.quality };
           rows.set(t.defId, row);
         } else if (row.quality !== t.quality) {
           row.quality = null;
         }
         row.count += t.stack;
-        row.stacks.push(t);
       }
     }
     return { rows: rows, silver: silver };
   }
 
-  function takeFromStacks(map, stacks, count) {
-    var left = count;
-    for (var i = 0; i < stacks.length && left > 0; i++) {
-      var t = stacks[i];
-      if (!t || !t.spawned) continue;
-      var n = Math.min(left, t.stack);
-      map.splitStack(t, n);        /* the split-off part is carried away */
-      left -= n;
-    }
-    return count - left;
-  }
-
+  /* Splitting the stack is what hands the units over: map.splitStack
+     hollows out the pile and despawns it when it empties, and the part
+     that comes back is what the trader walks away with. Each cell's item
+     list is copied first, because emptying a stack rewrites it. */
   function takeColonyDef(map, cells, defId, count) {
     var left = count;
     for (var i = 0; i < cells.length && left > 0; i++) {
       var items = map.itemsIdx(cells[i]).slice();
       for (var j = 0; j < items.length && left > 0; j++) {
-        if (items[j].defId !== defId || !items[j].spawned) continue;
-        left -= takeFromStacks(map, [items[j]], left);
+        var t = items[j];
+        if (t.defId !== defId || !t.spawned) continue;
+        var n = Math.min(left, t.stack);
+        map.splitStack(t, n);
+        left -= n;
       }
     }
     return count - left;
@@ -424,12 +431,19 @@
     return (faction && faction.name) || 'trader';
   }
 
-  function caravanAt(tile) {
+  /* Which of the colony's caravans is standing at that world tile. The
+     partner is skipped explicitly: an allied caravan met on the road may
+     itself be sitting in Caravans.all, and a deal it held both sides of
+     would be a machine for printing goods. */
+  function caravanAt(tile, exclude) {
     var C = sys('Caravans');
     var list = C && C.all;
     if (!list || tile === undefined || tile === null) return null;
     for (var i = 0; i < list.length; i++) {
-      if (list[i] && !list[i].gone && list[i].tile === tile) return list[i];
+      var c = list[i];
+      if (!c || c === exclude || c.gone || c.tile !== tile) continue;
+      if (c.factionId && c.factionId !== 'player') continue;
+      return c;
     }
     return null;
   }
@@ -451,16 +465,22 @@
     return map && map.colonists ? bestNegotiator(map.colonists()) : null;
   };
 
-  /* Their side of the counter, whichever of the three it is. */
-  function partnerStock(partner) {
+  /* Their side of the counter, whichever of the three it is. A settlement
+     and a visiting trader keep a `stock` list; an allied caravan met on
+     the road has `items` instead, and that array IS its stock - the deal
+     has to write through to it, not to a copy of it. */
+  function theirGoods(partner) {
     if (!partner) return [];
     if (partner.stock) return partner.stock;
-    if (partner.items) {
-      return partner.items.filter(function (it) {
-        return it.defId !== 'silver' && isTradeGood(thingDef(it.defId));
-      }).map(function (it) { return { defId: it.defId, count: it.count }; });
-    }
-    return [];
+    if (partner.items) return partner.items;
+    partner.stock = [];
+    return partner.stock;
+  }
+
+  function partnerStock(partner) {
+    return theirGoods(partner).filter(function (it) {
+      return it.defId !== 'silver' && it.count > 0 && isTradeGood(thingDef(it.defId));
+    });
   }
 
   function partnerSilver(partner) {
@@ -486,7 +506,7 @@
     if (sKind && sKind.canTradeWith === false) return { ok: false, reason: partner.name + ' has no counter' };
     if (partner.destroyed) return { ok: false, reason: 'it is gone' };
     if (partner.phase === 'leaving' || partner.angered) return { ok: false, reason: 'they are leaving' };
-    var car = (opts && opts.caravan) || caravanAt(partner.tile);
+    var car = (opts && opts.caravan) || caravanAt(partner.tile, partner);
     if (partner.tile !== undefined && !car && !partner.pawnIds) {
       return { ok: false, reason: 'no caravan of yours is there' };
     }
@@ -498,7 +518,7 @@
     if (!partner) return null;
     var g = game();
     var map = opts.map || (g && g.map) || null;
-    var caravan = opts.caravan || (partner.tile !== undefined ? caravanAt(partner.tile) : null);
+    var caravan = opts.caravan || (partner.tile !== undefined ? caravanAt(partner.tile, partner) : null);
     var faction = factionOf(partner.factionId || partner.faction);
     var kind = resolveTraderKind(partner);
     var negotiator = opts.negotiator || Trade.negotiatorFor(caravan || map);
@@ -526,6 +546,7 @@
       basket: {},
       balance: 0,
       trades: 0,
+      note: null,
       closed: false,
       error: null
     };
@@ -587,6 +608,11 @@
       found.rows.forEach(function (row) {
         pushOurs(deal, row.def, row.count, row.quality, kind, faction);
       });
+      /* A trader deals with what is stacked where they can get at it.
+         An empty counter on your side is almost always a colony with no
+         stockpile rather than a colony with nothing, so say which. */
+      deal.note = deal.cells.length ? null
+        : 'Nothing of yours is in a stockpile they can reach. Build a stockpile near them, or a trade beacon.';
     }
 
     deal.theirSilver = partnerSilver(deal.partner);
@@ -668,7 +694,7 @@
   /* ---------- moving the goods, for real ---------- */
 
   function takeTheirs(deal, defId, count) {
-    var stock = partnerStock(deal.partner);
+    var stock = theirGoods(deal.partner);
     var left = count;
     for (var i = stock.length - 1; i >= 0 && left > 0; i--) {
       if (stock[i].defId !== defId) continue;
@@ -681,15 +707,11 @@
   }
 
   function giveTheirs(deal, defId, count) {
-    var stock = partnerStock(deal.partner);
+    var stock = theirGoods(deal.partner);
     for (var i = 0; i < stock.length; i++) {
       if (stock[i].defId === defId) { stock[i].count += count; return count; }
     }
     stock.push({ defId: defId, count: count });
-    /* A caravan's packs are its inventory; a settlement keeps a counter. */
-    if (deal.partner.items && deal.partner.items !== stock) {
-      deal.partner.items.push({ defId: defId, count: count });
-    }
     return count;
   }
 
@@ -784,8 +806,13 @@
     }
 
     deal.trades++;
+    /* Goodwill is for doing business, not for clicking. A handful of
+       silver over the counter is a purchase; below that threshold a
+       player could buy one berry eighty times and befriend a nation. */
     var F = sys('Factions');
-    if (F && F.noteTrade && deal.factionId) F.noteTrade(deal.factionId, summary.value);
+    if (F && F.noteTrade && deal.factionId && summary.value >= GOODWILL_MIN_VALUE) {
+      F.noteTrade(deal.factionId, summary.value);
+    }
 
     msg(tradeLine(deal, summary, balance), { type: 'good' });
     Trade.refresh(deal);
@@ -795,14 +822,21 @@
   function setPartnerSilver(deal, amount) {
     var p = deal.partner;
     amount = Math.max(0, Math.round(amount));
-    if (typeof p.silver === 'number') { p.silver = amount; deal.theirSilver = amount; return; }
-    if (p.items) {
-      for (var i = 0; i < p.items.length; i++) {
-        if (p.items[i].defId === 'silver') { p.items[i].count = amount; deal.theirSilver = amount; return; }
+    var delta = amount - deal.theirSilver;
+    var wrote = false;
+
+    if (typeof p.silver !== 'number' && p.items) {
+      for (var i = 0; i < p.items.length && !wrote; i++) {
+        if (p.items[i].defId === 'silver') { p.items[i].count = amount; wrote = true; }
       }
-      p.items.push({ defId: 'silver', count: amount });
+      if (!wrote) { p.items.push({ defId: 'silver', count: amount }); wrote = true; }
     }
-    p.silver = amount;
+    if (!wrote) p.silver = amount;
+
+    /* A settlement's float is a slice of its wealth, and world.js saves
+       wealth but not the float. Moving both keeps a drained counter
+       drained across a save instead of quietly refilling it. */
+    if (p.wealth !== undefined && !p.items) p.wealth = Math.max(0, Math.round(p.wealth + delta));
     deal.theirSilver = amount;
   }
 
@@ -873,8 +907,9 @@
   Trade.arrivingTrader = function (g, factionId) {
     g = g || game();
     var map = g && g.map;
-    if (!map || !root.MapGen || !root.MapGen.makePawn) return null;
+    if (!map || !root.MapGen || !root.MapGen.makePawn || !root.MapGen.edgeSpawnCells) return null;
     if (!map.colonists || !map.colonists().length) return null;
+    syncGame(g);
 
     var F = sys('Factions');
     var faction = factionId ? factionOf(factionId) : null;
@@ -943,7 +978,7 @@
       silver: U.randInt((kind.silverRange || [600, 1200])[0], (kind.silverRange || [600, 1200])[1]),
       arrivedTick: g.tick,
       leaveTick: g.tick + Math.round((kind.visitDays || 1.5) * TICKS_PER_DAY),
-      hardLeaveTick: g.tick + Math.round((kind.visitDays || 1.5) * TICKS_PER_DAY) + VISIT_GRACE,
+      walkOutBy: 0,
       phase: 'arriving',
       standX: stand.x, standY: stand.y,
       exitX: edge.x, exitY: edge.y,
@@ -963,18 +998,21 @@
 
   /* ---------- keeping the visit moving ---------- */
 
-  function orderTo(pawn, x, y) {
-    if (!pawn || pawn.dead || !pawn.map) return false;
+  /* One goto, re-issued only when it has actually lapsed. `slack` is how
+     far the pawn may drift before being called back: a tile while they
+     are walking somewhere, a few while they are standing at the counter,
+     which is what lets them mill about instead of marching on the spot. */
+  function orderTo(pawn, x, y, slack) {
+    if (!pawn || pawn.dead || pawn.tradeGone || !pawn.map) return false;
     var J = sys('Jobs'), T = sys('T');
     if (!J || !J.make || !T) return false;
     var mark = pawn.tradeOrder;
-    var arrived = U.cheb(pawn.x, pawn.y, x, y) <= 1;
+    var settled = U.dist(pawn.x, pawn.y, x, y) <= (slack || 1.5);
+    if (settled) { pawn.tradeOrder = { x: x, y: y }; return false; }
     if (mark && mark.x === x && mark.y === y) {
-      if (arrived) return false;
       if (pawn.job && pawn.job.defId === 'goto') return false;
       if (pawn.jobQueue && pawn.jobQueue.length) return false;
     }
-    if (arrived) { pawn.tradeOrder = { x: x, y: y }; return false; }
     var job = J.make('goto', T.cell(x, y));
     if (!job) return false;
     job.state.pe = 0;
@@ -986,15 +1024,34 @@
   }
 
   /* Everyone heads for the same point, spread out around it so the whole
-     caravan does not try to stand on one tile. */
-  function orderCrew(visit, x, y) {
-    var map = visit.pawns.length ? visit.pawns[0].map : null;
+     caravan does not try to stand on one tile. The spread is rolled once
+     per destination and kept: re-rolling it every slow tick would send
+     each pawn to a slightly different tile forever and nobody would
+     ever arrive anywhere. */
+  function crewSpots(visit, x, y) {
+    if (visit.spots && visit.spotX === x && visit.spotY === y) return visit.spots;
+    var map = null;
+    for (var m = 0; m < visit.pawns.length && !map; m++) {
+      if (visit.pawns[m] && !visit.pawns[m].tradeGone) map = visit.pawns[m].map;
+    }
+    visit.spotX = x; visit.spotY = y;
+    visit.spots = [];
+    for (var i = 0; i < visit.pawns.length; i++) {
+      var spot = null;
+      if (i > 0 && map) {
+        spot = freeCellNear(map, x + U.randInt(-3, 3), y + U.randInt(-3, 3), 4);
+      }
+      visit.spots.push(spot || { x: x, y: y });
+    }
+    return visit.spots;
+  }
+
+  function orderCrew(visit, x, y, slack) {
+    var spots = crewSpots(visit, x, y);
     for (var i = 0; i < visit.pawns.length; i++) {
       var p = visit.pawns[i];
-      if (!p || p.dead || !p.map) continue;
-      var spot = i === 0 || !map ? { x: x, y: y }
-        : (freeCellNear(map, x + U.randInt(-3, 3), y + U.randInt(-3, 3), 5) || { x: x, y: y });
-      orderTo(p, spot.x, spot.y);
+      if (!p || p.dead || p.tradeGone || p.prisoner) continue;
+      orderTo(p, spots[i].x, spots[i].y, slack);
     }
   }
 
@@ -1002,32 +1059,51 @@
     var out = [];
     for (var i = 0; i < visit.pawns.length; i++) {
       var p = visit.pawns[i];
-      if (p && !p.dead && p.map) out.push(p);
+      if (p && !p.dead && !p.tradeGone && !p.prisoner && p.map) out.push(p);
     }
     return out;
   }
 
-  function allNear(list, x, y, radius) {
-    for (var i = 0; i < list.length; i++) {
-      if (U.dist(list[i].x, list[i].y, x, y) > radius) return false;
-    }
-    return list.length > 0;
+  function despawnVisitor(pawn) {
+    pawn.tradeGone = true;
+    pawn.tradeVisitId = 0;
+    pawn.deSpawn();
   }
 
-  /* A guest who dies on your land costs you the civilization. The count
-     is taken here because nothing else in the game knows these pawns
-     were guests rather than passers-by. */
+  /* The trader is the one who has to reach the counter; the guards and
+     the pack animals trail in behind. Judging arrival on the whole crew
+     would let one muffalo stuck behind a wall close the shop. */
+  function leaderOf(visit) {
+    if (visit.trader && !visit.trader.dead && !visit.trader.tradeGone && !visit.trader.prisoner) {
+      return visit.trader;
+    }
+    var live = livePawns(visit);
+    for (var i = 0; i < live.length; i++) if (live[i].isHuman) return live[i];
+    return live[0] || null;
+  }
+
+  /* A guest who dies or ends up in your cells costs you the
+     civilization. The count is taken here because nothing else in the
+     game knows these pawns were guests rather than passers-by. */
   function noteCasualties(visit) {
-    var F = sys('Factions'), fresh = 0;
+    var F = sys('Factions'), dead = 0, taken = 0;
     for (var i = 0; i < visit.pawns.length; i++) {
       var p = visit.pawns[i];
-      if (!p || !p.dead || p.tradeDeathCounted) continue;
-      p.tradeDeathCounted = true;
-      fresh++;
-      if (F && F.notePawnKilled && p.isHuman) F.notePawnKilled(p, null);
+      if (!p || p.tradeCounted) continue;
+      if (p.dead) {
+        p.tradeCounted = true;
+        dead++;
+        if (F && F.notePawnKilled && p.isHuman) F.notePawnKilled(p, null);
+      } else if (p.prisoner) {
+        p.tradeCounted = true;
+        taken++;
+        if (F && F.adjustGoodwill) {
+          F.adjustGoodwill(visit.factionId, -U.randInt(10, 18), 'you took a trader prisoner');
+        }
+      }
     }
-    if (!fresh) return false;
-    visit.deaths += fresh;
+    if (!dead && !taken) return false;
+    visit.deaths += dead;
     if (!visit.angered) {
       visit.angered = true;
       letter('Blood on the trade road',
@@ -1038,14 +1114,19 @@
     return true;
   }
 
+  function beginDeparture(visit, g) {
+    visit.phase = 'leaving';
+    /* However badly the walk out goes, the caravan is off the map inside
+       a day. A trader wedged behind a wall is not a permanent feature. */
+    visit.walkOutBy = g.tick + TICKS_PER_DAY;
+    orderCrew(visit, visit.exitX, visit.exitY, 1.5);
+  }
+
   function endVisit(visit, quiet) {
     var live = livePawns(visit);
-    for (var i = 0; i < live.length; i++) {
-      live[i].tradeVisitId = 0;
-      live[i].deSpawn();
-    }
+    for (var i = 0; i < live.length; i++) despawnVisitor(live[i]);
     U.remove(Trade.visitors, visit);
-    if (!quiet && live.length) {
+    if (!quiet) {
       msg('The ' + (visit.traderKind ? visit.traderKind.label : 'traders') +
         ' of ' + visit.factionName + ' have moved on.', { type: 'info' });
     }
@@ -1056,57 +1137,61 @@
     var live = livePawns(visit);
     if (!live.length) { U.remove(Trade.visitors, visit); return; }
 
-    if (visit.angered && visit.phase !== 'leaving') {
-      visit.phase = 'leaving';
-      orderCrew(visit, visit.exitX, visit.exitY);
-    }
+    if (visit.angered && visit.phase !== 'leaving') beginDeparture(visit, g);
 
     if (visit.phase === 'arriving') {
-      if (allNear(live, visit.standX, visit.standY, ARRIVE_RADIUS)) {
+      var leader = leaderOf(visit);
+      if (leader && U.dist(leader.x, leader.y, visit.standX, visit.standY) <= ARRIVE_RADIUS) {
         visit.phase = 'trading';
         visit.leaveTick = g.tick + Math.round((visit.traderKind.visitDays || 1.5) * TICKS_PER_DAY);
-        visit.hardLeaveTick = visit.leaveTick + VISIT_GRACE;
         msg('The ' + visit.traderKind.label + ' of ' + visit.factionName + ' is open for business.',
           { type: 'good', x: visit.standX, y: visit.standY });
-      } else {
-        orderCrew(visit, visit.standX, visit.standY);
-        /* Traders who cannot find a way in do not stand at the edge for
-           a season waiting for you to knock a wall down. */
-        if (g.tick - visit.arrivedTick > TICKS_PER_DAY) {
-          visit.phase = 'leaving';
-          orderCrew(visit, visit.exitX, visit.exitY);
-        }
+        return;
+      }
+      orderCrew(visit, visit.standX, visit.standY, 1.5);
+      /* Traders who cannot find a way in do not stand at the edge for a
+         season waiting for you to knock a wall down. */
+      if (g.tick - visit.arrivedTick > TICKS_PER_DAY) {
+        msg('The ' + visit.traderKind.label + ' of ' + visit.factionName +
+          ' could not find a way in and is turning back.', { type: 'info', x: visit.exitX, y: visit.exitY });
+        beginDeparture(visit, g);
       }
       return;
     }
 
     if (visit.phase === 'trading') {
       if (g.tick >= visit.leaveTick) {
-        visit.phase = 'leaving';
-        orderCrew(visit, visit.exitX, visit.exitY);
         msg('The ' + visit.traderKind.label + ' of ' + visit.factionName + ' is packing up.',
           { type: 'info', x: visit.standX, y: visit.standY });
+        beginDeparture(visit, g);
+      } else {
+        orderCrew(visit, visit.standX, visit.standY, ARRIVE_RADIUS);
       }
       return;
     }
 
-    orderCrew(visit, visit.exitX, visit.exitY);
-    var gone = 0;
+    orderCrew(visit, visit.exitX, visit.exitY, 1.5);
     for (var i = 0; i < live.length; i++) {
-      if (U.dist(live[i].x, live[i].y, visit.exitX, visit.exitY) <= 2) {
-        live[i].tradeVisitId = 0;
-        live[i].deSpawn();
-        gone++;
-      }
+      if (U.dist(live[i].x, live[i].y, visit.exitX, visit.exitY) <= 2.5) despawnVisitor(live[i]);
     }
-    if (gone === live.length || g.tick >= visit.hardLeaveTick + VISIT_GRACE) {
-      endVisit(visit, true);
-    }
+    if (!livePawns(visit).length || g.tick >= (visit.walkOutBy || 0)) endVisit(visit, visit.angered);
   }
 
   /* ============================================================
      THE SLOW CLOCK
      ============================================================ */
+
+  /* A new colony in the same page session starts the clock over. Nobody
+     calls us to say so, but a different map object and a clock that ran
+     backwards both mean the same thing, and either is enough. Both
+     entry points into a live game come through here, so a trader that
+     arrived before the first slow tick is not swept away by it. */
+  function syncGame(g) {
+    var st = Trade.state;
+    if (g.map !== st.map || g.tick < st.lastTick) Trade.reset();
+    st.map = g.map;
+    st.lastTick = g.tick;
+  }
 
   function restockSettlements(g) {
     var W = sys('World');
@@ -1139,10 +1224,7 @@
   Trade.tick = function (g) {
     g = g || game();
     if (!g || !g.map) return;
-    /* A new colony in the same page session starts the clock over; this
-       is the only place that can notice without game.js calling us. */
-    if (g.tick < Trade.state.lastTick) Trade.reset();
-    Trade.state.lastTick = g.tick;
+    syncGame(g);
 
     restockSettlements(g);
     for (var i = Trade.visitors.length - 1; i >= 0; i--) tickVisit(g, Trade.visitors[i]);
@@ -1153,6 +1235,7 @@
     Trade.visitors.length = 0;
     Trade.state.nextArrivalTick = 0;
     Trade.state.lastTick = 0;
+    Trade.state.map = null;
     return Trade;
   };
 
@@ -1210,7 +1293,7 @@
           traderKindId: v.traderKindId, traderId: v.traderId, pawnIds: v.pawnIds.slice(),
           stock: v.stock.map(function (e) { return { defId: e.defId, count: e.count, price: e.price }; }),
           silver: v.silver, arrivedTick: v.arrivedTick, leaveTick: v.leaveTick,
-          hardLeaveTick: v.hardLeaveTick, phase: v.phase,
+          walkOutBy: v.walkOutBy, phase: v.phase,
           standX: v.standX, standY: v.standY, exitX: v.exitX, exitY: v.exitY,
           deaths: v.deaths, angered: v.angered
         };
@@ -1227,11 +1310,14 @@
     var pawns = (map && map.pawns) || [];
     for (var p = 0; p < pawns.length; p++) pawnById.set(pawns[p].id, pawns[p]);
 
+    /* A visit is only as real as the pawns standing on the map: one whose
+       crew is not there any more was already over when the game was saved
+       and is dropped rather than restored as a ghost counter. */
     (data.visitors || []).forEach(function (v) {
       var kind = defMaybe('traderKind', v.traderKindId);
       if (!kind) return;
       var crew = (v.pawnIds || []).map(function (id) { return pawnById.get(id); })
-        .filter(function (x) { return !!x; });
+        .filter(function (x) { return x && !x.dead; });
       if (!crew.length) return;
       var visit = {
         id: v.id || U.nextId(), factionId: v.factionId, factionName: v.factionName,
@@ -1240,7 +1326,7 @@
         pawns: crew, pawnIds: crew.map(function (x) { return x.id; }),
         stock: v.stock || [], silver: v.silver || 0,
         arrivedTick: v.arrivedTick || 0, leaveTick: v.leaveTick || 0,
-        hardLeaveTick: v.hardLeaveTick || 0, phase: v.phase || 'trading',
+        walkOutBy: v.walkOutBy || 0, phase: v.phase || 'trading',
         standX: v.standX || 0, standY: v.standY || 0,
         exitX: v.exitX || 0, exitY: v.exitY || 0,
         deaths: v.deaths || 0, angered: !!v.angered

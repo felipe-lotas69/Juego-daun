@@ -137,6 +137,24 @@
         if (r.workbenches.indexOf(bench.id) < 0) r.workbenches.push(bench.id);
       });
     });
+
+    /* The same two-sided link, for research: a thing says which project
+       gates it and a project lists what it unlocks. Either side is enough. */
+    ['thing', 'recipe', 'terrain'].forEach(function (category) {
+      lists[category].forEach(function (d) {
+        if (!d.researchPrerequisite) return;
+        var project = tables.research[d.researchPrerequisite];
+        if (!project) return;
+        if (!project.unlocks) project.unlocks = [];
+        if (project.unlocks.indexOf(d.id) < 0) project.unlocks.push(d.id);
+      });
+    });
+    lists.research.forEach(function (project) {
+      (project.unlocks || []).forEach(function (id) {
+        var d = tables.thing[id] || tables.recipe[id] || tables.terrain[id];
+        if (d && !d.researchPrerequisite) d.researchPrerequisite = project.id;
+      });
+    });
     _cache = {};
     return Defs;
   };

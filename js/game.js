@@ -231,8 +231,12 @@
   /* Seasonal temperature with a daily swing, plus whatever a heat wave or
      cold snap is currently doing. */
   Game.outdoorTemp = function () {
+    /* Day 0 is the start of spring at a workable 12C, summer peaks near 28
+       and winter bottoms out around -4. The phase matters: shifted the
+       other way, a fresh colony lands in the coldest hour of the year with
+       no clothes and no roof, freezes, and breaks down on the first day. */
     var yearT = Game.dayOfYear() / (DAYS_PER_SEASON * 4);
-    var seasonal = 12 + 16 * Math.sin((yearT - 0.25) * 6.283185307179586);
+    var seasonal = 12 + 16 * Math.sin(yearT * 6.283185307179586);
     var daily = 6 * Math.sin((Game.timeOfDay() - 0.30) * 6.283185307179586);
     var biomeOffset = Game.biome === 'aridShrubland' ? 8 : (Game.biome === 'borealForest' ? -12 : 0);
     return seasonal + daily + biomeOffset + Game.weather.tempOffset;
