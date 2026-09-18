@@ -67,7 +67,7 @@
     leaf: '#3f6b33', bone: '#d8cfc0', shadow: '#2a2118',
 
     /* material tones the illustrations lean on */
-    mortar: '#584f45', iron: '#5c6068', brass: '#c9a24a', glass: '#9fd2e8',
+    mortar: '#584f45', iron: '#5c6068', smoke: '#4a4a52', brass: '#c9a24a', glass: '#9fd2e8',
     ember: '#ffd23c', charcoal: '#241d18', linen: '#e4dcc6', hide: '#9c6b3f',
     foliageDark: '#2c4a26', foliageLight: '#7fa64c', bark: '#5a4227',
 
@@ -2666,3 +2666,1821 @@
   };
 
   for (var ik in ITEMS) SPRITE[ik] = ITEMS[ik];
+
+  /* ------------------------------------------------------------------
+     Plants
+
+     A plant is drawn over whatever terrain it stands on, so every one
+     of these starts with a contact shadow and then builds upward. Three
+     growth stages, and the silhouette has to change between them or the
+     player cannot tell a field that is ready from a field that is not.
+     ------------------------------------------------------------------ */
+
+  function leaf(g, x, y, len, wide, ang, c, vein) {
+    g.save();
+    g.translate(x, y);
+    g.rotate(ang);
+    g.beginPath();
+    g.moveTo(0, 0);
+    g.quadraticCurveTo(wide, -len * 0.45, 0, -len);
+    g.quadraticCurveTo(-wide, -len * 0.45, 0, 0);
+    g.closePath();
+    g.fillStyle = c; g.fill();
+    if (vein !== false) {
+      stroke(g, [0, -1, 0, -len + 1], rgba(shade(c, -0.3), 0.5), 0.9);
+      stroke(g, [-wide * 0.5, -len * 0.35, 0, -len * 0.45], rgba(shade(c, -0.25), 0.35), 0.7);
+      stroke(g, [wide * 0.5, -len * 0.35, 0, -len * 0.45], rgba(shade(c, -0.25), 0.35), 0.7);
+    }
+    g.beginPath();
+    g.moveTo(0, -len * 0.1);
+    g.quadraticCurveTo(wide * 0.55, -len * 0.45, 0, -len * 0.9);
+    g.closePath();
+    g.fillStyle = rgba('#ffffff', 0.16); g.fill();
+    g.restore();
+  }
+
+  function paintGrassPlant(g, rnd, def, stage, variant) {
+    var c1 = def.color, c2 = def.color2 || shade(c1, 0.12);
+    var tall = def.id === 'tallGrass';
+    var base = 50, spread = tall ? 22 : 18;
+    var h = (tall ? 34 : 22) * (0.5 + stage * 0.25);
+    blobEll(g, PX / 2 + 2, base + 3, spread, 5, '#000000', 0.22, 0.2);
+    var tones = [c1, c2, shade(c1, -0.18), mix(c1, P.foliageLight, 0.35)];
+    var n = tall ? 22 : 16;
+    for (var i = 0; i < n; i++) {
+      var x = PX / 2 + rs(rnd, spread);
+      var y = base + rs(rnd, 5);
+      var bh = h * rr(rnd, 0.55, 1.1);
+      var lean = rs(rnd, bh * 0.45) + (variant - 1) * 2;
+      whip(g, x, y, x + lean * 0.35, y - bh * 0.6, x + lean, y - bh,
+        tones[(rnd() * tones.length) | 0], rr(rnd, 1.2, 2.4));
+      if (bh > 16 && rnd() < 0.4) {
+        /* A seed head on the longest blades. */
+        ell(g, x + lean, y - bh, 1.6, 3.4, lean * 0.04, rgba(shade(c2, 0.18), 0.85));
+      }
+    }
+    for (var t = 0; t < 6; t++) {
+      var tx = PX / 2 + rs(rnd, spread);
+      whip(g, tx, base, tx + rs(rnd, 4), base - h * 0.5, tx + rs(rnd, 8), base - h * 0.95,
+        rgba(shade(c2, 0.28), 0.6), 1);
+    }
+  }
+
+  function paintBush(g, rnd, def, stage, ripe) {
+    var c1 = def.color, c2 = def.color2 || shade(c1, 0.15);
+    var s = [0.5, 0.78, 1][stage];
+    var cx = PX / 2, cy = PX / 2 + 5, r = 22 * s;
+    blobEll(g, cx + 3, cy + r * 0.62, r * 0.95, r * 0.3, '#000000', 0.3, 0.25);
+    /* Woody stems first, then three tones of foliage in clumps. */
+    for (var st = 0; st < 4; st++) {
+      var ang = -Math.PI / 2 + rs(rnd, 1.1);
+      stroke(g, [cx, cy + r * 0.5, cx + Math.cos(ang) * r * 0.5, cy + Math.sin(ang) * r * 0.5],
+        shade(P.bark, -0.1), 2.6);
+    }
+    var tones = [shade(c1, -0.22), c1, mix(c1, P.foliageLight, 0.3)];
+    for (var layer = 0; layer < 3; layer++) {
+      var n = 5 - layer, rr0 = r * (1 - layer * 0.16);
+      for (var i = 0; i < n; i++) {
+        var a2 = (i / n) * TAU + layer * 0.7;
+        var bx = cx + Math.cos(a2) * rr0 * 0.42 - layer * 1.6;
+        var by = cy + Math.sin(a2) * rr0 * 0.34 - layer * 3;
+        ell(g, bx, by, rr0 * 0.52, rr0 * 0.44, rs(rnd, 0.5), tones[layer]);
+      }
+    }
+    /* Individual leaves around the rim break the blob silhouette. */
+    for (var l = 0; l < 14; l++) {
+      var la = rnd() * TAU, ld = r * rr(rnd, 0.55, 0.95);
+      leaf(g, cx + Math.cos(la) * ld * 0.8, cy + Math.sin(la) * ld * 0.6,
+        r * 0.32, r * 0.13, la + Math.PI / 2,
+        rnd() < 0.4 ? tones[2] : tones[1]);
+    }
+    if (def.id === 'healroot') {
+      /* Five-petalled flowers, which is how you spot healroot in the
+         wild from across the map. */
+      for (var f = 0; f < 4 + stage * 2; f++) {
+        var fx = cx + rs(rnd, r * 0.7), fy = cy + rs(rnd, r * 0.55);
+        for (var p = 0; p < 5; p++) {
+          var pa = p * TAU / 5 + rnd();
+          ell(g, fx + Math.cos(pa) * 2.4, fy + Math.sin(pa) * 2.4, 2.2, 1.5, pa, c2);
+        }
+        circle(g, fx, fy, 1.5, P.gold);
+      }
+    } else if (ripe) {
+      for (var b = 0; b < 12; b++) {
+        var bx2 = cx + rs(rnd, r * 0.8), by2 = cy + rs(rnd, r * 0.62);
+        circle(g, bx2 + 0.8, by2 + 1, 3.4, rgba('#000000', 0.3));
+        circle(g, bx2, by2, 3.2, c2);
+        circle(g, bx2 - 1, by2 - 1.2, 1.1, rgba('#ffffff', 0.7));
+      }
+    }
+  }
+
+  /* Trees overhang their tile. The canvas is 2x2 tiles placed at
+     ox/oy = -32, so the tile the tree actually occupies is canvas
+     x 32..95, y 32..95 - which is where the trunk has to land. */
+  function paintTree(g, rnd, def, stage) {
+    var leafC = def.color, bark = def.color2 || P.bark;
+    var pine = def.id === 'treePine';
+    var scale = [0.42, 0.7, 1][stage];
+    var cx = 64, base = 92;
+    var trunkH = (pine ? 46 : 38) * scale;
+    var top = base - trunkH;
+    var canopyR = (pine ? 30 : 38) * scale;
+
+    /* The shadow the canopy throws, south-east of the trunk. */
+    blobEll(g, cx + canopyR * 0.42, base - canopyR * 0.1, canopyR * 0.95, canopyR * 0.4,
+      '#000000', 0.34, 0.25);
+
+    /* Trunk: tapered, with bark running up it and roots flaring out. */
+    var tw = (pine ? 7 : 8) * scale + 2;
+    g.beginPath();
+    g.moveTo(cx - tw, base);
+    g.quadraticCurveTo(cx - tw * 0.55, base - trunkH * 0.5, cx - tw * 0.4, top);
+    g.lineTo(cx + tw * 0.4, top);
+    g.quadraticCurveTo(cx + tw * 0.55, base - trunkH * 0.5, cx + tw, base);
+    g.closePath();
+    g.fillStyle = bark; g.fill();
+    g.save(); g.clip();
+    gradRect(g, cx - tw - 2, top - 2, tw * 2 + 4, trunkH + 4,
+      linGrad(g, cx - tw, 0, cx + tw, 0,
+        [0, rgba('#ffffff', 0.26), 0.35, rgba('#ffffff', 0.02), 1, rgba('#000000', 0.34)]));
+    for (var b = 0; b < 7; b++) {
+      var bx = cx + rs(rnd, tw);
+      whip(g, bx, base, bx + rs(rnd, 2.5), base - trunkH * 0.5, bx + rs(rnd, 2), top,
+        rgba(shade(bark, -0.35), rr(rnd, 0.3, 0.6)), rr(rnd, 0.8, 1.8));
+    }
+    g.restore();
+    for (var rt = 0; rt < 3; rt++) {
+      var ra = Math.PI * (0.15 + rt * 0.35);
+      stroke(g, [cx, base - 2, cx + Math.cos(ra) * tw * 2.4, base + Math.sin(ra) * 4],
+        shade(bark, -0.15), 3.2);
+    }
+
+    if (pine) {
+      /* Four tiers of needles, each a fan of short strokes, darkest at
+         the bottom where the light does not reach. */
+      var tiers = 4;
+      for (var t = 0; t < tiers; t++) {
+        var ty = base - 8 - t * (trunkH * 0.26);
+        var tr = canopyR * (1 - t * 0.19);
+        var tone = mix(leafC, t > 1 ? P.foliageLight : P.foliageDark, 0.18 + t * 0.08);
+        ell(g, cx, ty - tr * 0.28, tr, tr * 0.5, 0, mix(leafC, P.foliageDark, 0.35));
+        for (var n = 0; n < 26; n++) {
+          var ang = Math.PI + (n / 25) * Math.PI;
+          var dist = tr * rr(rnd, 0.35, 1);
+          var nx = cx + Math.cos(ang) * dist, ny = ty - Math.abs(Math.sin(ang)) * tr * 0.4;
+          stroke(g, [nx, ny + 5, nx + Math.cos(ang) * 6, ny + 9],
+            rnd() < 0.4 ? mix(tone, '#000000', 0.2) : tone, rr(rnd, 1.6, 3.2));
+        }
+        ell(g, cx - tr * 0.2, ty - tr * 0.36, tr * 0.5, tr * 0.22, -0.15,
+          rgba(mix(leafC, P.foliageLight, 0.5), 0.5));
+      }
+      circle(g, cx, base - trunkH - 4, 5 * scale, mix(leafC, P.foliageLight, 0.3));
+    } else {
+      /* A broadleaf canopy is overlapping clumps: a dark mass, a mid
+         tone rolled toward the light, and a few lit crowns. */
+      var cy = top - canopyR * 0.28;
+      var clumps = [];
+      for (var i = 0; i < 9; i++) {
+        var ang2 = (i / 9) * TAU + rs(rnd, 0.3);
+        var d = canopyR * (i === 0 ? 0 : rr(rnd, 0.35, 0.62));
+        clumps.push([cx + Math.cos(ang2) * d, cy + Math.sin(ang2) * d * 0.8,
+          canopyR * rr(rnd, 0.4, 0.58)]);
+      }
+      for (var k = 0; k < clumps.length; k++) {
+        ell(g, clumps[k][0] + 2, clumps[k][1] + 3, clumps[k][2], clumps[k][2] * 0.86,
+          0, mix(leafC, '#000000', 0.42));
+      }
+      for (var k2 = 0; k2 < clumps.length; k2++) {
+        ell(g, clumps[k2][0], clumps[k2][1], clumps[k2][2], clumps[k2][2] * 0.86, 0, leafC);
+      }
+      for (var k3 = 0; k3 < clumps.length; k3++) {
+        ell(g, clumps[k3][0] - clumps[k3][2] * 0.25, clumps[k3][1] - clumps[k3][2] * 0.28,
+          clumps[k3][2] * 0.6, clumps[k3][2] * 0.48, -0.3,
+          mix(leafC, P.foliageLight, 0.45));
+      }
+      /* Leaf edges around the rim, so the canopy is not a set of discs. */
+      for (var l = 0; l < 30; l++) {
+        var la = rnd() * TAU, ld = canopyR * rr(rnd, 0.72, 1.05);
+        var lx = cx + Math.cos(la) * ld, ly = cy + Math.sin(la) * ld * 0.84;
+        leaf(g, lx, ly, canopyR * 0.28, canopyR * 0.11, la + Math.PI / 2,
+          rnd() < 0.45 ? mix(leafC, P.foliageLight, 0.35) : mix(leafC, '#000000', 0.2), false);
+      }
+      /* Dapple: the holes the sun comes through. */
+      for (var d2 = 0; d2 < 12; d2++) {
+        var da = rnd() * TAU, dd = canopyR * rr(rnd, 0.1, 0.8);
+        blob(g, cx + Math.cos(da) * dd, cy + Math.sin(da) * dd * 0.84,
+          canopyR * rr(rnd, 0.08, 0.18),
+          rnd() < 0.5 ? '#ffffff' : '#000000', rr(rnd, 0.06, 0.16), 0.1);
+      }
+    }
+  }
+
+  function paintCrop(g, rnd, def, stage) {
+    var c1 = def.color, c2 = def.color2 || shade(c1, 0.2);
+    var id = def.id;
+    var cx = PX / 2, base = 54;
+    var s = [0.34, 0.66, 1][stage];
+    blobEll(g, cx + 2, base + 2, 20 * s + 5, 4.5, '#000000', 0.24, 0.2);
+
+    if (id === 'plantCorn') {
+      /* One tall stalk with broad arching leaves; cobs when ripe. */
+      var h = 46 * s;
+      stroke(g, [cx, base, cx + 1, base - h * 0.5, cx - 1, base - h], shade(c1, -0.15), 3.4 * s + 1);
+      stroke(g, [cx - 1, base, cx, base - h * 0.5, cx - 2, base - h], rgba('#ffffff', 0.2), 1.2);
+      for (var i = 0; i < 6; i++) {
+        var side = i & 1 ? 1 : -1, ly = base - h * (0.2 + i * 0.13);
+        var len = (26 - i * 2) * s;
+        g.beginPath();
+        g.moveTo(cx, ly);
+        g.quadraticCurveTo(cx + side * len * 0.7, ly - len * 0.35,
+          cx + side * len, ly + len * 0.2);
+        g.quadraticCurveTo(cx + side * len * 0.65, ly - len * 0.1, cx, ly + 2);
+        g.closePath();
+        g.fillStyle = i % 2 ? c1 : shade(c1, 0.12); g.fill();
+        stroke(g, [cx, ly, cx + side * len * 0.9, ly + len * 0.08],
+          rgba(shade(c1, -0.3), 0.4), 0.9);
+      }
+      if (stage === 2) {
+        for (var k = 0; k < 2; k++) {
+          var kx = cx + (k ? 7 : -7), ky = base - h * (0.42 + k * 0.16);
+          ell(g, kx, ky, 4.4, 10, k ? 0.2 : -0.2, c2);
+          ell(g, kx - 1, ky - 1, 2.2, 7, k ? 0.2 : -0.2, shade(c2, 0.3));
+          for (var t = -3; t <= 3; t++) {
+            stroke(g, [kx - 3.4, ky + t * 2.6, kx + 3.4, ky + t * 2.6],
+              rgba(shade(c2, -0.28), 0.5), 0.8);
+          }
+          /* Silk at the tip. */
+          for (var w = 0; w < 4; w++) {
+            whip(g, kx, ky - 9, kx + rs(rnd, 3), ky - 13, kx + rs(rnd, 6), ky - 16,
+              rgba(P.sand, 0.8), 1);
+          }
+        }
+      }
+      return;
+    }
+
+    /* Everything else is a low leafy plant: a rosette of leaves with
+       whatever it produces sitting in or above it. */
+    var n = stage === 0 ? 4 : 7;
+    var len = 20 * s;
+    for (var i2 = 0; i2 < n; i2++) {
+      var ang = -Math.PI / 2 + ((i2 / (n - 1)) - 0.5) * 2.5 + rs(rnd, 0.14);
+      var ll = len * rr(rnd, 0.75, 1.15);
+      leaf(g, cx + rs(rnd, 4), base, ll, ll * 0.36, ang,
+        i2 % 3 ? c1 : shade(c1, 0.14));
+    }
+
+    if (stage === 0) return;
+
+    if (id === 'plantRice') {
+      /* Ripe rice droops: the heavier the head, the more it bends. */
+      var stalks = stage === 2 ? 5 : 3;
+      for (var r = 0; r < stalks; r++) {
+        var sx = cx + (r - (stalks - 1) / 2) * 6 + rs(rnd, 2);
+        var sh = (stage === 2 ? 34 : 22) * rr(rnd, 0.85, 1.1);
+        var droop = stage === 2 ? 9 : 2;
+        whip(g, sx, base, sx + rs(rnd, 3), base - sh * 0.6, sx + droop, base - sh,
+          shade(c1, 0.1), 1.8);
+        if (stage === 2) {
+          for (var gk = 0; gk < 7; gk++) {
+            var t2 = gk / 7;
+            var gx = sx + droop * (0.5 + t2 * 0.7), gy = base - sh + t2 * 11;
+            ell(g, gx + rs(rnd, 1.6), gy, 1.7, 3, 0.5 + t2 * 0.5, c2);
+          }
+        }
+      }
+    } else if (id === 'plantCotton') {
+      if (stage === 2) {
+        for (var bl = 0; bl < 4; bl++) {
+          var bx = cx + rs(rnd, 15), by = base - rr(rnd, 8, 22);
+          /* A boll is four lobes of fibre out of a dry brown husk. */
+          for (var lb = 0; lb < 4; lb++) {
+            var la2 = lb * TAU / 4 + 0.4;
+            ell(g, bx + Math.cos(la2) * 3, by + Math.sin(la2) * 3, 4.4, 3.6, la2,
+              rgba(c2, 0.95));
+          }
+          circle(g, bx, by, 3.4, '#ffffff');
+          for (var hk = 0; hk < 4; hk++) {
+            var ha = hk * TAU / 4 + 0.4 + Math.PI / 4;
+            stroke(g, [bx, by, bx + Math.cos(ha) * 6, by + Math.sin(ha) * 6],
+              rgba(shade(P.bark, 0.1), 0.85), 2);
+          }
+        }
+      } else {
+        for (var f2 = 0; f2 < 3; f2++) {
+          circle(g, cx + rs(rnd, 10), base - rr(rnd, 6, 14), 2.2, rgba(P.gold, 0.7));
+        }
+      }
+    } else if (id === 'plantHealroot') {
+      var fl = stage === 2 ? 6 : 2;
+      for (var f3 = 0; f3 < fl; f3++) {
+        var fx = cx + rs(rnd, 13), fy = base - rr(rnd, 10, 26);
+        stroke(g, [fx, base - 4, fx, fy], shade(c1, -0.2), 1.4);
+        for (var p2 = 0; p2 < 5; p2++) {
+          var pa2 = p2 * TAU / 5 + f3;
+          ell(g, fx + Math.cos(pa2) * 3, fy + Math.sin(pa2) * 3, 3, 2, pa2, c2);
+        }
+        circle(g, fx, fy, 1.8, P.gold);
+      }
+    } else if (id === 'plantPotato') {
+      if (stage === 2) {
+        /* The crop is under the ground, so what shows is the tuber
+           shouldering out of the soil at the base. */
+        for (var t3 = 0; t3 < 3; t3++) {
+          var tx = cx + rs(rnd, 13), ty = base + rr(rnd, -2, 3);
+          ell(g, tx + 1, ty + 1.5, 6, 4, 0.3, rgba('#000000', 0.3));
+          ell(g, tx, ty, 6, 4, 0.3, mix(P.sand, P.soil, 0.45));
+          ell(g, tx - 1.6, ty - 1.2, 2.6, 1.6, 0.3, rgba('#ffffff', 0.25));
+        }
+      }
+      for (var f4 = 0; f4 < 3; f4++) {
+        circle(g, cx + rs(rnd, 11), base - rr(rnd, 10, 20), 2.2, rgba(c2, 0.8));
+      }
+    } else if (stage === 2) {
+      for (var b2 = 0; b2 < 5; b2++) {
+        var bx3 = cx + rs(rnd, 13), by3 = base - rr(rnd, 6, 20);
+        circle(g, bx3 + 0.7, by3 + 1, 3.2, rgba('#000000', 0.25));
+        circle(g, bx3, by3, 3, c2);
+        circle(g, bx3 - 1, by3 - 1, 1, rgba('#ffffff', 0.6));
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------
+     Effects
+
+     Everything particles.js and render.js draw that is not a thing: the
+     fire atlas, smoke, explosions, blood, muzzle flashes, sparks, dust,
+     splashes and weather. Each atlas is a small fixed number of frames,
+     and Art.effect folds whatever frame number a caller hands in back
+     into range before it reaches a cache key - a clock that climbs for
+     as long as the page is open must not grow the cache with it.
+     ------------------------------------------------------------------ */
+
+  /* One tongue of flame: a teardrop whose tip leans and whose waist
+     wobbles with the frame. */
+  function flameBody(g, cx, baseY, w, h, lean, wob, color) {
+    g.beginPath();
+    g.moveTo(cx - w, baseY);
+    g.bezierCurveTo(cx - w * 1.1, baseY - h * 0.42, cx - w * 0.5 + lean * 0.3 - wob,
+      baseY - h * 0.72, cx + lean, baseY - h);
+    g.bezierCurveTo(cx + w * 0.5 + lean * 0.3 + wob, baseY - h * 0.72,
+      cx + w * 1.1, baseY - h * 0.42, cx + w, baseY);
+    g.quadraticCurveTo(cx, baseY + h * 0.1, cx - w, baseY);
+    g.closePath();
+    g.fillStyle = color; g.fill();
+  }
+
+  /* `frame` runs 0..5. Intensity scales the whole thing without
+     changing its shape, which is what a dying fire needs. */
+  function flameIllus(g, cx, baseY, frame, height, intensity) {
+    frame = ((frame % 6) + 6) % 6;
+    intensity = intensity === undefined ? 1 : intensity;
+    var phase = frame / 6 * TAU;
+    var lean = Math.sin(phase) * height * 0.13;
+    var wob = Math.cos(phase * 2) * height * 0.06;
+    var h = height * (0.86 + Math.sin(phase * 2) * 0.14) * intensity;
+    var w = height * 0.3 * intensity;
+
+    g.globalCompositeOperation = 'lighter';
+    blob(g, cx + lean * 0.4, baseY - h * 0.45, h * 0.85, P.flame, 0.18 * intensity, 0);
+    g.globalCompositeOperation = 'source-over';
+
+    /* Four nested bodies: dark root, orange, yellow, white heart. */
+    flameBody(g, cx, baseY, w * 1.12, h * 0.55, lean * 0.3, wob * 0.4, rgba('#7a1f0a', 0.75));
+    flameBody(g, cx, baseY, w, h, lean, wob, '#e8501a');
+    flameBody(g, cx, baseY, w * 0.72, h * 0.74, lean * 0.85, wob * 0.8, P.flame);
+    flameBody(g, cx, baseY, w * 0.45, h * 0.5, lean * 0.7, wob * 0.6, P.ember);
+    flameBody(g, cx, baseY - h * 0.05, w * 0.2, h * 0.26, lean * 0.4, 0, '#fff4c4');
+
+    /* Detached licks above the body, which is what makes it move. */
+    for (var i = 0; i < 3; i++) {
+      var t = (i + frame * 0.37) % 1;
+      var lx = cx + lean * (1.1 + i * 0.2) + Math.sin(phase + i * 2) * w * 0.55;
+      var ly = baseY - h * (0.85 + t * 0.5);
+      flameBody(g, lx, ly, w * (0.22 - t * 0.1), h * (0.22 - t * 0.1), lean * 0.4, 0,
+        rgba(t < 0.5 ? P.ember : P.flame, 0.7 - t * 0.5));
+    }
+    /* Embers riding the column. */
+    for (var e = 0; e < 5; e++) {
+      var ea = phase + e * 1.7;
+      circle(g, cx + Math.sin(ea) * w * 1.1, baseY - h * (0.5 + (e / 5) * 0.9),
+        height * 0.028, rgba(P.ember, 0.85));
+    }
+  }
+
+  /* Blood: a main pool with a lit meniscus, satellite drops, and the
+     directional spatter of the hit that made it. */
+  function bloodSplat(g, rnd, c1, c2, w, h) {
+    var dark = c2 || shade(c1, -0.35);
+    var cx = w / 2 + rs(rnd, w * 0.1), cy = h / 2 + rs(rnd, h * 0.1);
+    var dir = rnd() * TAU;
+    var r = w * rr(rnd, 0.17, 0.26);
+    /* An irregular pool rather than an ellipse: blood does not pool
+       round. */
+    var n = 9, pts = [];
+    for (var k = 0; k < n; k++) {
+      var ang = (k / n) * TAU, rk = r * rr(rnd, 0.7, 1.3);
+      pts.push(cx + Math.cos(ang) * rk, cy + Math.sin(ang) * rk * 0.85);
+    }
+    g.beginPath();
+    g.moveTo(pts[0], pts[1]);
+    for (var i = 2; i < pts.length; i += 2) {
+      var px2 = pts[i], py = pts[i + 1];
+      var qx = (pts[i - 2] + px2) / 2 + rs(rnd, r * 0.18);
+      var qy = (pts[i - 1] + py) / 2 + rs(rnd, r * 0.18);
+      g.quadraticCurveTo(qx, qy, px2, py);
+    }
+    g.closePath();
+    g.fillStyle = c1; g.fill();
+    g.fillStyle = radGrad(g, cx - r * 0.3, cy - r * 0.3, 0, r * 1.5,
+      [0, rgba('#ffffff', 0.22), 0.5, rgba(dark, 0.1), 1, rgba(dark, 0.55)]);
+    g.fill();
+    /* Fingers thrown in the direction of travel. */
+    for (var f = 0; f < 5; f++) {
+      var fa = dir + rs(rnd, 0.6);
+      var fd = r * rr(rnd, 1.1, 2.2);
+      var fx = cx + Math.cos(fa) * fd, fy = cy + Math.sin(fa) * fd * 0.85;
+      ell(g, fx, fy, rr(rnd, 1.4, 3.4), rr(rnd, 1, 2.2), fa, c1);
+      stroke(g, [cx + Math.cos(fa) * r * 0.8, cy + Math.sin(fa) * r * 0.7, fx, fy],
+        rgba(c1, 0.6), rr(rnd, 1, 2.4));
+    }
+    /* Fine droplets, all over. */
+    for (var d = 0; d < 14; d++) {
+      var da = rnd() * TAU, dd = r * rr(rnd, 1.1, 3);
+      var dx = cx + Math.cos(da) * dd, dy = cy + Math.sin(da) * dd * 0.85;
+      if (dx < 1 || dy < 1 || dx > w - 1 || dy > h - 1) continue;
+      circle(g, dx, dy, rr(rnd, 0.7, 2), rgba(rnd() < 0.4 ? dark : c1, rr(rnd, 0.55, 0.95)));
+    }
+  }
+
+  function paintSmoke(g, rnd, size, tone) {
+    var cx = PX / 2, cy = PX / 2;
+    /* Overlapping soft lobes so a puff has some internal structure
+       rather than being one radial gradient. */
+    for (var i = 0; i < 5; i++) {
+      var ang = (i / 5) * TAU + rnd();
+      var d = size * rr(rnd, 0.1, 0.35);
+      blob(g, cx + Math.cos(ang) * d, cy + Math.sin(ang) * d * 0.9,
+        size * rr(rnd, 0.5, 0.8), tone, rr(rnd, 0.16, 0.3), 0.08);
+    }
+    blob(g, cx - size * 0.18, cy - size * 0.2, size * 0.42, mix(tone, '#ffffff', 0.5), 0.14, 0.05);
+  }
+
+  function paintExplosion(g, rnd, frame) {
+    var S = PX * 3, cx = S / 2, cy = S / 2;
+    var t = frame / 5;
+    var r = S * (0.08 + t * 0.4);
+
+    if (frame <= 1) {
+      /* The flash: all the light at once, before anything is visible. */
+      g.globalCompositeOperation = 'lighter';
+      blob(g, cx, cy, r * (frame ? 2.6 : 1.9), '#fff4c4', frame ? 0.5 : 0.85, 0.15);
+      blob(g, cx, cy, r * 1.2, '#ffffff', 0.95, 0.5);
+      g.globalCompositeOperation = 'source-over';
+    }
+    if (frame >= 1 && frame <= 4) {
+      /* Fireball: a ring of burning lobes cooling from white to red. */
+      var heat = 1 - (frame - 1) / 3;
+      var lobes = 11;
+      for (var i = 0; i < lobes; i++) {
+        var ang = (i / lobes) * TAU + frame;
+        var d = r * rr(rnd, 0.55, 1);
+        var lr = r * rr(rnd, 0.3, 0.55);
+        blob(g, cx + Math.cos(ang) * d, cy + Math.sin(ang) * d, lr,
+          mix('#c0392b', P.ember, heat), 0.55 * heat + 0.2, 0.25);
+      }
+      g.globalCompositeOperation = 'lighter';
+      blob(g, cx, cy, r * 0.85, mix(P.flame, '#fff4c4', heat), 0.6 * heat + 0.15, 0.2);
+      g.globalCompositeOperation = 'source-over';
+    }
+    if (frame >= 2) {
+      /* Smoke, thickening and spreading as the fire dies. */
+      var sa = 0.16 + (frame - 2) * 0.06;
+      var sr = S * (0.16 + (frame - 2) * 0.07);
+      for (var k = 0; k < 14; k++) {
+        var ang2 = (k / 14) * TAU + frame * 0.6;
+        var dd = r * rr(rnd, 0.85, 1.35);
+        blob(g, cx + Math.cos(ang2) * dd, cy + Math.sin(ang2) * dd, sr * rr(rnd, 0.5, 1),
+          mix(P.smoke, '#9a9a9a', (frame - 2) / 3), sa * rr(rnd, 0.6, 1.2), 0.1);
+      }
+    }
+    if (frame >= 1 && frame <= 4) {
+      /* Debris streaks thrown clear of the blast. */
+      for (var d2 = 0; d2 < 10; d2++) {
+        var a2 = rnd() * TAU, d3 = r * rr(rnd, 0.9, 1.5);
+        stroke(g, [cx + Math.cos(a2) * d3 * 0.6, cy + Math.sin(a2) * d3 * 0.6,
+          cx + Math.cos(a2) * d3, cy + Math.sin(a2) * d3],
+          rgba(P.ember, rr(rnd, 0.3, 0.8)), rr(rnd, 1, 2.6));
+      }
+    }
+  }
+
+  function paintMuzzle(g, rnd, frame) {
+    /* Points north; the renderer rotates it onto the line of fire. */
+    var cx = PX / 2, cy = PX * 0.72;
+    var len = [26, 34, 18][frame] || 22;
+    var w = [7, 9, 5][frame] || 6;
+    g.globalCompositeOperation = 'lighter';
+    blob(g, cx, cy - len * 0.35, len * 0.8, P.ember, 0.4, 0.05);
+    g.globalCompositeOperation = 'source-over';
+    flameBody(g, cx, cy, w, len, 0, 0, rgba(P.flame, 0.95));
+    flameBody(g, cx, cy, w * 0.6, len * 0.75, 0, 0, P.ember);
+    flameBody(g, cx, cy, w * 0.3, len * 0.45, 0, 0, '#fffbe8');
+    /* Side petals: the gas escaping around the muzzle. */
+    for (var i = 0; i < 4; i++) {
+      var ang = -Math.PI / 2 + (i - 1.5) * 0.75;
+      var d = len * rr(rnd, 0.3, 0.55);
+      stroke(g, [cx, cy - 2, cx + Math.cos(ang) * d, cy + Math.sin(ang) * d],
+        rgba(P.ember, 0.65), 3.2);
+    }
+  }
+
+  function paintSpark(g, rnd, frame) {
+    var cx = PX / 2, cy = PX / 2;
+    var spread = 8 + frame * 7;
+    g.globalCompositeOperation = 'lighter';
+    blob(g, cx, cy, spread * 0.8, P.ember, 0.25 - frame * 0.05, 0.05);
+    for (var i = 0; i < 9; i++) {
+      var ang = (i / 9) * TAU + frame * 0.4 + rnd() * 0.3;
+      var d = spread * rr(rnd, 0.5, 1.1);
+      var x0 = cx + Math.cos(ang) * d * 0.35, y0 = cy + Math.sin(ang) * d * 0.35;
+      var x1 = cx + Math.cos(ang) * d, y1 = cy + Math.sin(ang) * d;
+      stroke(g, [x0, y0, x1, y1], rgba(i % 3 ? P.ember : '#fff4c4', 0.9 - frame * 0.2),
+        rr(rnd, 1, 2.2));
+      circle(g, x1, y1, rr(rnd, 0.8, 1.6), rgba('#ffffff', 0.8 - frame * 0.2));
+    }
+    g.globalCompositeOperation = 'source-over';
+  }
+
+  function paintDust(g, rnd, frame) {
+    var cx = PX / 2, cy = PX / 2;
+    var r = 7 + frame * 6;
+    for (var i = 0; i < 6; i++) {
+      var ang = (i / 6) * TAU + frame;
+      var d = r * rr(rnd, 0.2, 0.7);
+      blob(g, cx + Math.cos(ang) * d, cy + Math.sin(ang) * d * 0.7, r * rr(rnd, 0.5, 0.9),
+        mix(P.sand, P.soil, 0.35), (0.3 - frame * 0.05) * rr(rnd, 0.7, 1.2), 0.06);
+    }
+    for (var k = 0; k < 5; k++) {
+      circle(g, cx + rs(rnd, r), cy + rs(rnd, r * 0.7), rr(rnd, 0.7, 1.6),
+        rgba(shade(P.soil, 0.15), 0.4));
+    }
+  }
+
+  function paintSplash(g, rnd, frame) {
+    var cx = PX / 2, cy = PX / 2 + 4;
+    var r = 8 + frame * 6;
+    /* The ring on the surface, then the crown, then the thrown drops. */
+    g.beginPath();
+    g.ellipse(cx, cy, r, r * 0.42, 0, 0, TAU);
+    g.strokeStyle = rgba(mix(P.water, '#ffffff', 0.55), 0.55 - frame * 0.1);
+    g.lineWidth = 2.4 - frame * 0.4;
+    g.stroke();
+    for (var i = 0; i < 8; i++) {
+      var ang = (i / 8) * TAU;
+      var hx = cx + Math.cos(ang) * r * 0.55, hy = cy + Math.sin(ang) * r * 0.24;
+      var top = cy - (10 - frame * 2) - Math.abs(Math.sin(ang)) * 3;
+      whip(g, hx, hy, hx + Math.cos(ang) * 3, (hy + top) / 2, hx + Math.cos(ang) * 6, top,
+        rgba(mix(P.water, '#ffffff', 0.45), 0.7 - frame * 0.12), 2.2);
+    }
+    for (var d = 0; d < 7; d++) {
+      var da = rnd() * TAU, dd = r * rr(rnd, 0.8, 1.5);
+      var dx = cx + Math.cos(da) * dd, dy = cy + Math.sin(da) * dd * 0.5 - frame * 3;
+      ell(g, dx, dy, rr(rnd, 1, 2.2), rr(rnd, 1.6, 3), 0,
+        rgba(mix(P.water, '#ffffff', 0.6), 0.75 - frame * 0.12));
+    }
+    blobEll(g, cx, cy, r * 0.8, r * 0.3, '#ffffff', 0.2 - frame * 0.04, 0.1);
+  }
+
+  function paintSnow(g, rnd, frame) {
+    var cx = PX / 2, cy = PX / 2;
+    var r = 3 + frame * 1.6;
+    blob(g, cx, cy, r * 2.2, '#ffffff', 0.2, 0.05);
+    g.strokeStyle = 'rgba(255,255,255,0.95)';
+    g.lineWidth = 1.2;
+    g.lineCap = 'round';
+    for (var i = 0; i < 6; i++) {
+      var ang = i * TAU / 6 + frame * 0.2;
+      var ex = cx + Math.cos(ang) * r, ey = cy + Math.sin(ang) * r;
+      g.beginPath(); g.moveTo(cx, cy); g.lineTo(ex, ey); g.stroke();
+      /* Barbs, which is what makes it a snowflake and not an asterisk. */
+      var bx = cx + Math.cos(ang) * r * 0.55, by = cy + Math.sin(ang) * r * 0.55;
+      g.beginPath();
+      g.moveTo(bx, by);
+      g.lineTo(bx + Math.cos(ang + 0.9) * r * 0.32, by + Math.sin(ang + 0.9) * r * 0.32);
+      g.moveTo(bx, by);
+      g.lineTo(bx + Math.cos(ang - 0.9) * r * 0.32, by + Math.sin(ang - 0.9) * r * 0.32);
+      g.stroke();
+    }
+    g.lineCap = 'butt';
+    circle(g, cx, cy, r * 0.22, '#ffffff');
+  }
+
+  function paintRain(g, rnd, frame) {
+    var cx = PX / 2, cy = PX / 2;
+    var len = 14 + frame * 5;
+    /* A drop falling with a slight westerly lean, tapered at the top. */
+    g.beginPath();
+    g.moveTo(cx - 2.2, cy + len / 2);
+    g.quadraticCurveTo(cx - 1, cy, cx - 3, cy - len / 2);
+    g.lineTo(cx - 1.4, cy - len / 2);
+    g.quadraticCurveTo(cx + 1, cy, cx + 0.6, cy + len / 2);
+    g.closePath();
+    g.fillStyle = rgba(mix(P.water, '#ffffff', 0.6), 0.55);
+    g.fill();
+    stroke(g, [cx - 2.4, cy + len / 2 - 2, cx - 2.4, cy - len / 2 + 4],
+      rgba('#ffffff', 0.4), 0.9);
+    ell(g, cx - 1, cy + len / 2, 2.4, 1.6, 0, rgba(mix(P.water, '#ffffff', 0.7), 0.7));
+  }
+
+  /* ------------------------------------------------------------------
+     Pawns
+
+     The most important sprite in the game. A human is assembled from
+     layered parts - legs, torso, arms, head, hair, hat - so the walk
+     cycle can move the parts rather than swap whole pictures, and so
+     apparel colours land on the right piece. Four facings, four walk
+     frames, plus a carrying pose and a lying pose.
+
+     The figure is seen from above and slightly behind, which is the
+     angle that lets a top-down game show a face at all. Light from the
+     north-west, as everywhere else.
+     ------------------------------------------------------------------ */
+
+  var SKIN = ['#f0c8a0', '#e0b088', '#c89868', '#a87848', '#8a5c34', '#5e3a20'];
+  var HAIR = ['#2b1d12', '#4a3020', '#7a5230', '#a8763c', '#c9b48a', '#6e6e78'];
+
+  var APPAREL_SLOT = {
+    shirt: 'top', jacket: 'over', parka: 'over', armorVest: 'vest',
+    pants: 'leg', helmet: 'head'
+  };
+
+  function apparelColor(t) {
+    var d = t.def || (t.defId && Defs.maybe('thing', t.defId));
+    if (!d) return null;
+    var sid = t.stuff || t.stuffId;
+    var stuff = sid && Defs.maybe('thing', sid);
+    return stuff ? mix(d.color, stuff.color, 0.45) : d.color;
+  }
+
+  function humanStyle(pawn) {
+    var h = U.hash('pawn' + (pawn.id || 0) + (pawn.kindId || ''));
+    var fc = factionColor(pawn.faction);
+    var s = {
+      skin: SKIN[h % SKIN.length],
+      hair: HAIR[(h >>> 5) % HAIR.length],
+      style: (h >>> 11) % 4,
+      build: ((h >>> 17) % 3) - 1,
+      top: null, over: null, vest: null, leg: null, head: null
+    };
+    var worn = pawn.apparel || [];
+    for (var i = 0; i < worn.length; i++) {
+      var t = worn[i], id = t && (t.defId || (t.def && t.def.id));
+      var slot = id && APPAREL_SLOT[id];
+      if (slot) s[slot] = apparelColor(t);
+    }
+    /* Faction colour is mixed into the worn garment rather than painted
+       over it, so a colonist still reads blue and a raider red without
+       throwing away what they are actually wearing. */
+    s.top = s.top ? mix(s.top, fc, 0.35) : fc;
+    s.over = s.over ? mix(s.over, fc, 0.3) : null;
+    s.leg = s.leg || shade(fc, -0.35);
+    return s;
+  }
+
+  /* A limb: a capsule with a lit edge on the north-west side. */
+  function limb(g, x0, y0, x1, y1, w, c) {
+    stroke(g, [x0, y0, x1, y1], shade(c, -0.3), w);
+    stroke(g, [x0, y0, x1, y1], c, w - 1.6);
+    stroke(g, [x0 - w * 0.18, y0 - w * 0.18, x1 - w * 0.18, y1 - w * 0.18],
+      rgba('#ffffff', 0.18), w * 0.35);
+  }
+
+  function paintHumanLying(g, s, dead) {
+    var body = s.over || s.top;
+    var skin = dead ? drained(s.skin) : s.skin;
+    var cloth = dead ? drained(body) : body;
+    var legC = dead ? drained(s.leg) : s.leg;
+    var hair = dead ? drained(s.hair) : s.hair;
+    var cx = 34, cy = 34;
+    /* Head to the west, legs to the east, arms thrown out. */
+    limb(g, cx + 4, cy + 4, cx + 22, cy + 12, 9, legC);
+    limb(g, cx + 4, cy - 4, cx + 24, cy - 6, 9, legC);
+    ell(g, cx, cy, 15, 11, 0.04, cloth);
+    ell(g, cx - 2, cy - 3, 11, 6, 0.04, shade(cloth, 0.2));
+    ell(g, cx + 6, cy + 5, 10, 5, 0.1, rgba('#000000', 0.2));
+    limb(g, cx - 6, cy - 6, cx - 2, cy - 20, 7.5, cloth);
+    limb(g, cx - 6, cy + 6, cx + 4, cy + 19, 7.5, cloth);
+    circle(g, cx - 2, cy - 21, 3.6, skin);
+    circle(g, cx + 5, cy + 20, 3.6, skin);
+    circle(g, cx - 17, cy - 2, 11, skin);
+    g.fillStyle = radGrad(g, cx - 21, cy - 6, 1, 15,
+      [0, rgba('#ffffff', 0.32), 0.55, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]);
+    g.beginPath(); g.arc(cx - 17, cy - 2, 11, 0, TAU); g.fill();
+    /* Hair falls to the side the head is turned. */
+    g.beginPath();
+    g.arc(cx - 17, cy - 2, 11, Math.PI * 0.6, Math.PI * 1.9);
+    g.closePath();
+    g.fillStyle = hair; g.fill();
+    if (dead) {
+      for (var i = 0; i < 5; i++) {
+        ell(g, cx - 10 + i * 9, cy + 8 + (i % 3) * 4, 5 + (i % 3) * 2, 3, i,
+          rgba(P.blood, 0.55));
+      }
+      stroke(g, [cx - 22, cy + 2, cx - 14, cy + 4], rgba(P.blood, 0.7), 2);
+    }
+  }
+
+  function paintHuman(g, s, dir, frame, pose) {
+    if (pose === 'down' || pose === 'dead') {
+      paintHumanLying(g, s, pose === 'dead');
+      return;
+    }
+    var carry = pose === 'carry';
+    var body = s.over || s.top;
+    var dkBody = shade(body, -0.35);
+    var cx = 32;
+    var phase = (frame & 3) * Math.PI / 2;
+    var swing = Math.sin(phase);
+    var bob = (frame & 1) ? -1.4 : 0;
+    var side = dir === 1 || dir === 3;
+    var back = dir === 0;
+
+    var hipY = 40 + bob, footY = 57;
+    var shoulderY = 27 + bob, headY = 15 + bob;
+    var halfW = (side ? 8 : 11) + s.build;
+
+    /* ---- legs ---- */
+    var legW = 9;
+    if (side) {
+      var fwd = swing * 8;
+      limb(g, cx - 2, hipY, cx - 2 - fwd, footY - Math.abs(swing) * 2, legW, shade(s.leg, -0.22));
+      limb(g, cx + 1, hipY, cx + 1 + fwd, footY - Math.abs(swing) * 2, legW, s.leg);
+      ell(g, cx - 2 - fwd, footY, 5, 3.4, 0, shade(P.bark, -0.25));
+      ell(g, cx + 1 + fwd, footY, 5, 3.4, 0, shade(P.bark, -0.15));
+    } else {
+      limb(g, cx - 6, hipY, cx - 6 - swing * 2, footY - Math.max(0, swing) * 4, legW, s.leg);
+      limb(g, cx + 6, hipY, cx + 6 - swing * 2, footY + Math.min(0, swing) * 4, legW, s.leg);
+      ell(g, cx - 6 - swing * 2, footY - Math.max(0, swing) * 4, 4.6, 3.2, 0, shade(P.bark, -0.2));
+      ell(g, cx + 6 - swing * 2, footY + Math.min(0, swing) * 4, 4.6, 3.2, 0, shade(P.bark, -0.2));
+    }
+
+    /* ---- torso ---- */
+    g.beginPath();
+    g.moveTo(cx - halfW, shoulderY + 1);
+    g.quadraticCurveTo(cx - halfW - 1.5, shoulderY - 4, cx - halfW * 0.62, shoulderY - 5);
+    g.lineTo(cx + halfW * 0.62, shoulderY - 5);
+    g.quadraticCurveTo(cx + halfW + 1.5, shoulderY - 4, cx + halfW, shoulderY + 1);
+    g.lineTo(cx + halfW * 0.82, hipY + 3);
+    g.quadraticCurveTo(cx, hipY + 6, cx - halfW * 0.82, hipY + 3);
+    g.closePath();
+    g.fillStyle = body; g.fill();
+    g.save(); g.clip();
+    gradRect(g, cx - halfW - 2, shoulderY - 8, halfW * 2 + 4, hipY - shoulderY + 16,
+      linGrad(g, cx - halfW, shoulderY - 6, cx + halfW, hipY + 4,
+        [0, rgba('#ffffff', 0.3), 0.42, rgba('#ffffff', 0.02), 1, rgba('#000000', 0.3)]));
+    if (s.over) {
+      /* A jacket hangs open over the shirt beneath it. */
+      fill(g, cx - 2.2, shoulderY - 6, 4.4, hipY - shoulderY + 12, rgba(s.top, 0.95));
+      fill(g, cx - 2.6, shoulderY - 6, 1, hipY - shoulderY + 12, rgba('#000000', 0.3));
+      fill(g, cx + 1.8, shoulderY - 6, 1, hipY - shoulderY + 12, rgba('#000000', 0.3));
+    }
+    if (s.vest) {
+      rrect(g, cx - halfW * 0.95, shoulderY - 4, halfW * 1.9, hipY - shoulderY + 6, 3, s.vest);
+      gradRect(g, cx - halfW, shoulderY - 4, halfW * 2, hipY - shoulderY + 8,
+        linGrad(g, cx - halfW, shoulderY, cx + halfW, hipY,
+          [0, rgba('#ffffff', 0.28), 1, rgba('#000000', 0.28)]));
+      for (var v = 0; v < 3; v++) {
+        fill(g, cx - halfW, shoulderY + v * 5, halfW * 2, 1.4, rgba('#000000', 0.3));
+      }
+    }
+    g.restore();
+    /* Belt at the hip, which separates torso from legs at any zoom. */
+    fill(g, cx - halfW * 0.86, hipY - 1, halfW * 1.72, 3, rgba('#000000', 0.35));
+
+    /* ---- arms ---- */
+    var armW = 7.5, shX = halfW - 1;
+    if (carry) {
+      /* Both arms forward, holding whatever render.js draws in front. */
+      limb(g, cx - shX, shoulderY, cx - 7, hipY + 2, armW, body);
+      limb(g, cx + shX, shoulderY, cx + 7, hipY + 2, armW, body);
+      circle(g, cx - 7, hipY + 3, 3.6, s.skin);
+      circle(g, cx + 7, hipY + 3, 3.6, s.skin);
+    } else if (side) {
+      var ax = dir === 1 ? shX : -shX;
+      limb(g, cx + ax, shoulderY, cx + ax - swing * 7, hipY, armW, body);
+      circle(g, cx + ax - swing * 7, hipY + 1, 3.4, s.skin);
+      limb(g, cx + ax * 0.2, shoulderY + 1, cx + ax * 0.2 + swing * 6, hipY - 1,
+        armW - 1, shade(body, -0.2));
+    } else {
+      limb(g, cx - shX, shoulderY, cx - shX - 1, hipY + swing * 3, armW, body);
+      limb(g, cx + shX, shoulderY, cx + shX + 1, hipY - swing * 3, armW, body);
+      circle(g, cx - shX - 1, hipY + swing * 3 + 1, 3.4, s.skin);
+      circle(g, cx + shX + 1, hipY - swing * 3 + 1, 3.4, s.skin);
+    }
+
+    /* ---- head ---- */
+    var hr = 10.5;
+    var hx = cx + (side ? (dir === 1 ? 2 : -2) : 0);
+    circle(g, hx, headY, hr, s.skin);
+    g.fillStyle = radGrad(g, hx - 4, headY - 5, 1, hr * 1.5,
+      [0, rgba('#ffffff', 0.34), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]);
+    g.beginPath(); g.arc(hx, headY, hr, 0, TAU); g.fill();
+    /* Neck shadow, so the head sits on the shoulders. */
+    ell(g, hx, headY + hr - 1, hr * 0.7, 2.6, 0, rgba('#000000', 0.22));
+
+    if (!s.head) {
+      /* Hair: a cap of it, with the hairline where the facing needs it. */
+      var hair = s.hair;
+      g.save();
+      g.beginPath(); g.arc(hx, headY, hr + 0.8, 0, TAU); g.clip();
+      if (back) {
+        circle(g, hx, headY, hr + 0.6, hair);
+        circle(g, hx - 3, headY - 3.5, hr * 0.45, shade(hair, 0.18));
+      } else {
+        ell(g, hx, headY - hr * 0.5, hr + 0.6, hr * 0.85, 0, hair);
+        if (s.style === 0) ell(g, hx, headY - hr * 0.35, hr + 0.6, hr * 0.7, 0, hair);
+        if (s.style === 1) {
+          /* Long: falls past the jaw on both sides. */
+          ell(g, hx - hr * 0.78, headY + 1, hr * 0.42, hr * 0.95, 0, hair);
+          ell(g, hx + hr * 0.78, headY + 1, hr * 0.42, hr * 0.95, 0, hair);
+        }
+        if (s.style === 2) {
+          circle(g, hx + hr * 0.5, headY - hr * 0.6, hr * 0.42, shade(hair, 0.12));
+        }
+        if (s.style === 3) ell(g, hx, headY - hr * 0.72, hr * 0.95, hr * 0.5, 0, hair);
+        ell(g, hx - hr * 0.3, headY - hr * 0.66, hr * 0.4, hr * 0.22, -0.3,
+          rgba('#ffffff', 0.18));
+      }
+      g.restore();
+    }
+
+    /* Face: readable at half size, which means two dark eyes and a
+       mouth and nothing else. */
+    if (!back) {
+      var ey = headY + 1.6, ex = hr * 0.42;
+      if (dir === 2) {
+        ell(g, hx - ex, ey, 1.7, 2, 0, P.ink);
+        ell(g, hx + ex, ey, 1.7, 2, 0, P.ink);
+        ell(g, hx - ex - 0.5, ey - 0.7, 0.7, 0.7, 0, rgba('#ffffff', 0.7));
+        ell(g, hx + ex - 0.5, ey - 0.7, 0.7, 0.7, 0, rgba('#ffffff', 0.7));
+        stroke(g, [hx - 2.4, headY + 5.6, hx + 2.4, headY + 5.6],
+          rgba(shade(s.skin, -0.45), 0.7), 1.2);
+        ell(g, hx, headY + 3.4, 1, 1.6, 0, rgba(shade(s.skin, -0.25), 0.5));
+      } else {
+        var f = dir === 1 ? 1 : -1;
+        ell(g, hx + f * ex * 0.9, ey, 1.7, 2, 0, P.ink);
+        ell(g, hx + f * ex * 0.4, ey - 0.7, 0.7, 0.7, 0, rgba('#ffffff', 0.6));
+        ell(g, hx + f * (hr - 1), headY + 3, 1.6, 1.2, 0, rgba(shade(s.skin, -0.2), 0.6));
+        stroke(g, [hx + f * 1, headY + 5.6, hx + f * 4, headY + 5.6],
+          rgba(shade(s.skin, -0.45), 0.6), 1.2);
+      }
+    }
+
+    if (s.head) {
+      /* A hat sits over the skull and shades the face under its brim. */
+      var hc = s.head;
+      circle(g, hx, headY - 1.5, hr + 1.2, hc);
+      g.fillStyle = radGrad(g, hx - 4, headY - 7, 1, hr * 1.6,
+        [0, rgba('#ffffff', 0.4), 0.5, rgba('#ffffff', 0.04), 1, rgba('#000000', 0.34)]);
+      g.beginPath(); g.arc(hx, headY - 1.5, hr + 1.2, 0, TAU); g.fill();
+      if (!back) {
+        g.beginPath();
+        g.ellipse(hx, headY + 4, hr + 2.5, 3.4, 0, Math.PI, TAU);
+        g.fillStyle = shade(hc, -0.3); g.fill();
+        ell(g, hx, headY + 3, hr * 0.9, 1.6, 0, rgba('#000000', 0.3));
+      }
+      ring(g, hx, headY - 1.5, hr + 1.2, 1.2, rgba('#000000', 0.35));
+    }
+  }
+
+  /* The drafted marker: a gold chevron under the boots. Drawn last so
+     nothing covers it, and kept off the figure itself so it does not
+     read as a piece of apparel. */
+  function draftMark(g) {
+    var cx = 32, y = 60;
+    g.beginPath();
+    g.moveTo(cx - 9, y - 4);
+    g.lineTo(cx, y + 2);
+    g.lineTo(cx + 9, y - 4);
+    g.strokeStyle = rgba('#000000', 0.5); g.lineWidth = 4.5;
+    g.lineJoin = 'round'; g.lineCap = 'round';
+    g.stroke();
+    g.strokeStyle = P.gold; g.lineWidth = 2.6;
+    g.stroke();
+    g.lineCap = 'butt';
+    circle(g, cx, y - 7, 1.6, P.gold);
+  }
+
+  /* Animal silhouettes. Every one is painted facing north and then
+     rotated, because a quadruped seen from above is the same animal
+     from every side - only humans need a distinct face and back. */
+  var ANIMAL = {
+    hare:    { size: 0.8,  body: '#b08c5a', belly: '#e6ddc8', ear: 11, tail: 4, snout: 4,
+               lean: 0.55, legW: 0.075 },
+    deer:    { size: 1.35, body: '#8a6134', belly: '#d8cfc0', ear: 6, tail: 5, snout: 7,
+               lean: 0.5, legW: 0.06, antler: true },
+    muffalo: { size: 1.9,  body: '#4a3b2c', belly: '#6b5638', ear: 4, tail: 8, snout: 8,
+               lean: 0.78, legW: 0.1, horn: true, shag: true },
+    boomrat: { size: 0.75, body: '#a3503a', belly: '#e0803c', ear: 6, tail: 16, snout: 6,
+               lean: 0.6, legW: 0.07 },
+    wolf:    { size: 1.15, body: '#6e6e78', belly: '#b0b0b8', ear: 8, tail: 14, snout: 8,
+               lean: 0.56, legW: 0.07 },
+    bear:    { size: 1.6,  body: '#4a3524', belly: '#6b4f33', ear: 5, tail: 3, snout: 7,
+               lean: 0.82, legW: 0.11 }
+  };
+
+  function paintAnimal(g, rnd, a, S, frame, dead) {
+    var body = dead ? drained(a.body) : a.body;
+    var belly = dead ? drained(a.belly) : a.belly;
+    var dk = shade(body, -0.38);
+    var cx = S / 2;
+    var rx = S * 0.13 * (a.lean + 0.5) * 1.4, ry = S * 0.24;
+    var bodyY = S * 0.56;
+    var headY = S * 0.2, hr = S * 0.115;
+    var swing = Math.sin((frame & 3) * Math.PI / 2);
+    var legW = Math.max(2.5, S * a.legW), legL = S * 0.2;
+
+    /* Legs first: front pair and back pair on opposite phases. */
+    var pairs = [[bodyY - ry * 0.55, swing], [bodyY + ry * 0.55, -swing]];
+    for (var p = 0; p < 2; p++) {
+      var ly = pairs[p][0], sw = pairs[p][1] * legL * 0.33;
+      for (var side2 = -1; side2 <= 1; side2 += 2) {
+        var lx = cx + side2 * rx * 0.82;
+        limb(g, lx, ly, lx + side2 * legW * 0.3, ly + (p ? 1 : -1) * legL + sw,
+          legW, side2 < 0 ? shade(body, -0.18) : shade(body, -0.28));
+        ell(g, lx + side2 * legW * 0.3, ly + (p ? 1 : -1) * legL + sw,
+          legW * 0.55, legW * 0.42, 0, dk);
+      }
+    }
+
+    if (a.tail) {
+      var tl = S * a.tail * 0.012;
+      whip(g, cx, bodyY + ry * 0.85, cx + swing * tl * 0.4, bodyY + ry + tl * 0.5,
+        cx + swing * tl * 0.8, bodyY + ry + tl, body, Math.max(2, legW * 0.8));
+      circle(g, cx + swing * tl * 0.8, bodyY + ry + tl, Math.max(1.6, legW * 0.42), belly);
+    }
+
+    /* Barrel of the body, with the belly catching bounce light and the
+       spine catching the sun. */
+    ell(g, cx, bodyY, rx, ry, 0, body);
+    g.save();
+    g.beginPath(); g.ellipse(cx, bodyY, rx, ry, 0, 0, TAU); g.clip();
+    g.fillStyle = radGrad(g, cx - rx * 0.4, bodyY - ry * 0.45, 1, rx * 2,
+      [0, rgba('#ffffff', 0.26), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]);
+    g.fillRect(cx - rx, bodyY - ry, rx * 2, ry * 2);
+    ell(g, cx, bodyY + ry * 0.45, rx * 0.72, ry * 0.4, 0, rgba(belly, 0.5));
+    if (a.shag) {
+      /* Shag: a coat of overlapping tufts, which is the whole read on a
+         muffalo at any zoom. */
+      for (var t = 0; t < 46; t++) {
+        var tx = cx + rs(rnd, rx), ty = bodyY + rs(rnd, ry);
+        whip(g, tx, ty, tx + rs(rnd, 3), ty + 3, tx + rs(rnd, 5), ty + 6,
+          rgba(rnd() < 0.5 ? shade(body, 0.2) : shade(body, -0.25), 0.5),
+          rr(rnd, 1.4, 3));
+      }
+    } else {
+      for (var f = 0; f < 20; f++) {
+        var fx = cx + rs(rnd, rx), fy = bodyY + rs(rnd, ry);
+        whip(g, fx, fy, fx + rs(rnd, 2), fy + 2.4, fx + rs(rnd, 3), fy + 4.4,
+          rgba(shade(body, rnd() < 0.5 ? 0.16 : -0.2), 0.3), 1.2);
+      }
+    }
+    g.restore();
+    /* Haunches and shoulders: two bulges that give the barrel its
+       quadruped shape. */
+    ell(g, cx - rx * 0.62, bodyY + ry * 0.4, rx * 0.5, ry * 0.36, 0.3, rgba(shade(body, 0.1), 0.6));
+    ell(g, cx + rx * 0.62, bodyY + ry * 0.4, rx * 0.5, ry * 0.36, -0.3, rgba(shade(body, 0.1), 0.6));
+    stroke(g, [cx, bodyY - ry * 0.8, cx, bodyY + ry * 0.8], rgba('#ffffff', 0.12), rx * 0.3);
+
+    /* Neck, then the head. */
+    limb(g, cx, bodyY - ry * 0.7, cx, headY + hr * 0.5, hr * 1.1, body);
+    ell(g, cx, headY, hr, hr * 1.05, 0, body);
+    g.save();
+    g.beginPath(); g.ellipse(cx, headY, hr, hr * 1.05, 0, 0, TAU); g.clip();
+    g.fillStyle = radGrad(g, cx - hr * 0.4, headY - hr * 0.5, 1, hr * 2,
+      [0, rgba('#ffffff', 0.26), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.26)]);
+    g.fillRect(cx - hr, headY - hr * 1.1, hr * 2, hr * 2.2);
+    g.restore();
+
+    /* Muzzle pushed out past the skull. */
+    var sn = S * a.snout * 0.012;
+    ell(g, cx, headY - hr * 0.6 - sn * 0.5, hr * 0.5, sn * 0.75, 0, belly);
+    ell(g, cx, headY - hr * 0.6 - sn, hr * 0.28, hr * 0.2, 0, dk);
+
+    if (a.ear) {
+      var el2 = S * a.ear * 0.012;
+      for (var s2 = -1; s2 <= 1; s2 += 2) {
+        var ex = cx + s2 * hr * 0.72;
+        ell(g, ex, headY - hr * 0.5 - el2 * 0.4, hr * 0.3, el2 * 0.55, s2 * 0.35, body);
+        ell(g, ex, headY - hr * 0.5 - el2 * 0.4, hr * 0.16, el2 * 0.36, s2 * 0.35,
+          rgba(belly, 0.7));
+      }
+    }
+    if (a.horn) {
+      for (var s3 = -1; s3 <= 1; s3 += 2) {
+        g.beginPath();
+        g.moveTo(cx + s3 * hr * 0.8, headY - hr * 0.2);
+        g.quadraticCurveTo(cx + s3 * hr * 2.1, headY - hr * 0.9,
+          cx + s3 * hr * 1.9, headY - hr * 1.9);
+        g.strokeStyle = P.bone; g.lineWidth = Math.max(2.5, hr * 0.32);
+        g.lineCap = 'round'; g.stroke();
+        g.strokeStyle = rgba('#ffffff', 0.3); g.lineWidth = Math.max(1, hr * 0.12);
+        g.stroke();
+        g.lineCap = 'butt';
+      }
+    }
+    if (a.antler) {
+      for (var s4 = -1; s4 <= 1; s4 += 2) {
+        var bx = cx + s4 * hr * 0.5, by = headY - hr * 0.7;
+        stroke(g, [bx, by, bx + s4 * hr * 1.1, by - hr * 1.8], P.bone, Math.max(1.6, hr * 0.2));
+        stroke(g, [bx + s4 * hr * 0.55, by - hr * 0.9, bx + s4 * hr * 1.7, by - hr * 1.1],
+          P.bone, Math.max(1.2, hr * 0.15));
+        stroke(g, [bx + s4 * hr * 1.1, by - hr * 1.8, bx + s4 * hr * 1.8, by - hr * 2.4],
+          P.bone, Math.max(1.2, hr * 0.15));
+      }
+    }
+    if (!dead) {
+      for (var s5 = -1; s5 <= 1; s5 += 2) {
+        ell(g, cx + s5 * hr * 0.48, headY - hr * 0.15, hr * 0.17, hr * 0.2, 0, P.ink);
+        ell(g, cx + s5 * hr * 0.48 - hr * 0.06, headY - hr * 0.22, hr * 0.07, hr * 0.07, 0,
+          rgba('#ffffff', 0.8));
+      }
+    } else {
+      for (var s6 = -1; s6 <= 1; s6 += 2) {
+        stroke(g, [cx + s6 * hr * 0.7, headY - hr * 0.3, cx + s6 * hr * 0.26, headY],
+          rgba(P.ink, 0.7), Math.max(1, hr * 0.14));
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------
+     A 3x5 pixel font, enough for stack badges and motes. Each glyph is
+     five octal digits, one per row, three bits wide.
+     ------------------------------------------------------------------ */
+  var FONT = {
+    '0': '75557', '1': '26227', '2': '71747', '3': '71717', '4': '55711',
+    '5': '74717', '6': '74757', '7': '71222', '8': '75757', '9': '75717',
+    'A': '25755', 'B': '65656', 'C': '34443', 'D': '65556', 'E': '74747',
+    'F': '74744', 'G': '34553', 'H': '55755', 'I': '72227', 'J': '11152',
+    'K': '55655', 'L': '44447', 'M': '57755', 'N': '57775', 'O': '75557',
+    'P': '65644', 'Q': '25573', 'R': '65655', 'S': '34216', 'T': '72222',
+    'U': '55557', 'V': '55552', 'W': '55775', 'X': '55255', 'Y': '55222',
+    'Z': '71247', '+': '02720', '-': '00700', '.': '00002', ':': '02020',
+    '%': '51245', '/': '11244', '!': '22202', '?': '61202', ' ': '00000'
+  };
+
+  function paintText(g, str, color) {
+    g.fillStyle = color;
+    for (var i = 0; i < str.length; i++) {
+      var rows = FONT[str.charAt(i).toUpperCase()] || FONT['?'];
+      for (var r = 0; r < 5; r++) {
+        var bits = rows.charCodeAt(r) - 48;
+        for (var c = 0; c < 3; c++) if (bits & (4 >> c)) g.fillRect(i * 4 + c, r, 1, 1);
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------
+     UI icons
+
+     These stay flat pixel art. A panel chip is twenty pixels across and
+     wants hard edges, not a downscaled illustration - so the painters
+     below are authored in a 16-unit space and stamped into a 32-pixel
+     canvas at exactly 2x, which lands every fillRect on whole device
+     pixels and keeps them crisp.
+     ------------------------------------------------------------------ */
+
+  function pflame(g, cx, cy, frame, size) {
+    var lean = [0, 1, -1][frame % 3];
+    var hot = '#ffd23c', mid = P.flame, cool = '#c0392b';
+    for (var i = 0; i < size; i++) {
+      var w = Math.max(1, size - i - (i > size - 3 ? 1 : 0));
+      var x = cx - (w >> 1) + Math.round(lean * i / size);
+      fill(g, x, cy - i, w, 1, i < size * 0.3 ? cool : (i < size * 0.7 ? mid : hot));
+    }
+    dot(g, cx + lean, cy - size, hot);
+    dot(g, cx - 1 + lean, cy - size + 1, hot);
+    fill(g, cx - (size >> 1), cy, size, 1, shade(cool, -0.25));
+  }
+
+  function tri(g, x, y, s, c) {
+    g.fillStyle = c;
+    for (var i = 0; i < s; i++) {
+      var h = s * 2 - 1 - i * 2;
+      g.fillRect(x + i, y + i, 1, h);
+    }
+  }
+
+  var ICON = {
+    pause: function (g, c) { fill(g, 4, 3, 3, 10, c); fill(g, 9, 3, 3, 10, c); },
+    play1: function (g, c) { tri(g, 6, 3, 5, c); },
+    play2: function (g, c) { tri(g, 2, 3, 5, c); tri(g, 9, 3, 5, c); },
+    play3: function (g, c) { tri(g, 0, 3, 5, c); tri(g, 6, 3, 5, c); tri(g, 11, 3, 5, c); },
+    wallIcon: function (g, c) { fill(g, 1, 4, 14, 8, c); fill(g, 1, 8, 14, 1, shade(c, -0.4)); fill(g, 6, 4, 1, 4, shade(c, -0.4)); fill(g, 10, 9, 1, 3, shade(c, -0.4)); },
+    chair: function (g, c) { fill(g, 4, 2, 8, 7, c); fill(g, 3, 9, 10, 3, shade(c, 0.15)); fill(g, 4, 12, 2, 3, shade(c, -0.3)); fill(g, 10, 12, 2, 3, shade(c, -0.3)); },
+    anvil: function (g, c) { fill(g, 3, 4, 10, 3, c); fill(g, 1, 5, 3, 2, c); fill(g, 6, 7, 4, 4, shade(c, -0.2)); fill(g, 4, 11, 8, 2, c); },
+    bolt: function (g, c) { line(g, 9, 1, 5, 8, c, 2); line(g, 5, 8, 10, 8, c, 1); line(g, 10, 7, 6, 15, c, 2); },
+    shield: function (g, c) { fill(g, 3, 2, 10, 7, c); for (var i = 0; i < 5; i++) fill(g, 3 + i, 9 + i, 10 - i * 2, 1, c); fill(g, 5, 4, 6, 1, shade(c, 0.3)); },
+    tiles: function (g, c) { fill(g, 1, 1, 6, 6, c); fill(g, 9, 1, 6, 6, shade(c, -0.25)); fill(g, 1, 9, 6, 6, shade(c, -0.25)); fill(g, 9, 9, 6, 6, c); },
+    dashSquare: function (g, c) { dashedBox(g, 16, 16, c); },
+    handArrow: function (g, c) { line(g, 3, 13, 12, 4, c, 2); fill(g, 9, 2, 5, 2, c); fill(g, 12, 2, 2, 5, c); },
+    gear: function (g, c) { pdisc(g, 8, 8, 5, c); pdisc(g, 8, 8, 2, shade(c, -0.6)); for (var i = 0; i < 4; i++) { var a = i * 1.5707963267948966; fill(g, (8 + Math.cos(a) * 6) | 0, (8 + Math.sin(a) * 6) | 0, 2, 2, c); } },
+    pick: function (g, c) { line(g, 2, 4, 13, 7, c, 1); line(g, 2, 5, 13, 8, shade(c, -0.25), 1); line(g, 7, 6, 11, 14, P.woodFloor, 2); },
+    axe: function (g, c) { line(g, 4, 14, 11, 3, P.woodFloor, 2); fill(g, 9, 1, 5, 5, c); fill(g, 8, 2, 2, 3, shade(c, 0.25)); },
+    sickle: function (g, c) { for (var y = 2; y < 9; y++) fill(g, 3 + ((y - 2) * (y - 2) >> 2), y, 2, 1, c); line(g, 4, 9, 8, 14, P.woodFloor, 2); },
+    scissors: function (g, c) { line(g, 3, 2, 11, 11, c, 1); line(g, 12, 2, 4, 11, c, 1); pdisc(g, 4, 13, 2, shade(c, -0.2)); pdisc(g, 11, 13, 2, shade(c, -0.2)); },
+    hammer: function (g, c) { fill(g, 3, 2, 9, 4, c); fill(g, 3, 2, 9, 1, shade(c, 0.25)); line(g, 8, 6, 8, 14, P.woodFloor, 2); },
+    upArrow: function (g, c) { for (var i = 0; i < 6; i++) fill(g, 8 - i, 2 + i, 1 + i * 2, 1, c); fill(g, 6, 8, 5, 7, c); },
+    crosshair: function (g, c) { box(g, 3, 3, 10, 10, c); fill(g, 7, 0, 2, 5, c); fill(g, 7, 11, 2, 5, c); fill(g, 0, 7, 5, 2, c); fill(g, 11, 7, 5, 2, c); dot(g, 7, 7, c); },
+    heart: function (g, c) { pdisc(g, 5, 6, 3, c); pdisc(g, 11, 6, 3, c); for (var i = 0; i < 7; i++) fill(g, 2 + i, 8 + i, 13 - i * 2, 1, c); },
+    knifeIcon: function (g, c) { line(g, 3, 12, 11, 3, c, 2); line(g, 4, 13, 7, 10, P.woodFloor, 2); dot(g, 12, 2, shade(c, 0.35)); },
+    xMark: function (g, c) { line(g, 3, 3, 12, 12, c, 2); line(g, 12, 3, 3, 12, c, 2); },
+    flame: function (g, c) { pflame(g, 8, 14, 0, 8); },
+    cross: function (g, c) { fill(g, 6, 2, 4, 12, c); fill(g, 2, 6, 12, 4, c); },
+    bed: function (g, c) { fill(g, 1, 5, 14, 7, c); fill(g, 2, 6, 4, 4, P.paper); fill(g, 7, 6, 7, 4, shade(c, -0.25)); fill(g, 1, 12, 2, 3, shade(c, -0.4)); fill(g, 13, 12, 2, 3, shade(c, -0.4)); },
+    key: function (g, c) { pdisc(g, 4, 6, 3, c); pdisc(g, 4, 6, 1, shade(c, -0.7)); line(g, 6, 8, 13, 14, c, 2); fill(g, 11, 9, 3, 2, c); },
+    paw: function (g, c) { pdisc(g, 8, 11, 4, c); pdisc(g, 4, 6, 2, c); pdisc(g, 7, 4, 2, c); pdisc(g, 11, 5, 2, c); pdisc(g, 13, 9, 2, c); },
+    pot: function (g, c) { fill(g, 3, 6, 10, 7, c); fill(g, 2, 5, 12, 2, shade(c, 0.2)); fill(g, 0, 6, 2, 2, c); fill(g, 14, 6, 2, 2, c); fill(g, 6, 2, 1, 3, shade(c, 0.4)); fill(g, 9, 1, 1, 4, shade(c, 0.4)); },
+    sprout: function (g, c) { fill(g, 7, 7, 2, 8, shade(c, -0.25)); pellipse(g, 4, 6, 3, 2, c); pellipse(g, 12, 5, 3, 2, shade(c, 0.2)); pellipse(g, 8, 3, 2, 2, c); },
+    boxIcon: function (g, c) { fill(g, 2, 4, 12, 10, c); box(g, 2, 4, 12, 10, shade(c, -0.45)); fill(g, 2, 8, 12, 1, shade(c, -0.45)); fill(g, 7, 4, 2, 10, shade(c, -0.3)); },
+    broom: function (g, c) { line(g, 4, 14, 11, 4, P.woodFloor, 2); fill(g, 2, 12, 7, 4, c); for (var i = 0; i < 7; i += 2) fill(g, 2 + i, 12, 1, 4, shade(c, -0.3)); },
+    flask: function (g, c) { fill(g, 6, 1, 4, 5, shade(c, 0.3)); for (var i = 0; i < 7; i++) fill(g, 6 - i, 6 + i, 4 + i * 2, 1, i > 3 ? c : shade(c, 0.3)); fill(g, 2, 13, 12, 2, c); },
+    apple: function (g, c) { pdisc(g, 8, 10, 5, c); fill(g, 7, 3, 2, 3, shade(P.grass, -0.2)); pellipse(g, 11, 4, 2, 1, P.grass); dot(g, 6, 8, shade(c, 0.4)); },
+    moon: function (g, c) { pdisc(g, 8, 8, 7, c); g.globalCompositeOperation = 'destination-out'; pdisc(g, 13, 5, 6, '#000'); g.globalCompositeOperation = 'source-over'; },
+    sun: function (g, c) { pdisc(g, 8, 8, 4, c); for (var i = 0; i < 8; i++) { var a = i * 0.7853981633974483; fill(g, (8 + Math.cos(a) * 6.5) | 0, (8 + Math.sin(a) * 6.5) | 0, 2, 2, c); } },
+    person: function (g, c) { pdisc(g, 8, 4, 3, c); fill(g, 5, 8, 6, 7, c); fill(g, 3, 8, 2, 5, c); fill(g, 11, 8, 2, 5, c); },
+    clock: function (g, c) { pdisc(g, 8, 8, 7, shade(c, -0.5)); pdisc(g, 8, 8, 6, c); fill(g, 7, 4, 2, 5, shade(c, -0.6)); fill(g, 8, 8, 4, 2, shade(c, -0.6)); },
+    list: function (g, c) { for (var i = 0; i < 3; i++) { fill(g, 2, 3 + i * 4, 2, 2, c); fill(g, 6, 3 + i * 4, 8, 2, shade(c, -0.15)); } },
+    star: function (g, c) { fill(g, 7, 1, 2, 14, c); fill(g, 1, 7, 14, 2, c); line(g, 3, 3, 13, 13, c, 1); line(g, 13, 3, 3, 13, c, 1); pdisc(g, 8, 8, 3, shade(c, 0.3)); },
+    thermo: function (g, c) { fill(g, 6, 1, 4, 10, P.paper); pdisc(g, 8, 12, 3, c); fill(g, 7, 4, 2, 8, c); box(g, 6, 1, 4, 11, shade(P.ink, 0.3)); },
+    envelope: function (g, c) { fill(g, 1, 4, 14, 9, c); box(g, 1, 4, 14, 9, shade(c, -0.45)); line(g, 1, 4, 8, 9, shade(c, -0.3), 1); line(g, 14, 4, 8, 9, shade(c, -0.3), 1); },
+    skull: function (g, c) { pdisc(g, 8, 7, 5, c); fill(g, 5, 11, 6, 3, c); dot(g, 6, 7, P.ink); dot(g, 10, 7, P.ink); fill(g, 6, 6, 2, 2, P.ink); fill(g, 9, 6, 2, 2, P.ink); fill(g, 7, 11, 1, 3, shade(c, -0.4)); fill(g, 9, 11, 1, 3, shade(c, -0.4)); },
+    bang: function (g, c) { for (var i = 0; i < 7; i++) fill(g, 8 - i, 3 + i * 2, 1 + i * 2, 2, c); fill(g, 7, 6, 2, 5, P.ink); fill(g, 7, 12, 2, 2, P.ink); }
+  };
+
+  /* Six mouth pixels, y offsets per mood. Screen y grows downward, so a
+     frown sits low at the corners and a grin sits low in the middle. */
+  var MOUTH = [[3, 2, 1, 1, 2, 3], [2, 1, 1, 1, 1, 2], [1, 1, 1, 1, 1, 1],
+               [0, 1, 2, 2, 1, 0], [0, 1, 3, 3, 1, 0]];
+
+  function paintFace(g, level) {
+    var c = ['#c0392b', '#d07a2a', P.gold, '#8fbb62', '#5fae4a'][level];
+    pdisc(g, 8, 8, 7, shade(c, -0.35));
+    pdisc(g, 8, 8, 6, c);
+    fill(g, 5, 5, 2, 2, P.ink); fill(g, 9, 5, 2, 2, P.ink);
+    for (var i = 0; i < 6; i++) fill(g, 5 + i, 10 + MOUTH[level][i], 1, 1, P.ink);
+  }
+
+  /* key -> [painter, colour]. Aliases are the point: a pickaxe is a
+     pickaxe whether it is a designation, a work type or a build menu. */
+  var ICON_MAP = {
+    'speed0': ['pause', P.paper], 'speed1': ['play1', P.paper],
+    'speed2': ['play2', P.paper], 'speed3': ['play3', P.paper],
+    'speed4': ['play3', P.gold],
+    'cat-structure': ['wallIcon', P.steel], 'cat-furniture': ['chair', P.woodFloor],
+    'cat-production': ['anvil', P.steel], 'cat-power': ['bolt', P.gold],
+    'cat-security': ['shield', '#8a9ab0'], 'cat-floor': ['tiles', '#9a958c'],
+    'cat-zone': ['dashSquare', P.gold], 'cat-orders': ['handArrow', P.paper],
+    'cat-misc': ['gear', P.steel],
+    'des-mine': ['pick', P.steel], 'des-chop': ['axe', P.steel],
+    'des-harvest': ['sickle', P.steel], 'des-cut': ['scissors', P.steel],
+    'des-deconstruct': ['hammer', '#b08c5a'], 'des-haulUrgent': ['upArrow', P.gold],
+    'des-hunt': ['crosshair', P.raider], 'des-tame': ['heart', '#d4557a'],
+    'des-slaughter': ['knifeIcon', P.blood], 'des-cancel': ['xMark', P.raider],
+    'work-firefight': ['flame', P.flame], 'work-patient': ['bed', '#8fbb62'],
+    'work-doctor': ['cross', '#e05a5a'], 'work-bedRest': ['bed', '#7fa0c0'],
+    'work-basic': ['gear', P.steel], 'work-warden': ['key', P.gold],
+    'work-handle': ['paw', P.wild], 'work-cook': ['pot', '#b8bcc4'],
+    'work-hunt': ['crosshair', P.raider], 'work-construct': ['hammer', '#b08c5a'],
+    'work-grow': ['sprout', P.grass], 'work-mine': ['pick', P.steel],
+    'work-plantCut': ['axe', P.steel], 'work-craft': ['anvil', P.steel],
+    'work-haul': ['boxIcon', P.woodFloor], 'work-clean': ['broom', '#c2b280'],
+    'work-research': ['flask', P.sky],
+    'need-food': ['apple', '#c0392b'], 'need-rest': ['moon', '#c9cfe0'],
+    'need-joy': ['star', P.gold], 'need-comfort': ['chair', P.woodFloor],
+    'need-outdoors': ['sun', P.gold], 'need-mood': ['heart', '#d4557a'],
+    'alert-low': ['bang', P.gold], 'alert-medium': ['bang', '#e08a2a'],
+    'alert-high': ['bang', '#e05a3a'],
+    'letter-neutral': ['envelope', P.paper], 'letter-threat': ['envelope', '#e08a7a'],
+    'letter-good': ['envelope', '#9ed08a'], 'letter-death': ['skull', P.bone],
+    'tab-work': ['list', P.paper], 'tab-research': ['flask', P.sky],
+    'tab-colonists': ['person', P.colonist], 'tab-schedule': ['clock', P.paper],
+    'tab-menu': ['list', P.gold], 'tab-bills': ['list', '#c2b280'],
+    'overlay-zones': ['dashSquare', P.gold], 'overlay-power': ['bolt', P.gold],
+    'overlay-rooms': ['wallIcon', P.steel], 'overlay-beauty': ['star', '#d4557a'],
+    'overlay-temperature': ['thermo', '#e05a5a']
+  };
+
+  /* ------------------------------------------------------------------
+     Public API
+     ------------------------------------------------------------------ */
+
+  var Art = { PX: PX, ICON_PX: ICON_PX, PALETTE: P, FACTION: FACTION };
+
+  /* Keyed by the def object rather than by a string: this runs once per
+     visible tile per frame, and building ten thousand throwaway strings
+     a frame is a garbage collector pause the player can feel. */
+  var terrainCache = new Map();
+
+  Art.terrain = function (def, variant) {
+    variant = (variant | 0) & 3;
+    var row = terrainCache.get(def);
+    if (!row) terrainCache.set(def, (row = [null, null, null, null]));
+    return row[variant] || (row[variant] = cached('ter|' + def.id + '|' + variant, PX, PX,
+      function (g, rnd) { paintTerrain(g, rnd, def, variant); }));
+  };
+
+  /* Integer mixing, so scrolling over new ground allocates nothing. */
+  function cellHash(x, y) {
+    var h = (x * 374761393 + y * 668265263) | 0;
+    return Math.imul(h ^ (h >>> 13), 1274126177);
+  }
+
+  Art.terrainVariant = function (x, y) { return (cellHash(x, y) >>> 15) & 3; };
+
+  function isWallLike(map, x, y) {
+    /* Off-map reads as wall so a mountain running off the edge does not
+       grow a bright outline along it. */
+    if (!map.inBounds(x, y)) return true;
+    var b = map.buildingAt(x, y);
+    return !!(b && b.def && b.def.holdsRoof);
+  }
+
+  Art.wallVariant = function (map, x, y) {
+    if (!map || !map.inBounds) return 0;
+    return (isWallLike(map, x, y - 1) ? 1 : 0) |
+           (isWallLike(map, x + 1, y) ? 2 : 0) |
+           (isWallLike(map, x, y + 1) ? 4 : 0) |
+           (isWallLike(map, x - 1, y) ? 8 : 0);
+  };
+
+  function isLinkOf(map, x, y, defId) {
+    if (!map.inBounds(x, y)) return false;
+    var b = map.buildingAt(x, y);
+    return !!(b && b.defId === defId);
+  }
+
+  /* The same join logic for anything that links to its own kind, which
+     in practice means power conduits. */
+  Art.linkVariant = function (map, x, y, defId) {
+    if (!map || !map.inBounds) return 0;
+    return (isLinkOf(map, x, y - 1, defId) ? 1 : 0) |
+           (isLinkOf(map, x + 1, y, defId) ? 2 : 0) |
+           (isLinkOf(map, x, y + 1, defId) ? 4 : 0) |
+           (isLinkOf(map, x - 1, y, defId) ? 8 : 0);
+  };
+
+  var LINKED = { wall: 1, rockWall: 1, oreWall: 1, door: 1, conduit: 1 };
+
+  function cellBuildingId(map, x, y) {
+    return map.inBounds(x, y) ? map.buildingId[map.idx(x, y)] : -1;
+  }
+
+  /* A join mask is a pure function of which building ids sit in the four
+     orthogonal cells, and an id never changes what it points at. Those
+     four ids are one typed-array read each, against four registry
+     lookups to rebuild the mask, so a wall whose neighbours have not
+     changed since last frame keeps the mask it already had. On a screen
+     full of mountain that is the difference between sixteen thousand
+     hash lookups a frame and none. */
+  var maskMemo = new WeakMap();
+
+  function variantOf(def, thing) {
+    if (!LINKED[def.sprite] || !thing) return 0;
+    if (typeof thing.wallVariant === 'number') return thing.wallVariant & 15;
+    var map = thing.map || (root.Game && root.Game.map);
+    if (!map || !map.inBounds || !map.buildingId || thing.x === undefined) return 0;
+    var x = thing.x, y = thing.y;
+    var n0 = cellBuildingId(map, x, y - 1), n1 = cellBuildingId(map, x + 1, y);
+    var n2 = cellBuildingId(map, x, y + 1), n3 = cellBuildingId(map, x - 1, y);
+    var m = maskMemo.get(thing);
+    if (m && m.map === map && m.n0 === n0 && m.n1 === n1 && m.n2 === n2 && m.n3 === n3) {
+      return m.mask;
+    }
+    var mask = def.sprite === 'conduit'
+      ? Art.linkVariant(map, x, y, def.id)
+      : Art.wallVariant(map, x, y);
+    if (m) {
+      m.map = map; m.n0 = n0; m.n1 = n1; m.n2 = n2; m.n3 = n3; m.mask = mask;
+    } else {
+      maskMemo.set(thing, { map: map, n0: n0, n1: n1, n2: n2, n3: n3, mask: mask });
+    }
+    return mask;
+  }
+
+  function stuffOf(def, thing) {
+    if (!def.stuffable || !thing) return null;
+    var sid = thing.stuffId || thing.stuff;
+    return (sid && Defs.has('thing', sid)) ? sid : null;
+  }
+
+  function needsPower(def) {
+    var b = def.building;
+    return !!(b && (b.powerConsumed > 0 || b.powerProduced > 0 || b.isLamp));
+  }
+
+  /* Sprites whose look depends on something other than the def: a join
+     mask, a material, a rotation, a growth stage, a power state or an
+     animation frame. Everything else is one canvas forever, and that is
+     the majority of what a frame draws. */
+  var VARIES = {
+    wall: 1, rockWall: 1, oreWall: 1, door: 1, conduit: 1,
+    fire: 1, campfire: 1, filth: 1, blueprint: 1, frame: 1, lamp: 1, corpse: 1
+  };
+  var plainCache = new Map();
+
+  function isPlain(def) {
+    return !VARIES[def.sprite] && !def.rotatable && !def.stuffable &&
+      def.category !== 'plant' && !needsPower(def);
+  }
+
+  function plantStage(thing) {
+    var g = thing && typeof thing.growth === 'number' ? thing.growth : 1;
+    return g < 0.32 ? 0 : (g < 0.85 ? 1 : 2);
+  }
+
+  function paintPlant(g, rnd, def, stage, variant, ripe) {
+    switch (def.sprite) {
+      case 'grass': paintGrassPlant(g, rnd, def, stage, variant); break;
+      case 'bush': paintBush(g, rnd, def, stage, ripe); break;
+      case 'tree': paintTree(g, rnd, def, stage); break;
+      default: paintCrop(g, rnd, def, stage);
+    }
+  }
+
+  function plantSprite(def, thing) {
+    var stage = plantStage(thing);
+    var pl = def.plant || {};
+    var ripe = stage === 2 && !!pl.harvestedThing;
+    var tree = !!pl.isTree;
+    /* A tuft of grass differs from its neighbour; a tree does not need
+       to, because at 2x2 the silhouette already carries the variety. */
+    var variant = tree ? 0 : (thing && thing.id ? thing.id : 0) % 3;
+    var blighted = !!(thing && thing.blighted);
+    var key = 'pl|' + def.id + '|' + stage + '|' + variant + (ripe ? 'r' : '') +
+      (blighted ? 'b' : '');
+    var size = tree ? PX * 2 : PX;
+    return cached(key, size, size, function (g, rnd) {
+      paintPlant(g, rnd, def, stage, variant, ripe);
+      if (blighted) {
+        g.globalCompositeOperation = 'source-atop';
+        g.globalAlpha = 0.55;
+        fill(g, 0, 0, size, size, '#6b6046');
+        g.globalAlpha = 1;
+        g.globalCompositeOperation = 'source-over';
+      }
+    }, tree ? -PX / 2 : 0, tree ? -PX / 2 : 0);
+  }
+
+  /* Everything a variable sprite can vary along is a small number, so
+     they pack into one integer and a per-def table answers the lookup
+     without building a string. That matters because drawing one frame of
+     a mountain colony asks for a few thousand walls, and a key string
+     per wall per frame is garbage the player feels as a stutter. The
+     string key is still built, but only when the variant is new. */
+  var varCache = new Map();
+
+  function stuffCode(stuffId) {
+    return stuffId ? Defs.index('thing', stuffId) + 1 : 0;
+  }
+
+  Art.thing = function (def, thing) {
+    var plain = plainCache.get(def);
+    if (plain) return plain;
+    if (def.category === 'plant') return plantSprite(def, thing);
+
+    var sw = (def.size && def.size.w) || 1, sh = (def.size && def.size.h) || 1;
+    var rot = (def.rotatable && thing) ? ((thing.rot | 0) & 3) : 0;
+    var mask = variantOf(def, thing);
+    var stuffId = stuffOf(def, thing);
+    var open = !!(def.building && def.building.isDoor && thing && thing.open);
+    var lit = !needsPower(def) || !thing || thing.powered !== false;
+    var frame = def.sprite === 'fire' || def.sprite === 'campfire'
+      ? ((((root.Game && root.Game.tick) || 0) >> 3) + (thing && thing.id ? thing.id : 0)) % 6 : 0;
+    /* Filth picks one of six splat shapes from its id; natural rock
+       picks one of two faces from where it sits, so a mined-out mountain
+       is not the same tile twenty times in a row. */
+    var noise = 0;
+    if (def.sprite === 'filth') noise = (thing && thing.id ? thing.id : 0) % 6;
+    else if (def.natural && thing && thing.x !== undefined) {
+      noise = (cellHash(thing.x, thing.y) >>> 19) & 1;
+    }
+    var kindId = (def.sprite === 'corpse' && thing && thing.corpse && thing.corpse.kindId) || null;
+
+    /* Blueprints and frames wear the footprint of what they will become,
+       so a half-built 3x3 solar panel occupies the right nine tiles. */
+    var target = thing && thing.buildDefId && Defs.maybe('thing', thing.buildDefId);
+    if (target) {
+      sw = (target.size && target.size.w) || 1;
+      sh = (target.size && target.size.h) || 1;
+      rot = target.rotatable ? ((thing.rot | 0) & 3) : 0;
+    }
+
+    /* A ghost and a corpse carry a whole def id in their identity, which
+       does not fit an integer; both are rare enough to keep paying for
+       the string. */
+    var row = null, code = 0;
+    if (!target && !kindId) {
+      code = mask | (rot << 4) | (open ? 64 : 0) | (lit ? 128 : 0) |
+        (frame << 8) | (noise << 11) | (stuffCode(stuffId) << 14);
+      row = varCache.get(def);
+      if (!row) varCache.set(def, (row = new Map()));
+      var hit = row.get(code);
+      if (hit) return hit;
+    }
+
+    var key = 'th|' + def.id + '|' + sw + 'x' + sh + '|' + mask + '|' + (stuffId || '-') +
+      '|' + (open ? 'o' : 'c') + (lit ? 'L' : 'd') + '|' + frame + '|' + noise +
+      (kindId ? '|' + kindId : '');
+
+    var base = cached(key, sw * PX, sh * PX, function (g, rnd) {
+      var c1 = stuffId ? Defs.thing(stuffId).color : def.color;
+      var a = {
+        def: def, rnd: rnd, variant: mask, open: open, lit: lit,
+        frame: frame, noise: noise, kindId: kindId, stuffId: stuffId,
+        w: sw * PX, h: sh * PX,
+        c1: c1, c2: def.color2 || shade(c1, -0.25)
+      };
+      (SPRITE[def.sprite] || SPRITE.item)(g, a);
+    });
+
+    var out = rot ? cachedRotation(base, rot) : base;
+    if (row) row.set(code, out);
+    if (isPlain(def) && !target) plainCache.set(def, out);
+    return out;
+  };
+
+  var rotCache = new Map();
+
+  /* Rotating swaps the canvas dimensions, but the draw origin stays the
+     footprint's top-left cell, so ox/oy carry over unchanged. The only
+     sprites with a non-zero offset are square (animals) or never
+     rotated (trees), which is why that holds. */
+  function cachedRotation(src, rot) {
+    var key = 'rot|' + src.key + '|' + rot;
+    var c = rotCache.get(key);
+    if (!c) {
+      c = rotated(src, rot);
+      c.key = key; c.ox = src.ox; c.oy = src.oy;
+      rotCache.set(key, c);
+    }
+    return c;
+  }
+
+  /* The sprite a build ghost shows: the finished building, at the
+     rotation and material the player currently has selected.
+
+     Dragging a wall asks for this once per cell under the drag, several
+     hundred times a frame, so the stand-in thing is one reused object
+     rather than a fresh one per cell. Art.thing never keeps a reference
+     to it: only the canvas it returns is cached. */
+  var ghostStand = { rot: 0, stuffId: null, wallVariant: 0, x: 0, y: 0 };
+
+  Art.ghost = function (defId, rot, stuffId) {
+    var floor = Defs.maybe('terrain', defId);
+    if (floor) return Art.terrain(floor, 0);
+    var def = Defs.maybe('thing', defId);
+    if (!def) return Art.icon('cat-misc');
+    ghostStand.rot = rot | 0;
+    ghostStand.stuffId = stuffId || null;
+    return Art.thing(def, ghostStand);
+  };
+
+  /* ---------- pawns ----------
+     Humans are the one part of the cache that is genuinely unbounded:
+     every raid can arrive wearing a colour combination nobody has worn
+     before. So human sprites are held in a bounded queue and the oldest
+     fall out, which costs a repaint if that pawn comes back and keeps
+     the cache flat for a colony that runs for a hundred days. */
+  var humanKeys = [];
+  var HUMAN_CACHE_MAX = 640;
+
+  function noteHuman(key) {
+    humanKeys.push(key);
+    while (humanKeys.length > HUMAN_CACHE_MAX) cache.delete(humanKeys.shift());
+  }
+
+  Art.pawn = function (pawn, dir, frame) {
+    dir = (dir | 0) & 3;
+    frame = (frame | 0) & 3;
+    var dead = !!pawn.dead, down = !dead && !!(pawn.downed || (pawn.health && pawn.health.downed));
+    var pose = dead ? 'dead' : (down ? 'down' : (pawn.carried ? 'carry' : 'up'));
+    var lying = pose === 'down' || pose === 'dead';
+
+    if (pawn.isAnimal || (pawn.kind && pawn.kind.isAnimal)) {
+      var kid = pawn.kindId || 'hare';
+      var a = ANIMAL[kid] || ANIMAL.hare;
+      var kind = pawn.kind;
+      var ds = (kind && kind.drawSize) || a.size;
+      if (ds && ds.length) ds = ds[0];
+      var S = Math.max(24, Math.round(ds * PX / 2) * 2);
+      var spec = {
+        body: (kind && kind.color) || a.body, belly: (kind && kind.color2) || a.belly,
+        ear: a.ear, tail: a.tail, snout: a.snout, horn: a.horn, antler: a.antler,
+        shag: a.shag, lean: a.lean, legW: a.legW
+      };
+      var af = lying ? 0 : frame;
+      var akey = 'an|' + kid + '|' + S + '|' + af + '|' + (lying ? 'x' : 'u');
+      var north = cached(akey, S, S, function (g, rnd) {
+        paintAnimal(g, rnd, spec, S, af, lying);
+      }, (PX - S) / 2, (PX - S) / 2);
+      if (!dir) return north;
+      var rk = akey + '|d' + dir;
+      var rc = rotCache.get(rk);
+      if (!rc) {
+        rc = rotated(north, dir);
+        rc.key = rk; rc.ox = north.ox; rc.oy = north.oy;
+        rotCache.set(rk, rc);
+      }
+      return rc;
+    }
+
+    var s = humanStyle(pawn);
+    /* A lying pawn has no facing and no gait, so those drop out of the
+       key: one sprite covers all sixteen combinations. */
+    var hdir = lying ? 0 : dir, hframe = lying ? 0 : frame;
+    var hkey = 'hu|' + s.skin + s.hair + s.style + s.build + '|' + s.top + '|' +
+      (s.over || '-') + '|' + (s.vest || '-') + '|' + s.leg + '|' + (s.head || '-') +
+      '|' + hdir + hframe + pose + (pawn.drafted && !lying ? 'D' : '');
+    var have = cache.get(hkey);
+    if (have) return have;
+
+    /* West is the mirror of east, which keeps the two side views
+       identical instead of almost-identical. */
+    if (hdir === 3 && !lying) {
+      var east = Art.pawn(pawn, 1, frame);
+      var m = mirrored(east);
+      m.key = hkey; m.ox = 0; m.oy = 0;
+      cache.set(hkey, m);
+      noteHuman(hkey);
+      return m;
+    }
+    var made = cached(hkey, PX, PX, function (g) {
+      paintHuman(g, s, hdir, hframe, pose);
+      if (pawn.drafted && !lying) draftMark(g);
+    });
+    noteHuman(hkey);
+    return made;
+  };
+
+  /* ---------- UI icons ---------- */
+
+  var iconTmp = null, iconEdge = null;
+
+  function cachedIcon(key, paint) {
+    var c = cache.get(key);
+    if (c) return c;
+    var k = ICON_PX / 16;
+    if (!iconTmp) { iconTmp = makeCanvas(ICON_PX, ICON_PX); iconEdge = makeCanvas(ICON_PX, ICON_PX); }
+    var tg = iconTmp.getContext('2d');
+    smooth(tg, false);
+    tg.clearRect(0, 0, ICON_PX, ICON_PX);
+    tg.save();
+    tg.scale(k, k);
+    paint(tg);
+    tg.restore();
+    /* A one-pixel dark edge, stamped from the icon's own silhouette, so
+       a gold chip still reads against a pale panel. */
+    var eg = iconEdge.getContext('2d');
+    smooth(eg, false);
+    eg.clearRect(0, 0, ICON_PX, ICON_PX);
+    eg.globalCompositeOperation = 'source-over';
+    eg.drawImage(iconTmp, 0, 0);
+    eg.globalCompositeOperation = 'source-in';
+    eg.fillStyle = rgba(P.ink, 0.75);
+    eg.fillRect(0, 0, ICON_PX, ICON_PX);
+    eg.globalCompositeOperation = 'source-over';
+
+    c = makeCanvas(ICON_PX, ICON_PX);
+    c.key = key; c.ox = 0; c.oy = 0;
+    var g = c.getContext('2d');
+    smooth(g, false);
+    var off = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    for (var i = 0; i < 4; i++) g.drawImage(iconEdge, off[i][0], off[i][1]);
+    g.drawImage(iconTmp, 0, 0);
+    cache.set(key, c);
+    return c;
+  }
+
+  Art.icon = function (key) {
+    key = String(key);
+    var ck = 'ic|' + key;
+    var hit = cache.get(ck);
+    if (hit) return hit;
+    if (/^mood-[0-4]$/.test(key)) {
+      var lvl = parseInt(key.slice(5), 10);
+      return cachedIcon(ck, function (g) { paintFace(g, lvl); });
+    }
+    var spec = ICON_MAP[key];
+    if (spec) {
+      return cachedIcon(ck, function (g) { ICON[spec[0]](g, spec[1]); });
+    }
+    /* An unmapped key still has to draw something honest: its first two
+       characters on a paper chip, which is legible and obviously a
+       fallback rather than pretending to be an icon. */
+    return cachedIcon(ck, function (g) {
+      fill(g, 1, 1, 14, 14, P.paper);
+      box(g, 1, 1, 14, 14, shade(P.ink, 0.3));
+      g.save(); g.translate(3, 5);
+      paintText(g, key.slice(0, 2).toUpperCase(), P.ink);
+      g.restore();
+    });
+  };
+
+  /* ---------- effects ----------
+     Every effect canvas is square and carries cx/cy, the centre of the
+     effect inside it, plus the usual ox/oy for callers that draw from a
+     tile's top-left corner. Frame counts, in order: fire 6, smoke 4,
+     explosion 6, blood 6, muzzle 3, spark 4, dust 4, splash 4, snow 4,
+     rain 3. */
+  var EFFECT_FRAMES = {
+    fire: 6, smoke: 4, explosion: 6, blood: 6, muzzle: 3,
+    spark: 4, dust: 4, splash: 4, snow: 4, rain: 3
+  };
+
+  function centred(c, cx, cy) { c.cx = cx; c.cy = cy; return c; }
+
+  Art.effectFrames = function (key) { return EFFECT_FRAMES[key] || 1; };
+
+  /* Callers animate from a wall clock, so the frame number that arrives
+     here climbs for as long as the page is open. Folding it into range
+     before it reaches a cache key is what stops the cache growing by one
+     canvas every tenth of a second for as long as something is on fire. */
+  Art.effect = function (key, frame) {
+    frame = frame | 0;
+    if (key === 'bullet' || key === 'arrow') return Art.thing(Defs.thing(key), null);
+    var n = EFFECT_FRAMES[key];
+    if (!n) return Art.icon(key);
+    frame = ((frame % n) + n) % n;
+    var ck = 'fx|' + key + '|' + frame;
+    var hit = cache.get(ck);
+    if (hit) return hit;
+
+    switch (key) {
+      case 'fire':
+        return centred(cached(ck, PX, PX, function (g) {
+          glow(g, PX / 2, PX - 14, 26, P.flame, 0.85);
+          flameIllus(g, PX / 2, PX - 6, frame, 40, 1);
+        }), PX / 2, PX - 10);
+      case 'smoke':
+        return centred(cached(ck, PX, PX, function (g, rnd) {
+          paintSmoke(g, rnd, 9 + frame * 7, mix(P.smoke, '#b8b8bc', frame / 3));
+        }), PX / 2, PX / 2);
+      case 'explosion':
+        return centred(cached(ck, PX * 3, PX * 3, function (g, rnd) {
+          paintExplosion(g, rnd, frame);
+        }, -PX, -PX), PX * 1.5, PX * 1.5);
+      case 'blood':
+        return centred(cached(ck, PX, PX, function (g, rnd) {
+          bloodSplat(g, rnd, P.blood, shade(P.blood, -0.35), PX, PX);
+        }), PX / 2, PX / 2);
+      case 'muzzle':
+        return centred(cached(ck, PX, PX, function (g, rnd) {
+          paintMuzzle(g, rnd, frame);
+        }), PX / 2, PX * 0.72);
+      case 'spark':
+        return centred(cached(ck, PX, PX, function (g, rnd) {
+          paintSpark(g, rnd, frame);
+        }), PX / 2, PX / 2);
+      case 'dust':
+        return centred(cached(ck, PX, PX, function (g, rnd) {
+          paintDust(g, rnd, frame);
+        }), PX / 2, PX / 2);
+      case 'splash':
+        return centred(cached(ck, PX, PX, function (g, rnd) {
+          paintSplash(g, rnd, frame);
+        }), PX / 2, PX / 2);
+      case 'snow':
+        return centred(cached(ck, PX / 2, PX / 2, function (g, rnd) {
+          paintSnow(g, rnd, frame);
+        }, PX / 4, PX / 4), PX / 4, PX / 4);
+      default:
+        return centred(cached(ck, PX / 2, PX / 2, function (g, rnd) {
+          paintRain(g, rnd, frame);
+        }, PX / 4, PX / 4), PX / 4, PX / 4);
+    }
+  };
+
+  /* The soft contact shadow render.js drops under a pawn or a tree.
+     Sizes are quantised so a hundred pawns of slightly different body
+     size share a handful of canvases. */
+  Art.shadow = function (size) {
+    var s = U.clamp(Math.round((size || PX) / 8) * 8, 16, 256);
+    var ck = 'sh|' + s;
+    var hit = cache.get(ck);
+    if (hit) return hit;
+    return centred(cached(ck, s, s, function (g) {
+      blobEll(g, s / 2, s / 2, s * 0.46, s * 0.24, '#000000', 0.42, 0.18);
+    }, (PX - s) / 2, (PX - s) / 2), s / 2, s / 2);
+  };
+
+  Art.text = function (str, color) {
+    str = String(str);
+    color = color || P.paper;
+    var ck = 'tx|' + str + '|' + color;
+    var hit = cache.get(ck);
+    if (hit) return hit;
+    return cached(ck, Math.max(1, str.length * 4 - 1), 5, function (g) {
+      smooth(g, false);
+      paintText(g, str, color);
+    });
+  };
+
+  /* Multiply the source by a colour and put its own alpha back, which
+     tints a finished sprite without flattening its shading. */
+  Art.colorize = function (canvas, color) {
+    var ck = canvas.key ? 'tint|' + canvas.key + '|' + color : null;
+    if (ck) {
+      var hit = cache.get(ck);
+      if (hit) return hit;
+    }
+    var c = makeCanvas(canvas.width, canvas.height), g = ctxOf(c);
+    c.ox = canvas.ox; c.oy = canvas.oy; c.key = ck;
+    c.cx = canvas.cx; c.cy = canvas.cy;
+    g.drawImage(canvas, 0, 0);
+    g.globalCompositeOperation = 'multiply';
+    g.fillStyle = color;
+    g.fillRect(0, 0, c.width, c.height);
+    g.globalCompositeOperation = 'destination-in';
+    g.drawImage(canvas, 0, 0);
+    g.globalCompositeOperation = 'source-over';
+    if (ck) cache.set(ck, c);
+    return c;
+  };
+
+  /* ------------------------------------------------------------------
+     Warm-up
+
+     Everything a colony sees in its first seconds is drawn here so the
+     first frame does not stutter. Anything rarer - a wall of a material
+     nobody has cut yet, an animal that has not wandered in - is built
+     the first time it is asked for and cached from then on.
+     ------------------------------------------------------------------ */
+
+  var ready = false;
+
+  Art.init = function () {
+    if (ready) return Art;
+    ready = true;
+
+    Defs.all('terrain').forEach(function (t) {
+      for (var v = 0; v < 4; v++) Art.terrain(t, v);
+    });
+
+    var stuffs = [null, 'wood', 'steel', 'stoneBlocks'];
+    Defs.all('thing').forEach(function (d) {
+      if (d.category === 'plant') {
+        for (var s = 0; s < 3; s++) {
+          for (var v = 0; v < 3; v++) {
+            Art.thing(d, { id: v, growth: [0.1, 0.6, 1][s] });
+          }
+        }
+        return;
+      }
+      if (LINKED[d.sprite]) {
+        var mats = d.stuffable ? stuffs : [null];
+        for (var mi = 0; mi < mats.length; mi++) {
+          for (var m = 0; m < 16; m++) {
+            /* Natural rock also comes in two faces, picked by cell, so
+               both are built now rather than during the first mining. */
+            var nv = d.natural ? 2 : 1;
+            for (var nz = 0; nz < nv; nz++) {
+              Art.thing(d, { wallVariant: m, stuffId: mats[mi], x: nz, y: 0 });
+            }
+          }
+        }
+        return;
+      }
+      Art.thing(d, null);
+      if (d.stuffable) {
+        Art.thing(d, { stuffId: 'steel', x: 0, y: 0 });
+        Art.thing(d, { stuffId: 'stoneBlocks', x: 0, y: 0 });
+      }
+    });
+
+    Object.keys(ANIMAL).forEach(function (kid) {
+      var kind = Defs.maybe('pawnKind', kid);
+      var stub = { kindId: kid, kind: kind, isAnimal: true, id: 0, faction: 'wild' };
+      for (var d = 0; d < 4; d++) {
+        for (var f = 0; f < 4; f++) Art.pawn(stub, d, f);
+      }
+    });
+
+    Object.keys(ICON_MAP).forEach(Art.icon);
+    for (var mo = 0; mo < 5; mo++) Art.icon('mood-' + mo);
+    Object.keys(EFFECT_FRAMES).forEach(function (k) {
+      for (var f = 0, n = EFFECT_FRAMES[k]; f < n; f++) Art.effect(k, f);
+    });
+    for (var sz = 16; sz <= 128; sz += 16) Art.shadow(sz);
+
+    return Art;
+  };
+
+  Art.ready = function () { return ready; };
+  Art.cacheSize = function () { return cache.size + rotCache.size; };
+
+  root.Art = Art;
+})(this);

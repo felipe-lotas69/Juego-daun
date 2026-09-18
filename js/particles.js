@@ -691,7 +691,11 @@
     SPR.flash = paint('flash', 96, 40, paintFlash);
     SPR.flame = [];
     for (var f = 0; f < 3; f++) {
-      SPR.flame.push(paint('flame' + f, 48, 72, function (g, w, h, r) { paintFlame(g, w, h, r, f); }));
+      var fl = paint('flame' + f, 48, 72, function (g, w, h, r) { paintFlame(g, w, h, r, f); });
+      /* The anchor art.js marks on its own effects, so both draw the same
+         way: the point that stands on the ground is the base of the flame. */
+      if (fl) { fl.cx = 24; fl.cy = 68; }
+      SPR.flame.push(fl);
     }
     SPR.shard = [];
     SPR.leaf = [];
@@ -1105,6 +1109,43 @@
     }
   }
 
+  var DIRV = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+
+  /* A shot is read off the shooter, not off the bullet. At six times speed
+     a rifle round can be spawned, fly nine tiles and be gone between two
+     frames, and a muzzle flash nobody ever sees is no muzzle flash at all;
+     pawn.lastAttackTick is still sitting there when the frame arrives. */
+  function attackFx(map, p, x, y) {
+    var tp = null;
+    if (p.aimTarget) {
+      var T = root.T;
+      if (T && T.pos) { try { tp = T.pos(p.aimTarget, map); } catch (e) { tp = null; } }
+    }
+    var ang, reach;
+    if (tp) {
+      ang = Math.atan2(tp.y - p.y, tp.x - p.x);
+      reach = Math.sqrt((tp.x - p.x) * (tp.x - p.x) + (tp.y - p.y) * (tp.y - p.y));
+    } else {
+      var d = DIRV[(p.dir | 0) & 3];
+      ang = Math.atan2(d[1], d[0]);
+      reach = 3;
+    }
+    var cos = Math.cos(ang), sin = Math.sin(ang);
+    if (reach > 1.6) {
+      emit(K.MUZZLE, x + cos * 0.42, y + sin * 0.42, { rot: ang });
+      Particles.burst('spark', x + cos * 0.55, y + sin * 0.55, 3,
+        { speed: 2.8, angle: ang, spread: 0.8, color: C.emberHot });
+      emit(K.SMOKE, x + cos * 0.7, y + sin * 0.7, {
+        size: 0.2, alpha: 0.2, life: rr(0.6, 1.3), color: C.smokePale
+      });
+    } else {
+      /* A swing: the effect belongs where the blow lands, not on the arm. */
+      Particles.burst('spark', x + cos * 0.8, y + sin * 0.8, 2,
+        { speed: 1.8, angle: ang + Math.PI, spread: 1.6, color: C.sparkCold });
+      emit(K.DUST, x + cos * 0.8, y + sin * 0.8, { size: 0.16, alpha: 0.22, life: 0.4 });
+    }
+  }
+
   function observePawns(map, dt) {
     var pawns = map.pawns;
     if (!pawns || !pawns.length) return;
@@ -1117,11 +1158,21 @@
       if (!(fx === fx) || !(fy === fy)) continue;
       var rec = pawnSeen.get(p.id);
       if (!rec) {
-        pawnSeen.set(p.id, { x: fx, y: fy, walk: 0, inj: injuryCount(p), dead: !!p.dead, work: rr(0, 0.3), t: clock });
+        /* The first sighting only takes a baseline. Bursting blood for
+           every wound a raider walked onto the map with would paint the
+           edge of the screen red the moment a raid arrives. */
+        pawnSeen.set(p.id, {
+          x: fx, y: fy, walk: 0, inj: injuryCount(p), dead: !!p.dead,
+          atk: p.lastAttackTick || 0, work: rr(0, 0.3), t: clock
+        });
         continue;
       }
       rec.t = clock;
       var inView = fx >= x0 && fx <= x1 && fy >= y0 && fy <= y1;
+      if (p.lastAttackTick > rec.atk) {
+        rec.atk = p.lastAttackTick;
+        if (inView) attackFx(map, p, fx + 0.5, fy + 0.5);
+      }
       var inj = injuryCount(p);
       if (inj > rec.inj && inView) bleedBurst(p, fx + 0.5, fy + 0.5, inj - rec.inj);
       rec.inj = inj;
@@ -1212,12 +1263,16 @@
       if (!seen) {
         seen = { x: p.x, y: p.y, t: clock };
         projSeen.set(p.id, seen);
-        var ang = Math.atan2(p.ty - p.sy, p.tx - p.sx);
-        if (p.defId === 'bullet') {
-          emit(K.MUZZLE, p.sx + 0.5 + Math.cos(ang) * 0.35, p.sy + 0.5 + Math.sin(ang) * 0.35, { rot: ang });
-          Particles.burst('spark', p.sx + 0.5 + Math.cos(ang) * 0.5, p.sy + 0.5 + Math.sin(ang) * 0.5, 3,
+        /* Pawns get their flash from lastAttackTick, which cannot be
+           missed; a turret has no such field, so its rounds are flashed
+           here, off the bullet that just appeared in front of it. */
+        var shooter = p.instigator;
+        if (p.defId === 'bullet' && (!shooter || shooter.needs === undefined)) {
+          var ang = Math.atan2(p.ty - p.sy, p.tx - p.sx);
+          emit(K.MUZZLE, p.sx + 0.5 + Math.cos(ang) * 0.4, p.sy + 0.5 + Math.sin(ang) * 0.4, { rot: ang });
+          Particles.burst('spark', p.sx + 0.5 + Math.cos(ang) * 0.55, p.sy + 0.5 + Math.sin(ang) * 0.55, 3,
             { speed: 2.6, angle: ang, spread: 0.9, color: C.emberHot });
-          emit(K.SMOKE, p.sx + 0.5 + Math.cos(ang) * 0.6, p.sy + 0.5 + Math.sin(ang) * 0.6, {
+          emit(K.SMOKE, p.sx + 0.5 + Math.cos(ang) * 0.7, p.sy + 0.5 + Math.sin(ang) * 0.7, {
             size: 0.22, alpha: 0.22, life: rr(0.7, 1.4), color: C.smokePale
           });
         }
@@ -1396,9 +1451,15 @@
   Particles.drawGround = function (ctx, view) {
     if (disabled || !ctx) return;
     ensureInit();
-    resolveView(ctx, view);
-    groundFrame = frameId;
-    drawDecals(ctx);
+    try {
+      resolveView(ctx, view);
+      groundFrame = frameId;
+      drawDecals(ctx);
+    } catch (e) {
+      failures++;
+      if (failures === 1 && typeof console !== 'undefined' && console.warn) console.warn('particles: ground', e);
+      if (failures > 8) disabled = true;
+    }
   };
 
   function drawDecals(ctx) {
@@ -1425,9 +1486,11 @@
     if (disabled || !ctx) return;
     ensureInit();
     frameId++;
-    resolveView(ctx, view);
-    if (!viewReady) return;
     try {
+      resolveView(ctx, view);
+      if (!viewReady) return;
+      /* drawGround stamps the frame it painted the decals on, so they are
+         not painted twice when render.js calls both. */
       if (groundFrame !== frameId - 1 && groundFrame !== frameId) drawDecals(ctx);
       if (!count) return;
       bucket();
@@ -1599,14 +1662,19 @@
           var fr = ((clock * 9 + pSeed[i] * 7) | 0) % 3;
           spr = artFlame(fr) || SPR.flame[fr];
           if (!spr) break;
-          /* A tongue swells and dies away rather than fading flat, and it
-             keeps whatever aspect the sprite was authored at - art.js's
-             flame is a tile square, ours is tall. */
+          /* A tongue swells and dies away rather than fading flat. It keeps
+             the aspect it was authored at - art.js's flame is a tile square,
+             ours is tall - and stands on the anchor art.js marks with
+             cx/cy, so the base of the flame is what sits on the ground. */
           a = Math.sin(clamp(1 - t, 0, 1) * Math.PI);
           var fw = s * (0.72 + a * 0.4);
-          var fh = fw * (spr.height / Math.max(1, spr.width));
+          var fscale = fw / Math.max(1, spr.width);
+          var fh = spr.height * fscale;
           ctx.globalAlpha = pAlpha[i] * clamp(a * 1.6, 0, 1);
-          ctx.drawImage(spr, x - fw * 0.5, y - fh * 0.78, fw, fh);
+          ctx.drawImage(spr,
+            x - (spr.cx === undefined ? spr.width * 0.5 : spr.cx) * fscale,
+            y - (spr.cy === undefined ? spr.height * 0.8 : spr.cy) * fscale,
+            fw, fh);
           break;
         case K.EMBER:
           spr = tinted(SPR.glow, pCol[i]);

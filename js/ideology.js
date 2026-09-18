@@ -72,6 +72,13 @@
   var RITUAL_HOUR = 13;          /* rites are held in the early afternoon */
   var RETRY_DELAY = 0.4 * DAY;   /* when one breaks up before it began    */
 
+  /* needs.js reconciles its own situational thoughts and would delete
+     anybody else's, so the standing feelings below are fired as very
+     short memories and refreshed on the rare beat instead. Two and a bit
+     beats of slack: long enough never to flicker, short enough that the
+     line is gone within seconds of the cause. */
+  var CONDITION_TICKS = 600;
+
   var Ideology = {};
 
   /* ============================================================
@@ -1043,10 +1050,19 @@
     return !!(pawn && pawn.isHuman !== false && !pawn.isAnimal);
   }
 
+  /* prisoners.js moves a captive onto the player's faction id and keeps
+     the one they arrived with, and it is that one their faith follows:
+     a prisoner who believed what their raiders believed on Tuesday still
+     believes it on Wednesday, which is the whole reason to talk to them. */
+  function faithFaction(pawn) {
+    if (pawn.prisoner && pawn.prisoner.factionId) return pawn.prisoner.factionId;
+    return pawn.faction;
+  }
+
   function ensurePawn(pawn) {
     if (!pawn || !isHuman(pawn)) return null;
     if (!pawn.ideo || typeof pawn.ideo !== 'object') {
-      var faith = factionIdeo(pawn.faction);
+      var faith = factionIdeo(faithFaction(pawn));
       pawn.ideo = {
         ideoId: faith ? faith.id : null,
         certainty: 0.8,
@@ -1077,7 +1093,7 @@
     if (found) return found;
     /* The id points at nothing: a save restored without the module
        state, or a faith that was dropped. Fall back rather than crash. */
-    var faith = factionIdeo(pawn.faction);
+    var faith = factionIdeo(faithFaction(pawn));
     st.ideoId = faith ? faith.id : null;
     return faith;
   };
@@ -1308,6 +1324,11 @@
     var swing = 0;
     for (i = 0; i < fired.length; i++) swing += fired[i] ? fired[i].mood : 0;
     var st = pawn.ideo;
+    /* A state of the world that is simply true - a body on the floor, the
+       clothes on your back - is restated every rare beat, and charging
+       resentment for each restatement would saturate it in a minute.
+       Only something somebody actually did moves it. */
+    if (opts.passive) return { action: canon, thoughts: fired, resentment: st.resentment };
     if (swing < 0) st.resentment = U.clamp01(st.resentment + Math.min(0.3, -swing * 0.8));
     else if (swing > 0) {
       st.resentment = U.clamp01(st.resentment - swing * 0.4);
@@ -1339,6 +1360,10 @@
     var entry = N.addThought(pawn, reaction.thought, {
       degree: degreeIndex,
       mood: mood,
+      noStack: !!opts.noStack,
+      /* An observed state says how things are now and is re-stated every
+         rare beat, so it is given a short clock instead of the def's. */
+      duration: typeof opts.duration === 'number' ? opts.duration : undefined,
       otherPawnId: opts.otherPawnId === undefined ? null : opts.otherPawnId
     });
     return entry ? { id: reaction.thought, mood: mood, degree: degreeIndex } : null;
@@ -1622,7 +1647,10 @@
     return { ok: true };
   };
 
+  /* Called as (game, id) from inside this file and, just as plausibly,
+     as (id) from a UI button. Both work. */
   Ideology.startRitual = function (g, defId, opts) {
+    if (typeof g === 'string') { opts = defId; defId = g; g = null; }
     opts = opts || {};
     ensureState();
     var G = g || game();
@@ -1896,6 +1924,35 @@
     }
   }
 
+  /* Most morally loaded acts are reported by whoever did them, through
+     Ideology.noteAction. A few are not acts at all - they are simply
+     true of where the pawn is standing - so the rare beat looks for
+     them itself rather than waiting for a caller that will never come. */
+  function observe(pawn, map) {
+    var seen = { gender: pawn.gender, noStack: true, passive: true, duration: CONDITION_TICKS };
+    var bare = !(pawn.apparel && pawn.apparel.length);
+    Ideology.noteAction(pawn, bare ? 'wasNude' : 'wasClothed', seen);
+
+    var corpses = map.byDef ? map.byDef('corpse') : null;
+    if (!corpses || !corpses.length) return;
+    for (var i = 0; i < corpses.length; i++) {
+      var body = corpses[i];
+      if (!body.spawned || U.cheb(body.x, body.y, pawn.x, pawn.y) > 8) continue;
+      Ideology.noteAction(pawn, 'corpseSeen', seen);
+      /* pawn.js stamps a corpse with the tick it was made and health.js
+         ages it; either number answers "has this been lying here". */
+      var age = Math.max((body.corpse && body.corpse.rotTicks) || 0,
+                         now() - (body.spawnTick || 0));
+      if (age > DAY) Ideology.noteAction(pawn, 'corpseRotting', seen);
+      return;    /* one body is enough to make the point */
+    }
+  }
+
+  /* Options for a thought that describes how things are right now. */
+  function condition(degree) {
+    return { noStack: true, duration: CONDITION_TICKS, degree: degree | 0 };
+  }
+
   function awakeColonists(map) {
     var list = map.colonists ? map.colonists() : [];
     var n = 0;
@@ -1937,28 +1994,28 @@
     drift -= st.resentment * CERTAINTY_LOSS * RARE;
     st.certainty = U.clamp01(st.certainty + drift);
 
-    if (same > other && same > 0) N.addThought(pawn, 'ideoAmongBelievers', { noStack: true });
-    else if (other > 0 && other >= same) N.addThought(pawn, 'ideoAmongUnbelievers', { noStack: true });
+    if (same > other && same > 0) N.addThought(pawn, 'ideoAmongBelievers', condition());
+    else if (other > 0 && other >= same) N.addThought(pawn, 'ideoAmongUnbelievers', condition());
 
     if (st.certainty < 0.45) {
-      N.addThought(pawn, 'ideoDoubt', {
-        degree: st.certainty < 0.12 ? 2 : (st.certainty < 0.30 ? 1 : 0), noStack: true
-      });
+      N.addThought(pawn, 'ideoDoubt',
+        condition(st.certainty < 0.12 ? 2 : (st.certainty < 0.30 ? 1 : 0)));
     }
     if (st.resentment > 0.20) {
-      N.addThought(pawn, 'ideoResentment', {
-        degree: st.resentment > 0.65 ? 2 : (st.resentment > 0.40 ? 1 : 0), noStack: true
-      });
+      N.addThought(pawn, 'ideoResentment',
+        condition(st.resentment > 0.65 ? 2 : (st.resentment > 0.40 ? 1 : 0)));
     }
     if (Ideology.sameFaithAsColony(pawn) && !Ideology.roleHolder('moralGuide', map)) {
-      N.addThought(pawn, 'ideoNoMoralGuide', { noStack: true });
+      N.addThought(pawn, 'ideoNoMoralGuide', condition());
     }
     if (state.relicThingId && map.thing && map.thing(state.relicThingId)) {
       var relic = map.thing(state.relicThingId);
       if (relic && relic.spawned && U.cheb(relic.x, relic.y, pawn.x, pawn.y) <= 12) {
-        N.addThought(pawn, 'ideoRelic', { noStack: true });
+        N.addThought(pawn, 'ideoRelic', condition());
       }
     }
+
+    observe(pawn, map);
 
     for (i = 0; i < ideo.memes.length; i++) {
       var meme = MEMES[ideo.memes[i]];
@@ -1969,7 +2026,7 @@
       if (verdict === null || verdict === undefined) continue;
       if (verdict === 1 && !meme.situation.good) continue;
       if (verdict === 0 && !meme.situation.bad) continue;
-      N.addThought(pawn, 'ideoMeme_' + meme.id, { degree: verdict, noStack: true });
+      N.addThought(pawn, 'ideoMeme_' + meme.id, condition(verdict));
     }
 
     /* Some memes are simply heavier or lighter to carry than others, and
@@ -1979,7 +2036,11 @@
     for (i = 0; i < ideo.memes.length; i++) {
       if (MEMES[ideo.memes[i]] && MEMES[ideo.memes[i]].mood) flat += MEMES[ideo.memes[i]].mood;
     }
-    if (flat) N.addThought(pawn, 'ideoOutlook', { mood: flat, noStack: true });
+    if (flat) {
+      var outlook = condition();
+      outlook.mood = flat;
+      N.addThought(pawn, 'ideoOutlook', outlook);
+    }
   }
 
   /* ---------- the standing feelings a meme gives a pawn ---------- */
