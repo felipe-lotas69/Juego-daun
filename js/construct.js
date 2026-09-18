@@ -569,7 +569,8 @@
     }
     frame.workDone = 0;
     var who = (pawn && pawn.name && (pawn.name.nick || pawn.name.first)) || 'Someone';
-    msg(who + ' botched the ' + labelOf(def) + ', wasting ' + lost + ' materials.',
+    msg(who + ' botched the ' + labelOf(def) +
+      (lost ? ', wasting ' + lost + ' materials.' : ' and has to start again.'),
       { type: 'threat', x: frame.x, y: frame.y });
     /* Short of materials it is not a frame any more; dropping back to a
        blueprint is what gets a hauler to top it up again. */
@@ -593,12 +594,12 @@
     var x = frame.x, y = frame.y, rot = frame.rot | 0, stuff = frame.stuff;
 
     map.despawnThing(frame);
+    clearForBuilding(map, def, x, y, rot);
 
     var built = null;
     if (isTerrainDef(def)) {
       map.setTerrain(x, y, defId);
     } else {
-      clearForBuilding(map, def, x, y, rot);
       var hp = Construct.maxHpFor(defId, stuff);
       built = map.spawnThing(defId, x, y, {
         rot: rot, faction: 'player', hp: hp, quality: rollQuality(pawn, def)
@@ -776,7 +777,9 @@
   };
 
   /* Only cells within the support radius of the change can have lost
-     their support, so that is the whole area worth re-testing. */
+     their support, so that is the whole area worth re-testing. One pass:
+     a wall crushed by the falling roof does not set off a second
+     collapse, which keeps a single mining tick bounded. */
   Construct.checkRoofCollapse = function (map, cx, cy) {
     var r = ROOF_SUPPORT_RADIUS, r2 = r * r;
     var fallen = [];

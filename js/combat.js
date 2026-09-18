@@ -118,14 +118,24 @@
     return !!(ms && ms.id === 'berserk');
   }
 
-  /* A predator that has settled on a meal is hostile to that meal alone.
-     animals.js drives the hunt through the `hunt` job, and marks the
-     chosen prey on the pawn; either is enough to read the intent. */
-  function preyIdOf(a) {
+  /* An animal that has settled on something - a predator on its meal, a
+     wounded one on whoever shot it - is hostile to that one pawn and to
+     nobody else. animals.js keeps the decision in pawn.animalMind and the
+     attack itself in the job; either is enough to read the intent. */
+  function aggroTargetId(a) {
     if (a.preyId) return a.preyId;
+    var mind = a.animalMind;
+    if (mind && (mind.preyId || mind.revengeId)) return mind.preyId || mind.revengeId;
     var job = a.job;
-    if (job && job.defId === 'hunt' && job.targetA && job.targetA.k === 'p') return job.targetA.id;
+    if (job && job.targetA && job.targetA.k === 'p' &&
+        (job.defId === 'attackMelee' || job.defId === 'attackStatic' || job.defId === 'hunt')) {
+      return job.targetA.id;
+    }
     return 0;
+  }
+
+  function isManhunter(a) {
+    return !!(a.manhunter || (a.animalMind && a.animalMind.manhunterTicks > 0));
   }
 
   var FACTION_ENEMIES = {

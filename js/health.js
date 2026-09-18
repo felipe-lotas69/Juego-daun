@@ -668,7 +668,7 @@
         id: U.nextId(), partId: g.id, label: 'missing ' + g.label,
         amount: g.maxHp, bleedRate: bleeding && g.depth === 'outside' ? 0.30 : 0,
         tended: false, tendQuality: 0, infection: 0, permanent: true,
-        ageTicks: 0, painFactor: 0.30
+        ageTicks: 0, painFactor: 0.30, severeAt: g.maxHp
       });
     }
     invalidate(pawn);
@@ -700,11 +700,12 @@
     type = armored.type;
     var t = dtype(type);
 
-    /* Small bodies take proportionally more from the same blow, which is
-       why a pistol round is an inconvenience to a bear and fatal to a hare. */
     var dealt = Math.max(1, Math.round(amount));
     result.amount = dealt;
 
+    /* Nothing scales damage by body size, because the body already does:
+       a hare's torso is 8 hp and a bear's is 90, so the same rifle round is
+       an execution for one and an inconvenience for the other. */
     var overkill = dealt - part.hp;
     var applied = Math.min(dealt, part.hp);
 
@@ -729,7 +730,6 @@
       h.injuries.push(injury);
       result.injury = injury;
       syncPartHp(h, part);
-      spillBlood(pawn, injury.bleedRate > 0 ? 30 + dealt * 2 : 0);
     }
 
     if (part.hp <= 0) {
@@ -762,7 +762,8 @@
     return result;
   };
 
-  /* The blood grid is map.js's, but this is where the blood comes from. */
+  /* combat.js stains the cell where a blow lands. This is the other half:
+     the trail a pawn who is still bleeding leaves behind them. */
   function spillBlood(pawn, amount) {
     if (!amount) return;
     var map = pawn.map;

@@ -66,6 +66,14 @@
 
     if (typeof Research !== 'undefined') Research.reset();
 
+    /* The planet comes first: the colony map is one tile of it, and which
+       tile you landed on decides the biome you have to survive. */
+    if (typeof World !== 'undefined') {
+      World.generate({ seed: seed, w: opts.worldW || 60, h: opts.worldH || 30 });
+      if (typeof Factions !== 'undefined') Factions.generate(World);
+      if (!opts.biome && World.colonyBiome) Game.biome = World.colonyBiome();
+    }
+
     var size = opts.size || 140;
     Game.map = MapGen.generate({
       w: size, h: size, seed: seed, biome: Game.biome,
@@ -112,13 +120,26 @@
     var pawns = Game._pawnScratch;
     pawns.length = 0;
     for (var i = 0; i < map.pawns.length; i++) pawns.push(map.pawns[i]);
+    var hasPrisoners = typeof Prisoners !== 'undefined';
     for (var p = 0; p < pawns.length; p++) {
       var pawn = pawns[p];
-      if (!pawn.dead) pawn.tick();
+      if (pawn.dead) continue;
+      pawn.tick();
+      if (hasPrisoners && pawn.prisoner) Prisoners.tick(pawn);
     }
 
     if (typeof Combat !== 'undefined') Combat.tick(map);
     if (typeof Storyteller !== 'undefined') Storyteller.tick(Game);
+
+    /* The world outside the map moves on a slower clock: caravans cross
+       tiles in days, traders come and go, civilizations change their minds. */
+    if (Game.tick % 500 === 0) {
+      if (typeof Caravans !== 'undefined') Caravans.tick(Game);
+      if (typeof Trade !== 'undefined') Trade.tick(Game);
+    }
+    if (Game.tick % 2500 === 0 && typeof Factions !== 'undefined' && Factions.tickDiplomacy) {
+      Factions.tickDiplomacy(Game);
+    }
 
     Game.tickWeather();
 
@@ -304,6 +325,19 @@
   };
 
   /* ---------- state for save.js ---------- */
+
+  /* Who is hostile to whom. Factions owns the answer once civilizations
+     exist; before that, the four built-in faction ids decide it. */
+  Game.hostile = function (a, b) {
+    if (!a || !b || a === b) return false;
+    if (typeof Factions !== 'undefined' && Factions.hostileTo) {
+      var known = Factions.get && (Factions.get(a) || Factions.get(b));
+      if (known) return Factions.hostileTo(a, b);
+    }
+    if (a === 'wild' || b === 'wild') return false;
+    if (a === 'neutral' || b === 'neutral') return false;
+    return (a === 'player' && b === 'raider') || (a === 'raider' && b === 'player');
+  };
 
   Game.timeState = function () {
     return {

@@ -168,7 +168,9 @@
   var RAW_FOOD = { riceRaw: 1, potatoRaw: 1, cornRaw: 1, meatRaw: 1 };
   var RAW_TASTY = { berries: 1 };
   var COOKED_MEAL = { mealSimple: 1, mealFine: 1 };
-  var DISEASE_HEDIFFS = { flu: 1, plague: 1, infection: 1, foodPoisoning: 1, malaria: 1, gutWorms: 1 };
+  var DISEASE_HEDIFFS = {
+    flu: 1, infection: 1, foodPoisoning: 1, hypothermia: 1, heatstroke: 1
+  };
 
   var Needs = {};
 
@@ -221,28 +223,44 @@
     return st[i];
   }
 
+  function readMood(o) {
+    if (!o || typeof o !== 'object') return null;
+    if (typeof o.mood === 'number') return normMood(o.mood);
+    if (typeof o.baseMoodEffect === 'number') return normMood(o.baseMoodEffect);
+    if (typeof o.moodOffset === 'number') return normMood(o.moodOffset);
+    if (typeof o.baseMood === 'number') return normMood(o.baseMood);
+    return null;
+  }
+
+  /* A real def that states no mood anywhere borrows this file's number
+     instead of becoming a weightless thought nobody can see. */
+  function fallbackFor(def) {
+    var fb = FALLBACK[def.id];
+    return (fb && fb !== def) ? fb : null;
+  }
+
   function stageMood(def, degree) {
-    var s = pickStage(def, degree);
-    if (s) {
-      if (s.mood !== undefined) return normMood(s.mood);
-      if (s.baseMoodEffect !== undefined) return normMood(s.baseMoodEffect);
-      if (s.moodOffset !== undefined) return normMood(s.moodOffset);
-    }
-    if (def.mood !== undefined) return normMood(def.mood);
-    if (def.baseMoodEffect !== undefined) return normMood(def.baseMoodEffect);
-    if (def.moodOffset !== undefined) return normMood(def.moodOffset);
-    return 0;
+    var m = readMood(pickStage(def, degree));
+    if (m === null) m = readMood(def);
+    if (m !== null) return m;
+    var fb = fallbackFor(def);
+    return fb ? stageMood(fb, degree) : 0;
   }
 
   function stageLabel(def, degree) {
     var s = pickStage(def, degree);
+    if (typeof s === 'string' && s) return s;
     if (s && s.label) return s.label;
-    return def.label || def.id;
+    if (def.label) return def.label;
+    var fb = fallbackFor(def);
+    return fb ? stageLabel(fb, degree) : def.id;
   }
 
   function stackLimitOf(def) {
     var n = def.stackLimit;
-    return (typeof n === 'number' && n > 0) ? n : 1;
+    if (typeof n === 'number' && n > 0) return n;
+    var fb = fallbackFor(def);
+    return fb ? stackLimitOf(fb) : 1;
   }
 
   /* The second and later copies of one thought count for less, the way
@@ -255,7 +273,11 @@
 
   function durationTicksOf(def) {
     var d = def.durationDays;
-    if (typeof d !== 'number' || !(d > 0)) d = 1;
+    if (typeof d !== 'number' || !(d > 0)) {
+      var fb = fallbackFor(def);
+      d = fb ? fb.durationDays : 1;
+      if (typeof d !== 'number' || !(d > 0)) d = 1;
+    }
     return Math.round(d * TICKS_PER_DAY);
   }
 
@@ -540,6 +562,11 @@
     var duration = typeof opts.duration === 'number' ? opts.duration : durationTicksOf(def);
     var limit = stackLimitOf(def);
     var list = pawn.thoughts;
+    /* health.js fires pain and sick as plain memories. Both are things
+       this file reads straight off the world, so the entry is marked
+       situational whoever asked for it and refreshSituationalThoughts
+       clears it the moment the cause is gone. */
+    var situational = !!opts.situational || !!SITUATIONAL[thoughtId];
 
     /* One entry per (def, other pawn). Re-firing refreshes the clock and
        adds a stack, which is what makes three insults in a row sting. */
@@ -549,11 +576,8 @@
       t.ageTicks = 0;
       t.durationTicks = duration;
       t.degree = degree;
-      /* health.js fires pain and sick as memories too. Whichever side
-         fires last owns the entry, and a situational one is reconciled
-         away the moment the cause is gone - which is the behaviour we
-         want for anything read straight off the world. */
-      if (opts.situational) t.situational = true;
+      if (typeof opts.mood === 'number') t.moodOverride = normMood(opts.mood);
+      if (situational) t.situational = true;
       if (!opts.noStack && t.stacks < limit) t.stacks++;
       pawn._moodDirty = true;
       return t;
@@ -566,7 +590,10 @@
       stacks: 1,
       otherPawnId: other,
       durationTicks: duration,
-      situational: !!opts.situational
+      situational: situational,
+      /* Set only when the caller states a mood of its own, which is how
+         a trait's number reaches the thought that represents it. */
+      moodOverride: typeof opts.mood === 'number' ? normMood(opts.mood) : null
     };
     list.push(entry);
 
@@ -580,6 +607,27 @@
     pawn._moodDirty = true;
     return entry;
   };
+
+  function findThought(pawn, thoughtId) {
+    var list = pawn.thoughts;
+    for (var i = 0; i < list.length; i++) if (list[i].defId === thoughtId) return list[i];
+    return null;
+  }
+
+  /* Which of the two natural-mood thoughts this pawn carries, and the
+     trait's own number when it states one. */
+  function naturalMood(pawn) {
+    var tr = pawn.traits;
+    if (!tr) return null;
+    for (var i = 0; i < tr.length; i++) {
+      var id = (tr[i] && tr[i].id) || tr[i];
+      if (id !== 'optimist' && id !== 'pessimist') continue;
+      var def = traitDefOf(tr[i]);
+      var m = (def && typeof def.moodOffset === 'number') ? normMood(def.moodOffset) : null;
+      return { id: id === 'optimist' ? 'naturalMoodBuff' : 'naturalMoodDebuff', mood: m };
+    }
+    return null;
+  }
 
   Needs.hasThought = function (pawn, thoughtId) {
     var list = pawn && pawn.thoughts;
@@ -650,10 +698,21 @@
       if (c >= 0.6) want('comfortableBed', c >= 0.75 ? 1 : 0);
     }
 
-    if (hasTrait(pawn, 'optimist')) want('naturalMoodBuff', 0);
-    else if (hasTrait(pawn, 'pessimist')) want('naturalMoodDebuff', 0);
+    var nat = naturalMood(pawn);
+    if (nat) want(nat.id, 0);
 
     reconcileSituational(pawn);
+
+    /* The trait def is the authority on how sunny a pawn is, so when
+       def_pawns.js gives optimist a moodOffset that number is written
+       onto the thought instead of the thought def's own. */
+    if (nat && nat.mood !== null) {
+      var natT = findThought(pawn, nat.id);
+      if (natT && natT.moodOverride !== nat.mood) {
+        natT.moodOverride = nat.mood;
+        pawn._moodDirty = true;
+      }
+    }
 
     /* Sleep quality is fired as a memory, not a situational, so waking up
        does not instantly erase a night spent on the bare ground.
@@ -736,7 +795,10 @@
     for (var i = 0; i < h.hediffs.length; i++) {
       var hd = h.hediffs[i];
       var id = hd.id || (hd.def && hd.def.id) || hd.defId;
-      var disease = (hd.def && (hd.def.isDisease || hd.def.makesSick)) || DISEASE_HEDIFFS[id];
+      /* health.js already marks the hediffs that make a pawn feel ill by
+         hanging the sick thought off the def; the id table is only for a
+         hand-made hediff in a test. */
+      var disease = (hd.def && (hd.def.thought === 'sick' || hd.def.isDisease)) || DISEASE_HEDIFFS[id];
       if (!disease) continue;
       var sev = typeof hd.severity === 'number' ? hd.severity : 0.3;
       if (sev > worst) worst = sev;
@@ -751,16 +813,24 @@
 
   /* ---------- mood ---------- */
 
-  function thoughtAllowed(pawn, defId) {
-    if (DEATH_THOUGHTS[defId] && hasTrait(pawn, 'psychopath')) return false;
-    if (defId === 'observedCorpse' && hasTrait(pawn, 'bloodlust')) return false;
-    return true;
+  /* Worked out once per pass rather than per thought: a psychopath feels
+     nothing about a death, and bloodlust shrugs off the corpse. */
+  function moodFilter(pawn) {
+    return {
+      psycho: hasTrait(pawn, 'psychopath'),
+      blood: hasTrait(pawn, 'bloodlust')
+    };
   }
 
-  function entryMood(pawn, t, occurrence) {
+  function blocked(flags, defId) {
+    if (flags.psycho && DEATH_THOUGHTS[defId]) return true;
+    return flags.blood && defId === 'observedCorpse';
+  }
+
+  function entryMood(t, occurrence) {
     var def = defOfThought(t);
     if (!def) return 0;
-    var m = stageMood(def, t.degree);
+    var m = typeof t.moodOverride === 'number' ? t.moodOverride : stageMood(def, t.degree);
     if (m === 0) return 0;
     var stacks = t.stacks > 1 ? t.stacks : 1;
     var f = stackedFactor(def);
@@ -789,13 +859,13 @@
     var list = pawn.thoughts;
     var total = MOOD_BASE + traitMoodTotal(pawn);
     if (list && list.length) {
-      var seen = {};
+      var seen = {}, flags = moodFilter(pawn);
       for (var i = 0; i < list.length; i++) {
         var t = list[i];
-        if (!thoughtAllowed(pawn, t.defId)) continue;
+        if (blocked(flags, t.defId)) continue;
         var occ = seen[t.defId] || 0;
         seen[t.defId] = occ + 1;
-        total += entryMood(pawn, t, occ);
+        total += entryMood(t, occ);
       }
     }
     pawn.mood = clamp01(total);
@@ -815,13 +885,13 @@
     var out = [];
     if (!pawn || !pawn.thoughts) return out;
 
-    var list = pawn.thoughts, seen = {}, i;
+    var list = pawn.thoughts, seen = {}, flags = moodFilter(pawn), i;
     for (i = 0; i < list.length; i++) {
       var t = list[i];
-      if (!thoughtAllowed(pawn, t.defId)) continue;
+      if (blocked(flags, t.defId)) continue;
       var occ = seen[t.defId] || 0;
       seen[t.defId] = occ + 1;
-      var v = entryMood(pawn, t, occ);
+      var v = entryMood(t, occ);
       if (v === 0) continue;
       var def = defOfThought(t);
       var label = def ? stageLabel(def, t.degree) : t.defId;
@@ -943,10 +1013,12 @@
     var stack = (thing.stack === undefined || thing.stack === null) ? 1 : thing.stack;
     if (stack <= 0) return false;
 
-    /* Take one unit of a proper meal, or as many berries as it takes to
-       fill up - capped so nobody swallows a whole stockpile in one sitting. */
+    /* One unit of a proper meal, or as many berries as it takes to fill
+       up. Whole units that FIT, never one more: rounding up would have a
+       starving colonist eat two meals and pour most of the second away.
+       Capped so nobody swallows a whole stockpile in one sitting. */
     var missing = 1 - pawn.needs.food;
-    var units = Math.ceil(missing / per);
+    var units = Math.floor(missing / per);
     if (units < 1) units = 1;
     if (units > 30) units = 30;
     if (units > stack) units = stack;
