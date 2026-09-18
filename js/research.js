@@ -1,33 +1,15 @@
 /* ============================================================
-   research.js - the tech tree, the benches that pay for it, and
-   the study of things the colony did not build.
+   research.js - the tech tree and the runtime that spends work on it.
 
-   Four halves, which is one more than a file should have, but they
-   belong together because they are all one question: what does this
-   colony know?
+   Two halves. The top half is data: every research project, what it
+   costs, what it needs first and what it opens up. The bottom half is
+   the small amount of state a colony carries - which projects are
+   finished, which one is being worked on, how far along it is - plus
+   the lookup the rest of the game uses to ask "am I allowed to build
+   this yet?".
 
-   1. CONTENT. Everything a project can open up that the frozen id
-      registry does not already contain is registered here, next to the
-      project that unlocks it - the better bench, the analyser that
-      makes the bench faster, the fabrication line, the mortar, the
-      hydroponics tray, and the six pieces of the ship.
-   2. THE TREE. Fifty-odd projects across five tech levels, with real
-      prerequisite chains. Every unlock names a real thing, recipe or
-      terrain, and every buildable states its own researchPrerequisite,
-      so the gate holds whether or not anything calls Defs.finalize.
-   3. THE RUNTIME. Which projects are finished, which one is being
-      worked on, how fast the work goes, and a queue so a colony does
-      not stand idle the moment a project lands.
-   4. ANALYSIS. Studying something you found rather than something you
-      invented: ancient ruins, a dead mechanoid, an artifact nobody can
-      name, a techprint bought off a spacer trader. Its own jobs, its
-      own work givers, and its own scattering across the map.
-
-   No DOM, and no Game at load time: this file is evaluated before
-   game.js exists, so every reference to another system is guarded and
-   resolved at tick time. Jobs and work givers are registered lazily
-   for the same reason - jobs.js and workgivers.js load after this file
-   and a registration at load would find nothing to register against.
+   No DOM, no Game at load time: this file is evaluated before game.js
+   exists, so every reference to Game is guarded.
    ============================================================ */
 (function (root) {
   'use strict';
@@ -36,732 +18,456 @@
   var U = root.U;
 
   /* ------------------------------------------------------------------
-     Local def templates.
+     The projects.
 
-     def_things.js keeps its own copies of these and does not export
-     them, so rather than reach into another file this one restates the
-     shapes it needs. The point of a template is that every consumer can
-     read def.building.powerConsumed without a guard, so the field list
-     has to be complete; an unknown key is a typo and throws while a
-     data file can still be fixed cheaply.
+     Costs are research points. A point is not a tick of work: a pawn
+     pours work units into the bench and POINTS_PER_WORK (below) turns
+     them into points, which is what keeps a 500-point project a couple
+     of in-game hours of study rather than eight seconds of it.
+
+     `unlocks` is display-and-lookup only. The authority on whether a
+     thing is buildable is that thing's own `researchPrerequisite` field
+     in def_things/def_recipes/def_terrain; these lists name the same
+     pairings from the other end so the tree can show them and so
+     Research.requiredFor can answer in one hop.
+
+     `uiPosition` is in card cells, not pixels: x is the tier column
+     (which equals the depth of the prerequisite chain) and y is the row
+     within that column.
+     ------------------------------------------------------------------ */
+  Defs.add('research', {
+
+    stonecutting: {
+      label: 'stonecutting', cost: 500, techLevel: 'neolithic', tab: 'basic',
+      description: 'Square off the chunks a mountain gives you for free: blocks for ' +
+        'walls that will not burn, and floors that are not mud.',
+      prerequisites: [],
+      unlocks: ['stonecutterTable', 'cutStoneBlocks', 'stoneFloor', 'concreteFloor'],
+      uiPosition: { x: 0, y: 0 }
+    },
+
+    tailoring: {
+      label: 'tailoring', cost: 600, techLevel: 'neolithic', tab: 'basic',
+      description: 'Patterns, needles and a bench to work at. Cloth and leather become ' +
+        'clothing that keeps the cold out and the mood up.',
+      prerequisites: [],
+      unlocks: ['tailoringBench', 'sewShirt', 'sewPants', 'sewJacket', 'sewParka', 'sewHelmet'],
+      uiPosition: { x: 0, y: 1 }
+    },
+
+    smithing: {
+      label: 'smithing', cost: 900, techLevel: 'medieval', tab: 'basic',
+      description: 'A hearth, an anvil and the knack of working steel. The smithy is the ' +
+        'gateway to every metal thing the colony can make for itself.',
+      prerequisites: [],
+      unlocks: ['smithy', 'smeltWeapon', 'sewArmorVest'],
+      uiPosition: { x: 0, y: 2 }
+    },
+
+    electricity: {
+      label: 'electricity', cost: 1200, techLevel: 'industrial', tab: 'advanced',
+      description: 'Generators, conduit and the lamp at the end of it. Everything ' +
+        'industrial the colony will ever own hangs off this one project.',
+      prerequisites: [],
+      unlocks: ['conduit', 'standingLamp', 'woodGenerator', 'windTurbine'],
+      uiPosition: { x: 0, y: 3 }
+    },
+
+    firearms: {
+      label: 'firearms', cost: 1000, techLevel: 'medieval', tab: 'basic',
+      description: 'Rifling, primers, and a pistol you made yourself instead of one you ' +
+        'had to pull off a dead raider.',
+      prerequisites: ['smithing'],
+      unlocks: ['forgePistol'],
+      uiPosition: { x: 1, y: 0 }
+    },
+
+    medicineProduction: {
+      label: 'medicine production', cost: 1100, techLevel: 'medieval', tab: 'basic',
+      description: 'Sterile packs worked up from herbal stock and steel. Wounds tended ' +
+        'with real medicine close faster and turn septic far less often.',
+      prerequisites: ['smithing'],
+      unlocks: ['makeMedicine'],
+      uiPosition: { x: 1, y: 1 }
+    },
+
+    machining: {
+      label: 'machining', cost: 1800, techLevel: 'industrial', tab: 'advanced',
+      description: 'Lathes and fine tolerances. Components are the fiddly part of every ' +
+        'powered building, and this is how you stop buying them from caravans.',
+      prerequisites: ['smithing', 'electricity'],
+      unlocks: ['makeComponents'],
+      uiPosition: { x: 1, y: 2 }
+    },
+
+    electricStove: {
+      label: 'electric stove', cost: 900, techLevel: 'industrial', tab: 'advanced',
+      description: 'A cooking surface that holds its heat: faster meals than a campfire, ' +
+        'and the only way to put a fine meal on the table.',
+      prerequisites: ['electricity'],
+      unlocks: ['stove'],
+      uiPosition: { x: 1, y: 3 }
+    },
+
+    batteries: {
+      label: 'batteries', cost: 800, techLevel: 'industrial', tab: 'advanced',
+      description: 'Bank the surplus so the lights stay on at night, and through the calm ' +
+        'windless days when nothing at all is turning.',
+      prerequisites: ['electricity'],
+      unlocks: ['battery'],
+      uiPosition: { x: 1, y: 4 }
+    },
+
+    solarPower: {
+      label: 'solar power', cost: 1000, techLevel: 'industrial', tab: 'advanced',
+      description: 'Panels that burn no wood and make no noise, and that produce nothing ' +
+        'whatsoever at night or under an eclipse.',
+      prerequisites: ['electricity'],
+      unlocks: ['solarPanel'],
+      uiPosition: { x: 1, y: 5 }
+    },
+
+    airConditioning: {
+      label: 'air conditioning', cost: 1400, techLevel: 'industrial', tab: 'advanced',
+      description: 'Heaters and coolers: a room held at the temperature you chose, through ' +
+        'a heat wave, through a cold snap, or over a freezer full of meat.',
+      prerequisites: ['electricity'],
+      unlocks: ['heater', 'cooler'],
+      uiPosition: { x: 1, y: 6 }
+    },
+
+    advancedFirearms: {
+      label: 'advanced firearms', cost: 3000, techLevel: 'industrial', tab: 'advanced',
+      description: 'Machined receivers and bolt actions. A rifle that reaches across the ' +
+        'map and hits roughly what it was pointed at.',
+      prerequisites: ['firearms', 'machining'],
+      unlocks: ['forgeBoltRifle'],
+      uiPosition: { x: 2, y: 0 }
+    },
+
+    defensiveTurrets: {
+      label: 'defensive turrets', cost: 2400, techLevel: 'industrial', tab: 'advanced',
+      description: 'An autoloader on a post that shoots back while your colonists are ' +
+        'busy, asleep, or bleeding out in the infirmary.',
+      prerequisites: ['machining'],
+      unlocks: ['turret'],
+      uiPosition: { x: 2, y: 1 }
+    }
+
+  });
+
+  /* ------------------------------------------------------------------
+     Runtime
      ------------------------------------------------------------------ */
 
-  var S11 = Object.freeze({ w: 1, h: 1 });
-  var S12 = Object.freeze({ w: 1, h: 2 });
-  var S21 = Object.freeze({ w: 2, h: 1 });
-  var S22 = Object.freeze({ w: 2, h: 2 });
-  var S33 = Object.freeze({ w: 3, h: 3 });
+  /* Work units to research points. The research toil hands over roughly
+     one work unit a tick, so this constant alone sets the pace of the
+     whole tree: at 0.08 a skill-8 researcher earns ~0.078 points a tick,
+     which is 500 points in about 6400 ticks - two and a half hours of
+     game time - and all 16,600 points of the tree in three and a half
+     days of somebody doing nothing else. */
+  var POINTS_PER_WORK = 0.08;
 
-  function withDefaults(base, over) {
-    var out = {}, k;
-    for (k in base) out[k] = base[k];
-    for (k in over) out[k] = over[k];
-    return out;
+  /* The research toil pays no xp of its own; it hands the whole
+     intellectual payout to addProgress, so the rate here is the
+     contract's rate for a work toil, 0.11 xp per work unit. It is paid
+     on the work that went into the bench rather than on the points that
+     came out: sitting there blind earns fewer points, not less study. */
+  var XP_PER_WORK = 0.11;
+
+  var PASSION = [0.35, 1.0, 1.5];
+
+  var Research = {};
+
+  Research.POINTS_PER_WORK = POINTS_PER_WORK;
+
+  Research.done = new Set();
+  Research.currentId = null;
+  Research.progress = 0;
+
+  /* Points banked per project. Switching away from a half-done project
+     and coming back to it later must not lose the work, so progress
+     lives per project and Research.progress mirrors the current one. */
+  var banked = {};
+
+  /* Rebuilt on the next read after a project finishes. */
+  var unlockedCache = null;
+
+  /* Unlock id to the project that lists it. Built once on demand: it is
+     derived from def data, which stops changing when the def files have
+     all loaded. */
+  var reverseIndex = null;
+
+  function defOf(id) { return Defs.maybe('research', id); }
+
+  /* An unlock id may name a thing, a recipe or a terrain - the build
+     menu draws all three - so resolve across the three tables. */
+  function anyDef(id) {
+    return Defs.maybe('thing', id) || Defs.maybe('recipe', id) || Defs.maybe('terrain', id);
   }
 
-  var BUILDING_TEMPLATE = {
-    isBed: false, isTable: false, isChair: false, isWorkbench: false,
-    isDoor: false, isGrave: false, isTurret: false, isBattery: false,
-    isConduit: false, isLamp: false, isGenerator: false, isResearchBench: false,
-    isStove: false, isCampfire: false, isTrap: false, isSandbag: false,
-    powerProduced: 0, powerConsumed: 0, batteryCapacity: 0, lightRadius: 0,
-    tempPushTarget: null, tempPushRate: 0,
-    bedRestEffectiveness: 0, bedComfort: 0, canBeForPrisoners: false,
-    fuelDefId: null, fuelCapacity: 0, fuelBurnPerDay: 0,
-    turretRange: 0, turretWeapon: null, interactionOffset: null,
-    openTicks: 0
+  function theGame() {
+    return (typeof Game !== 'undefined' && Game) ? Game : (root.Game || null);
+  }
+
+  function skillLevel(pawn, id) {
+    var s = pawn && pawn.skills && pawn.skills[id];
+    return s ? (s.level || 0) : 0;
+  }
+
+  /* pawn.js owns levelling; these are the spellings the other systems
+     probe for, with the contract's own curve as the last resort. */
+  function grantXp(pawn, xp) {
+    if (!pawn || !(xp > 0)) return;
+    if (typeof pawn.learn === 'function') { pawn.learn('intellectual', xp); return; }
+    var P = root.Pawn;
+    if (P && typeof P.learn === 'function') { P.learn(pawn, 'intellectual', xp); return; }
+    if (P && typeof P.gainXp === 'function') { P.gainXp(pawn, 'intellectual', xp); return; }
+    var s = pawn.skills && pawn.skills.intellectual;
+    if (!s) return;
+    var passion = PASSION[s.passion || 0] || 1;
+    s.xp = (s.xp || 0) + xp * passion;
+    while (s.level < 20 && s.xp >= 1000 * (s.level + 1)) {
+      s.xp -= 1000 * (s.level + 1);
+      s.level++;
+    }
+  }
+
+  Research.projects = function () { return Defs.all('research'); };
+
+  Research.isDone = function (id) { return Research.done.has(id); };
+
+  Research.current = function () {
+    return Research.currentId ? defOf(Research.currentId) : null;
   };
 
-  function bld(o) {
-    var out = {}, k;
-    for (k in BUILDING_TEMPLATE) out[k] = BUILDING_TEMPLATE[k];
-    if (o) {
-      for (k in o) {
-        if (!(k in BUILDING_TEMPLATE)) throw new Error('research.js: unknown building field ' + k);
-        out[k] = o[k];
+  Research.prereqsMet = function (def) {
+    if (!def) return false;
+    var pre = def.prerequisites || [];
+    for (var i = 0; i < pre.length; i++) if (!Research.done.has(pre[i])) return false;
+    return true;
+  };
+
+  Research.available = function () {
+    return Research.projects().filter(function (d) {
+      return !Research.done.has(d.id) && Research.prereqsMet(d);
+    });
+  };
+
+  /* Points banked on a project, whether or not it is the current one.
+     The research tab reads this to draw the progress bar. */
+  Research.progressOf = function (id) {
+    if (id === Research.currentId) return Research.progress;
+    if (Research.done.has(id)) { var d = defOf(id); return d ? d.cost : 0; }
+    return banked[id] || 0;
+  };
+
+  Research.percentOf = function (id) {
+    var d = defOf(id);
+    if (!d || !d.cost) return 0;
+    return U.clamp01(Research.progressOf(id) / d.cost);
+  };
+
+  Research.remaining = function (id) {
+    var d = defOf(id || Research.currentId);
+    if (!d) return 0;
+    return Math.max(0, d.cost - Research.progressOf(d.id));
+  };
+
+  Research.start = function (id) {
+    var def = defOf(id);
+    if (!def || Research.done.has(id) || !Research.prereqsMet(def)) return false;
+    if (Research.currentId === id) return true;
+    if (Research.currentId) banked[Research.currentId] = Research.progress;
+    Research.currentId = id;
+    Research.progress = banked[id] || 0;
+    var g = theGame();
+    if (g && g.msg) g.msg('Researching ' + (def.label || id) + '.');
+    return true;
+  };
+
+  /* Put the bench down without losing the work already done on it. */
+  Research.stop = function () {
+    if (Research.currentId) banked[Research.currentId] = Research.progress;
+    Research.currentId = null;
+    Research.progress = 0;
+  };
+
+  /* How fast this pawn turns work into points. The caller already scales
+     its per-tick amount by the pawn's general work rate, which carries
+     the same skill curve, so the full curve applied here as well would
+     square it and make a level 20 scientist twenty-five times an
+     amateur. What is left is the shallow half of the curve - still a
+     real reason to put your smart colonist on the bench - plus sight,
+     which no general work rate accounts for and which reading needs.
+     Traits stay out of it: their work speed belongs to the pawn's work
+     rate, which pawn.js owns. */
+  Research.speedFactor = function (pawn) {
+    if (!pawn) return 1;
+    var f = 0.7 + 0.03 * skillLevel(pawn, 'intellectual');
+    var H = root.Health;
+    if (H && H.capacity && pawn.health) {
+      var sight = H.capacity(pawn, 'sight');
+      if (sight < 1) f *= U.clamp(0.4 + 0.6 * sight, 0.4, 1);
+    }
+    return Math.max(0.05, f);
+  };
+
+  /* `amount` is work units, the same unit every other toil spends.
+     Returns the points actually banked. */
+  Research.addProgress = function (amount, pawn) {
+    var id = Research.currentId;
+    if (!id || !(amount > 0)) return 0;
+    var def = defOf(id);
+    if (!def) { Research.currentId = null; Research.progress = 0; return 0; }
+
+    var gain = amount * POINTS_PER_WORK * Research.speedFactor(pawn);
+    if (!(gain > 0)) return 0;
+
+    Research.progress += gain;
+    banked[id] = Research.progress;
+    if (pawn) grantXp(pawn, amount * XP_PER_WORK);
+    if (Research.progress >= def.cost) Research.finish(id);
+    return gain;
+  };
+
+  Research.finish = function (id) {
+    var def = defOf(id);
+    if (!def || Research.done.has(id)) return false;
+
+    Research.done.add(id);
+    delete banked[id];
+    if (Research.currentId === id) { Research.currentId = null; Research.progress = 0; }
+    unlockedCache = null;
+
+    var g = theGame();
+    if (g && g.letter) {
+      var names = (def.unlocks || []).map(function (u) {
+        var d = anyDef(u);
+        return (d && d.label) || u;
+      });
+      var text = (def.description || '') +
+        (names.length ? '\n\nNow available: ' + names.join(', ') + '.' : '') +
+        '\n\nPick the next project in the Research tab.';
+      g.letter('Research complete: ' + (def.label || id), text, { kind: 'good' });
+    }
+    return true;
+  };
+
+  /* Every unlock named by every finished project. Ids may name a thing,
+     a recipe or a terrain; use Research.unlockedIn to narrow. */
+  Research.unlockedThings = function () {
+    if (unlockedCache) return unlockedCache;
+    var seen = {}, out = [];
+    Research.projects().forEach(function (d) {
+      if (!Research.done.has(d.id)) return;
+      (d.unlocks || []).forEach(function (u) {
+        if (seen[u]) return;
+        seen[u] = 1;
+        out.push(u);
+      });
+    });
+    unlockedCache = out;
+    return out;
+  };
+
+  Research.unlockedIn = function (category) {
+    return Research.unlockedThings().filter(function (id) { return Defs.has(category, id); });
+  };
+
+  /* The gate the build menu and the bill list ask. A def with no
+     prerequisite is always available; an id that names no def at all is
+     not, because a build button for a thing that does not exist is worse
+     than a missing one. The field may also be an array, in which case
+     every project in it has to be finished. */
+  Research.isUnlocked = function (thingDef) {
+    var def = (typeof thingDef === 'string') ? anyDef(thingDef) : thingDef;
+    if (!def) return false;
+    var req = def.researchPrerequisite;
+    if (!req) return true;
+    if (Array.isArray(req)) {
+      for (var i = 0; i < req.length; i++) if (!Research.done.has(req[i])) return false;
+      return true;
+    }
+    return Research.done.has(req);
+  };
+
+  /* Which project opens this thing, for the "needs Electricity" line on
+     a locked build button. Prefers the thing's own field and falls back
+     to whichever project lists it as an unlock. */
+  Research.requiredFor = function (thingDefId) {
+    var def = anyDef(thingDefId);
+    var req = def && def.researchPrerequisite;
+    if (typeof req === 'string') return defOf(req);
+    if (Array.isArray(req) && req.length) {
+      for (var i = 0; i < req.length; i++) {
+        if (!Research.done.has(req[i])) return defOf(req[i]);
       }
+      return defOf(req[req.length - 1]);
     }
-    return out;
-  }
-
-  var WEAPON_TEMPLATE = {
-    ranged: false, damage: 1, damageType: 'blunt', range: 1,
-    warmupTicks: 0, cooldownTicks: 60, burstCount: 1, burstTicks: 0,
-    accuracy: null, armorPen: 0,
-    projectileSpeed: 0, projectileDef: null, minRange: 0, forcedMissRadius: 0
+    if (!reverseIndex) {
+      reverseIndex = {};
+      Research.projects().forEach(function (d) {
+        (d.unlocks || []).forEach(function (u) {
+          if (!reverseIndex[u]) reverseIndex[u] = d.id;
+        });
+      });
+    }
+    return reverseIndex[thingDefId] ? defOf(reverseIndex[thingDefId]) : null;
   };
 
-  function weap(o) {
-    var out = {}, k;
-    for (k in WEAPON_TEMPLATE) out[k] = WEAPON_TEMPLATE[k];
-    for (k in o) {
-      if (!(k in WEAPON_TEMPLATE)) throw new Error('research.js: unknown weapon field ' + k);
-      out[k] = o[k];
-    }
-    if (!out.accuracy) out.accuracy = { touch: 0.95, short: 0.8, medium: 0.6, long: 0.4 };
-    return out;
-  }
-
-  var APPAREL_TEMPLATE = {
-    slots: null, armorSharp: 0, armorBlunt: 0,
-    insulationCold: 0, insulationHeat: 0, coverage: 0.9
+  Research.reset = function () {
+    Research.done = new Set();
+    Research.currentId = null;
+    Research.progress = 0;
+    banked = {};
+    unlockedCache = null;
   };
 
-  function app(o) {
-    var out = {}, k;
-    for (k in APPAREL_TEMPLATE) out[k] = APPAREL_TEMPLATE[k];
-    for (k in o) {
-      if (!(k in APPAREL_TEMPLATE)) throw new Error('research.js: unknown apparel field ' + k);
-      out[k] = o[k];
-    }
+  Research.save = function () {
+    var out = { done: [], currentId: Research.currentId, progress: Research.progress, banked: {} };
+    Research.done.forEach(function (id) { out.done.push(id); });
+    Object.keys(banked).forEach(function (id) {
+      if (banked[id] > 0 && id !== Research.currentId) out.banked[id] = banked[id];
+    });
     return out;
-  }
-
-  var ITEM = {
-    category: 'item',
-    description: '',
-    sprite: 'item', color: '#b0b0b8', color2: null,
-    stackLimit: 75, mass: 0.5, marketValue: 1,
-    nutrition: 0, foodType: null, rotDays: null,
-    isMedicine: false, medicinePotency: 0,
-    passable: true, pathCost: 0, fillPercent: 0, blocksLight: false, holdsRoof: false,
-    size: S11, rotatable: false, hp: 60, flammable: true,
-    beauty: 0, comfort: 0, natural: false,
-    buildCost: null, stuffable: false, workToBuild: 0, buildSkill: null,
-    buildCategory: null, researchPrerequisite: null, recipes: null, leavings: null,
-    mineable: false, mineYield: null,
-    building: null, weapon: null, apparel: null, study: null
   };
 
-  var GEAR = withDefaults(ITEM, {
-    stackLimit: 1, mass: 2, marketValue: 50, hp: 100, flammable: true
-  });
+  Research.load = function (obj) {
+    Research.reset();
+    if (!obj) return;
 
-  var BUILDING = withDefaults(ITEM, {
-    category: 'building', sprite: 'box', stackLimit: 1,
-    mass: 20, marketValue: 0, hp: 120,
-    passable: false, pathCost: 0, fillPercent: 1,
-    blocksLight: false, holdsRoof: false, flammable: false,
-    buildSkill: 'construction', building: bld({})
-  });
-
-  /* ============================================================
-     ITEMS
-
-     Everything here is the product of a recipe registered further
-     down, except the two that are found rather than made: the artifact
-     a colonist digs out of a ruin, and the techprint a spacer trader
-     will sell you for a great deal of silver.
-     ============================================================ */
-  Defs.add('thing', {
-
-    travelRations: {
-      label: 'travel rations',
-      description: 'Meat and fat pressed with dried fruit and wrapped in wax cloth. It ' +
-        'keeps for a year and nobody enjoys it, which is exactly what a caravan wants.',
-      sprite: 'meal', color: '#9c7b4a', color2: '#6b5638',
-      stackLimit: 30, mass: 0.35, marketValue: 9,
-      nutrition: 0.7, foodType: 'meal', rotDays: null, hp: 50
-    },
-
-    mealPaste: {
-      label: 'paste meal',
-      description: 'Beige, warm, and nutritionally complete. The dispenser turns almost ' +
-        'anything organic into it, and every colonist who eats one knows it.',
-      sprite: 'meal', color: '#c8bd93', color2: '#9c9470',
-      stackLimit: 10, mass: 0.44, marketValue: 7,
-      nutrition: 0.9, foodType: 'meal', rotDays: 4, hp: 50
-    },
-
-    medicineAdvanced: {
-      label: 'advanced medicine',
-      description: 'Sealed trauma packs with tissue foam and a broad-spectrum course. A ' +
-        'doctor with these can close a wound that would otherwise take a limb.',
-      sprite: 'medkit', color: '#e8e2d4', color2: '#4a7fd4',
-      stackLimit: 25, mass: 0.4, marketValue: 90, hp: 50, flammable: false,
-      isMedicine: true, medicinePotency: 1.6
-    },
-
-    advancedComponents: {
-      label: 'advanced components',
-      description: 'Sealed assemblies no smithy can produce: superconductors, field coils, ' +
-        'logic dies. Everything spacer-grade is mostly a box of these.',
-      sprite: 'component', color: '#c0c8d8', color2: '#4a7fd4',
-      stackLimit: 25, mass: 0.8, marketValue: 90, hp: 70, flammable: false
-    },
-
-    prostheticLimb: {
-      label: 'prosthetic limb',
-      description: 'A machined arm or leg on a socket cuff. Worse than the one it replaces ' +
-        'and far better than the empty sleeve it replaces it in.',
-      sprite: 'item', color: '#9aa2ae', color2: '#6b7280',
-      stackLimit: 5, mass: 3, marketValue: 180, hp: 90, flammable: false
-    },
-
-    bionicLimb: {
-      label: 'bionic limb',
-      description: 'A powered limb that reads the nerve directly. Stronger and steadier ' +
-        'than the original, which is the part body purists object to.',
-      sprite: 'item', color: '#7fb0d4', color2: '#3f5b6b',
-      stackLimit: 5, mass: 3, marketValue: 900, hp: 100, flammable: false
-    },
-
-    techPrint: {
-      label: 'techprint',
-      description: 'A sealed data wafer holding the whole of somebody else\'s work. Study ' +
-        'it at a bench and the colony simply knows what it says.',
-      sprite: 'item', color: '#d0c27a', color2: '#4a7fd4',
-      stackLimit: 5, mass: 0.5, marketValue: 1100, hp: 40, flammable: false
-    },
-
-    unknownArtifact: {
-      label: 'unknown artifact',
-      description: 'A fist-sized object of no material anyone here can name. It is warm. ' +
-        'Carry it to a bench and find out what it is before it finds out what you are.',
-      sprite: 'item', color: '#8f6fd4', color2: '#d0c27a',
-      stackLimit: 1, mass: 5, marketValue: 220, hp: 90, flammable: false,
-      study: { work: 2400, kind: 'artifact', points: 900 }
+    /* Ids that no longer exist are dropped rather than trusted: a save
+       from an older tree must still load. */
+    (obj.done || []).forEach(function (id) {
+      if (Defs.has('research', id)) Research.done.add(id);
+    });
+    var saved = obj.banked || {};
+    Object.keys(saved).forEach(function (id) {
+      if (Defs.has('research', id) && !Research.done.has(id)) banked[id] = +saved[id] || 0;
+    });
+    var cur = obj.currentId || null;
+    if (cur && Defs.has('research', cur) && !Research.done.has(cur)) {
+      Research.currentId = cur;
+      Research.progress = (typeof obj.progress === 'number') ? obj.progress : (banked[cur] || 0);
+      banked[cur] = Research.progress;
     }
+  };
 
-  }, ITEM);
+  /* Defs.validate checks prerequisites but not unlocks, so the def
+     verifier has this to call instead: every unlock has to name a real
+     def, or the tree promises something the colony can never build. */
+  Research.validateUnlocks = function () {
+    var errors = [];
+    Research.projects().forEach(function (d) {
+      if (!(d.cost > 0)) errors.push('research/' + d.id + ' has no cost');
+      if (!(d.unlocks || []).length) errors.push('research/' + d.id + ' unlocks nothing');
+      (d.unlocks || []).forEach(function (u) {
+        if (!anyDef(u)) errors.push('research/' + d.id + ' unlocks -> missing thing/recipe/terrain ' + u);
+      });
+    });
+    return errors;
+  };
 
-  /* ============================================================
-     APPAREL AND WEAPONS
-     The far end of the armour and firearms branches, plus the two
-     weapon defs that exist only to be bolted onto a gun emplacement.
-     ============================================================ */
-  Defs.add('thing', {
-
-    duster: {
-      label: 'duster',
-      description: 'A long coat cut for the road. It sheds sun, rain and grit, and a ' +
-        'caravanner who left without one says so for the whole journey.',
-      sprite: 'jacket', color: '#8a7a56', color2: '#5e5238',
-      mass: 2.4, marketValue: 160, hp: 110,
-      apparel: app({
-        slots: ['torso'], armorSharp: 0.12, armorBlunt: 0.05,
-        insulationCold: 14, insulationHeat: 6, coverage: 0.9
-      })
-    },
-
-    plateArmor: {
-      label: 'plate armour',
-      description: 'Shaped steel over a padded backing. It turns a blade outright and ' +
-        'slows the colonist inside it down to a determined walk.',
-      sprite: 'vest', color: '#8f97a3', color2: '#4a5058',
-      mass: 12, marketValue: 620, hp: 180, flammable: false,
-      apparel: app({
-        slots: ['torso'], armorSharp: 0.55, armorBlunt: 0.28,
-        insulationCold: 4, insulationHeat: -6, coverage: 0.85
-      })
-    },
-
-    powerArmor: {
-      label: 'powered armour',
-      description: 'A sealed shell with its own actuators taking the weight. Rifle fire ' +
-        'is a nuisance to whoever is wearing it.',
-      sprite: 'vest', color: '#4a5540', color2: '#c0c8d8',
-      mass: 14, marketValue: 1800, hp: 220, flammable: false,
-      apparel: app({
-        slots: ['torso'], armorSharp: 0.76, armorBlunt: 0.44,
-        insulationCold: 26, insulationHeat: 14, coverage: 0.92
-      })
-    },
-
-    powerHelmet: {
-      label: 'powered helmet',
-      description: 'The head of the same suit: sealed, filtered, and with a visor that ' +
-        'sees better in the dark than the eye behind it.',
-      sprite: 'helmet', color: '#4a5540', color2: '#c0c8d8',
-      mass: 4, marketValue: 700, hp: 160, flammable: false,
-      apparel: app({
-        slots: ['head'], armorSharp: 0.62, armorBlunt: 0.4,
-        insulationCold: 8, insulationHeat: 4, coverage: 0.8
-      })
-    },
-
-    chargeRifle: {
-      label: 'charge rifle',
-      description: 'It throws a packet of charged plasma instead of a bullet, in short ' +
-        'bursts, and armour helps less than the wearer would like.',
-      sprite: 'rifle', color: '#3a4a5a', color2: '#7fb0d4',
-      mass: 3.6, marketValue: 1400, hp: 120, flammable: false,
-      weapon: weap({
-        ranged: true, damage: 19, damageType: 'bullet', range: 28,
-        warmupTicks: 55, cooldownTicks: 75, burstCount: 3, burstTicks: 9,
-        accuracy: { touch: 0.8, short: 0.82, medium: 0.76, long: 0.6 },
-        armorPen: 0.42, projectileSpeed: 90, projectileDef: 'bullet'
-      })
-    },
-
-    /* The two below are emplacement weapons: a building names one in
-       building.turretWeapon and combat.js reads it from there. Neither
-       is ever spawned as an item, and both carry marketValue 0 so that
-       no trader can be carrying a mortar barrel in a sack. */
-    mortarBarrel: {
-      label: 'mortar barrel',
-      description: 'A short tube on a baseplate that lobs a shell over the wall it is ' +
-        'standing behind.',
-      sprite: 'barrel', color: '#4a4a52', color2: '#2c2c33',
-      mass: 40, marketValue: 0, hp: 120, flammable: false,
-      weapon: weap({
-        ranged: true, damage: 45, damageType: 'explosion', range: 48, minRange: 10,
-        warmupTicks: 300, cooldownTicks: 900, forcedMissRadius: 4,
-        accuracy: { touch: 0.1, short: 0.25, medium: 0.45, long: 0.55 },
-        armorPen: 0.3, projectileSpeed: 18, projectileDef: 'bullet'
-      })
-    },
-
-    turretCannon: {
-      label: 'turret cannon',
-      description: 'The autoloading gun on a heavy emplacement. Nobody carries one; it ' +
-        'arrives bolted to its own tripod.',
-      sprite: 'rifle', color: '#3f4a3a', color2: '#2c2c33',
-      mass: 30, marketValue: 0, hp: 120, flammable: false,
-      weapon: weap({
-        ranged: true, damage: 22, damageType: 'bullet', range: 34,
-        warmupTicks: 70, cooldownTicks: 95, burstCount: 4, burstTicks: 8,
-        accuracy: { touch: 0.66, short: 0.78, medium: 0.76, long: 0.64 },
-        armorPen: 0.32, projectileSpeed: 80, projectileDef: 'bullet'
-      })
-    }
-
-  }, GEAR);
-
-  /* ============================================================
-     BUILDINGS
-
-     Each one is the payoff of a project below, and each states its own
-     researchPrerequisite as well as appearing in that project's
-     `unlocks` list. Stating both sides is not redundancy: nothing in
-     the running game calls Defs.finalize, so the gate the build menu
-     reads is the field on the building, and the tree the research tab
-     draws is the list on the project.
-     ============================================================ */
-  Defs.add('thing', {
-
-    /* ---- neolithic and medieval ---- */
-
-    dryingRack: {
-      label: 'drying rack',
-      description: 'Slats in the wind under a roof. Meat and fruit laid out here keep ' +
-        'for a year instead of a week, which is what lets a caravan leave at all.',
-      sprite: 'butcher', color: '#8a6134', color2: '#b09060',
-      size: S21, rotatable: true, hp: 150, mass: 50, flammable: true,
-      passable: false, fillPercent: 0.4,
-      buildCost: { wood: 45 }, workToBuild: 700,
-      buildCategory: 'production', researchPrerequisite: 'foodPreservation',
-      recipes: ['makeTravelRations'],
-      building: bld({ isWorkbench: true, interactionOffset: { dx: 0, dy: 1 } })
-    },
-
-    herbalistBench: {
-      label: 'herbalist bench',
-      description: 'A pestle, a press and drying trays. The same leaves go further here ' +
-        'than they ever did pounded on a rock by the fire.',
-      sprite: 'tailor', color: '#6d7a4a', color2: '#b7c98a',
-      size: S21, rotatable: true, hp: 160, mass: 60, flammable: true,
-      passable: false, fillPercent: 0.5,
-      buildCost: { wood: 50 }, workToBuild: 900,
-      buildCategory: 'production', researchPrerequisite: 'apothecary',
-      recipes: ['refineHerbalMedicine'],
-      building: bld({ isWorkbench: true, interactionOffset: { dx: 0, dy: 1 } })
-    },
-
-    torchLamp: {
-      label: 'torch lamp',
-      description: 'A pitch-soaked head on a stake. Somebody has to feed it wood, and ' +
-        'until there is a generator it is the only way to work after dark.',
-      sprite: 'lamp', color: '#7b5427', color2: '#ff8c1a',
-      hp: 55, mass: 6, flammable: true,
-      passable: true, pathCost: 25, fillPercent: 0.2, beauty: 1,
-      buildCost: { wood: 12 }, workToBuild: 140,
-      buildCategory: 'furniture', researchPrerequisite: 'firecraft',
-      building: bld({
-        isLamp: true, lightRadius: 5,
-        fuelDefId: 'wood', fuelCapacity: 20, fuelBurnPerDay: 7,
-        interactionOffset: { dx: 0, dy: 0 }
-      })
-    },
-
-    chessTable: {
-      label: 'chess table',
-      description: 'A board inlaid into a small table. Two colonists who sit at it come ' +
-        'away in a better mood than an hour of staring at a wall ever gave them.',
-      sprite: 'table', color: '#8a6134', color2: '#e8e2d4',
-      hp: 110, mass: 25, flammable: true,
-      passable: false, fillPercent: 0.4, beauty: 6, comfort: 0.6,
-      buildCost: { wood: 35 }, workToBuild: 900,
-      buildCategory: 'furniture', researchPrerequisite: 'recreation',
-      building: bld({ isTable: true })
-    },
-
-    armchair: {
-      label: 'armchair',
-      description: 'Padded, backed and worth sitting in. A colonist who eats and works ' +
-        'in one of these complains about a great deal less.',
-      sprite: 'stool', color: '#7b4a4a', color2: '#d8cfc0',
-      hp: 90, mass: 18, flammable: true,
-      passable: true, pathCost: 8, fillPercent: 0.3, beauty: 3, comfort: 0.85,
-      buildCost: { wood: 20, cloth: 30 }, workToBuild: 700,
-      buildCategory: 'furniture', researchPrerequisite: 'recreation',
-      building: bld({ isChair: true })
-    },
-
-    poolTable: {
-      label: 'billiards table',
-      description: 'Slate, felt and a rack of balls. It takes up half a room and it is ' +
-        'the best recreation a colony can build out of wood and cloth.',
-      sprite: 'table', color: '#2f5d3a', color2: '#8a6134',
-      size: S22, hp: 160, mass: 80, flammable: true,
-      passable: false, fillPercent: 0.5, beauty: 8, comfort: 0.5,
-      buildCost: { wood: 70, cloth: 30, steel: 10 }, workToBuild: 1800,
-      buildCategory: 'furniture', researchPrerequisite: 'fineFurniture',
-      building: bld({ isTable: true })
-    },
-
-    cushionedBed: {
-      label: 'cushioned bed',
-      description: 'A sprung frame under a stuffed mattress. Sleep comes faster in one ' +
-        'and the colonist wakes up meaning it.',
-      sprite: 'bed', color: '#8a6134', color2: '#c9a86a',
-      size: S12, rotatable: true, hp: 130, mass: 45, flammable: true,
-      passable: true, pathCost: 10, fillPercent: 0.4, beauty: 3,
-      buildCost: { wood: 45, cloth: 40 }, workToBuild: 1400,
-      buildCategory: 'furniture', researchPrerequisite: 'fineFurniture',
-      building: bld({
-        isBed: true, bedRestEffectiveness: 1.25, bedComfort: 0.85,
-        canBeForPrisoners: true
-      })
-    },
-
-    barricade: {
-      label: 'stone barricade',
-      description: 'Waist-high dressed stone. Better cover than a bag of sand and it ' +
-        'does not catch when the field in front of it burns.',
-      sprite: 'sandbags', color: '#7d7d88', color2: '#5c5c66',
-      hp: 240, mass: 60, flammable: false,
-      passable: true, pathCost: 14, fillPercent: 0.72, beauty: -1,
-      buildCost: { stoneBlocks: 12 }, workToBuild: 180,
-      buildCategory: 'security', researchPrerequisite: 'masonry',
-      leavings: { stoneChunk: 1 },
-      building: bld({ isSandbag: true })
-    },
-
-    /* ---- industrial ---- */
-
-    machiningTable: {
-      label: 'machining table',
-      description: 'A powered lathe, a mill and a bench of gauges. Rifles that were guess ' +
-        'work at the smithy come off this one to a tolerance.',
-      sprite: 'smithy', color: '#6a6a72', color2: '#6fa8dc',
-      size: S21, rotatable: true, hp: 220, mass: 130, flammable: false,
-      passable: false, fillPercent: 0.5,
-      buildCost: { steel: 110, components: 4 }, workToBuild: 2400,
-      buildCategory: 'production', researchPrerequisite: 'machining',
-      leavings: { steel: 55, components: 2 },
-      recipes: ['forgeAutoRifle', 'forgeShotgun', 'forgeSniperRifle', 'makeProstheticLimb'],
-      building: bld({
-        isWorkbench: true, powerConsumed: 210, interactionOffset: { dx: 0, dy: 1 }
-      })
-    },
-
-    nutrientPasteBench: {
-      label: 'paste dispenser',
-      description: 'A hopper, a macerator and a warm spout. It turns six units of almost ' +
-        'anything into a full meal, and the colony eats it because it is there.',
-      sprite: 'stove', color: '#9aa2ae', color2: '#c8bd93',
-      size: S21, rotatable: true, hp: 180, mass: 90, flammable: false,
-      passable: false, fillPercent: 0.5,
-      buildCost: { steel: 70, components: 2 }, workToBuild: 1400,
-      buildCategory: 'production', researchPrerequisite: 'nutrientPaste',
-      leavings: { steel: 35, components: 1 },
-      recipes: ['makeNutrientPaste'],
-      building: bld({
-        isWorkbench: true, isStove: true, powerConsumed: 160,
-        interactionOffset: { dx: 0, dy: 1 }
-      })
-    },
-
-    sunLamp: {
-      label: 'sun lamp',
-      description: 'A wide, hungry lamp tuned to what a plant wants rather than what an ' +
-        'eye wants. Crops under one keep growing through the night.',
-      sprite: 'lamp', color: '#c2c8d2', color2: '#ffe08a',
-      hp: 90, mass: 20, flammable: false,
-      passable: true, pathCost: 25, fillPercent: 0.2, beauty: 1,
-      buildCost: { steel: 100, components: 2 }, workToBuild: 1100,
-      buildCategory: 'power', researchPrerequisite: 'hydroponics',
-      leavings: { steel: 50, components: 1 },
-      building: bld({ isLamp: true, powerConsumed: 900, lightRadius: 11 })
-    },
-
-    geothermalGenerator: {
-      label: 'geothermal generator',
-      description: 'A cased turbine sunk over a hot fissure. It costs a mountain of steel ' +
-        'and then never stops, through the night, the eclipse and the still air.',
-      sprite: 'generator', color: '#6a6a72', color2: '#c0392b',
-      size: S22, hp: 320, mass: 300, flammable: false,
-      passable: false, fillPercent: 0.6,
-      buildCost: { steel: 340, components: 8 }, workToBuild: 4300,
-      buildCategory: 'power', researchPrerequisite: 'geothermalPower',
-      leavings: { steel: 170, components: 4 },
-      building: bld({ isGenerator: true, powerProduced: 3600 })
-    },
-
-    largeBattery: {
-      label: 'bulk battery',
-      description: 'Four times the cells on a braced rack. A colony with two of these ' +
-        'rides out a solar flare without noticing it happened.',
-      sprite: 'battery', color: '#4a5540', color2: '#ffc23c',
-      size: S21, rotatable: true, hp: 220, mass: 160, flammable: false,
-      passable: false, fillPercent: 0.5,
-      buildCost: { steel: 140, components: 6 }, workToBuild: 1500,
-      buildCategory: 'power', researchPrerequisite: 'highCapacityBatteries',
-      leavings: { steel: 70, components: 3 },
-      building: bld({ isBattery: true, batteryCapacity: 2400 })
-    },
-
-    hiTechResearchBench: {
-      label: 'hi-tech research bench',
-      description: 'Instruments, a sealed sample cabinet and a screen worth reading. ' +
-        'Everything studied on it goes faster, provided the power stays on.',
-      sprite: 'research', color: '#5c6470', color2: '#6fa8dc',
-      size: S21, rotatable: true, hp: 220, mass: 120, flammable: false,
-      passable: false, fillPercent: 0.5, beauty: 2,
-      buildCost: { steel: 120, components: 6, wood: 30 }, workToBuild: 2600,
-      buildCategory: 'production', researchPrerequisite: 'computing',
-      leavings: { steel: 60, components: 3 },
-      building: bld({
-        isResearchBench: true, powerConsumed: 300, interactionOffset: { dx: 0, dy: 1 }
-      })
-    },
-
-    multiAnalyzer: {
-      label: 'multi-analyser',
-      description: 'A rack of spectrometers wired to whatever bench is nearest. It ' +
-        'studies nothing by itself and makes every bench around it quicker.',
-      sprite: 'conduit', color: '#3a4a5a', color2: '#7fb0d4',
-      size: S21, rotatable: true, hp: 200, mass: 110, flammable: false,
-      passable: false, fillPercent: 0.5, beauty: 1,
-      buildCost: { steel: 150, components: 8 }, workToBuild: 3000,
-      buildCategory: 'production', researchPrerequisite: 'multiAnalysis',
-      leavings: { steel: 75, components: 4 },
-      building: bld({ powerConsumed: 250 })
-    },
-
-    clinicBed: {
-      label: 'clinic bed',
-      description: 'A steel frame with a hard clean mattress and a rail. A patient in one ' +
-        'mends noticeably faster than a patient on a straw pallet.',
-      sprite: 'bed', color: '#e8e2d4', color2: '#6fa8dc',
-      size: S12, rotatable: true, hp: 160, mass: 55, flammable: false,
-      passable: true, pathCost: 10, fillPercent: 0.4, beauty: 1,
-      buildCost: { steel: 45, cloth: 30 }, workToBuild: 1300,
-      buildCategory: 'furniture', researchPrerequisite: 'sterileConditions',
-      leavings: { steel: 22 },
-      building: bld({
-        isBed: true, bedRestEffectiveness: 1.35, bedComfort: 0.7,
-        canBeForPrisoners: true
-      })
-    },
-
-    mortar: {
-      label: 'mortar',
-      description: 'A tube on a plate that drops a shell somewhere near where it was ' +
-        'aimed. Useless up close and the only answer to a siege camped out of range.',
-      sprite: 'turret', color: '#4a4a52', color2: '#8f97a3',
-      size: S22, hp: 240, mass: 200, flammable: false,
-      passable: false, fillPercent: 0.5,
-      buildCost: { steel: 160, components: 4 }, workToBuild: 1800,
-      buildCategory: 'security', researchPrerequisite: 'mortars',
-      leavings: { steel: 80, components: 2 },
-      building: bld({ isTurret: true, turretRange: 48, turretWeapon: 'mortarBarrel' })
-    },
-
-    heavyTurret: {
-      label: 'heavy turret',
-      description: 'A cased autocannon on a powered mount. It reaches further than the ' +
-        'mini-turret, hits harder, and eats its own weight in components.',
-      sprite: 'turret', color: '#3f4a3a', color2: '#c0c8d8',
-      size: S22, hp: 320, mass: 220, flammable: false,
-      passable: false, fillPercent: 0.45,
-      buildCost: { steel: 200, components: 6, advancedComponents: 2 }, workToBuild: 2600,
-      buildCategory: 'security', researchPrerequisite: 'advancedTurrets',
-      leavings: { steel: 100, components: 3 },
-      building: bld({
-        isTurret: true, turretRange: 34, turretWeapon: 'turretCannon', powerConsumed: 150
-      })
-    },
-
-    /* ---- the ship ----
-       Six buildings, one per ultra-tier project, and between them the
-       only ending this game has that is not a funeral. Research.ship()
-       counts them; the reactor is what starts the clock. */
-
-    shipBeam: {
-      label: 'ship structural beam',
-      description: 'A spine section for the hull. Nothing on its own, and the frame ' +
-        'everything else bolts to.',
-      sprite: 'wall', color: '#9aa2ae', color2: '#5c6470',
-      size: S21, rotatable: true, hp: 400, mass: 400, flammable: false,
-      passable: false, fillPercent: 0.9, marketValue: 260,
-      buildCost: { steel: 200, advancedComponents: 1 }, workToBuild: 2000,
-      buildCategory: 'ship', researchPrerequisite: 'shipStructure',
-      leavings: { steel: 100 },
-      building: bld({})
-    },
-
-    shipReactor: {
-      label: 'ship reactor',
-      description: 'The pile that will push the ship out of the gravity well. Starting it ' +
-        'lights the colony up on every sensor on the planet.',
-      sprite: 'generator', color: '#5c6470', color2: '#ffc23c',
-      size: S33, hp: 600, mass: 900, flammable: false,
-      passable: false, fillPercent: 0.9, marketValue: 1400,
-      buildCost: { steel: 500, components: 20, advancedComponents: 12 }, workToBuild: 9000,
-      buildCategory: 'ship', researchPrerequisite: 'shipReactorTech',
-      leavings: { steel: 200, components: 6 },
-      building: bld({ isGenerator: true, powerProduced: 1000 })
-    },
-
-    shipEngine: {
-      label: 'ship engine',
-      description: 'A fusion thruster with its own shielding. Do not stand behind it, ' +
-        'and do not build the wall you like behind it either.',
-      sprite: 'turbine', color: '#6a6a72', color2: '#ff8c1a',
-      size: S33, hp: 550, mass: 900, flammable: false,
-      passable: false, fillPercent: 0.9, marketValue: 1200,
-      buildCost: { steel: 600, advancedComponents: 10 }, workToBuild: 9000,
-      buildCategory: 'ship', researchPrerequisite: 'shipEngineTech',
-      leavings: { steel: 240 },
-      building: bld({})
-    },
-
-    shipComputerCore: {
-      label: 'ship computer core',
-      description: 'The navigation core. It knows where the stars were when it was built ' +
-        'and can work out the rest from there.',
-      sprite: 'research', color: '#3a4a5a', color2: '#7fb0d4',
-      size: S22, hp: 400, mass: 500, flammable: false,
-      passable: false, fillPercent: 0.8, marketValue: 1100,
-      buildCost: { steel: 200, advancedComponents: 12 }, workToBuild: 7000,
-      buildCategory: 'ship', researchPrerequisite: 'shipComputerTech',
-      leavings: { steel: 80 },
-      building: bld({ powerConsumed: 300 })
-    },
-
-    shipSensorCluster: {
-      label: 'ship sensor cluster',
-      description: 'Ranging and star-fixing gear in a hardened dome. Without it the ship ' +
-        'leaves and arrives nowhere in particular.',
-      sprite: 'solar', color: '#3a4a5a', color2: '#c0c8d8',
-      size: S22, hp: 350, mass: 400, flammable: false,
-      passable: false, fillPercent: 0.7, marketValue: 800,
-      buildCost: { steel: 200, advancedComponents: 6 }, workToBuild: 5000,
-      buildCategory: 'ship', researchPrerequisite: 'shipSensorTech',
-      leavings: { steel: 80 },
-      building: bld({ powerConsumed: 200 })
-    },
-
-    shipCryptosleepCasket: {
-      label: 'cryptosleep casket',
-      description: 'One colonist, frozen, for the crossing. The ship needs one of these ' +
-        'for every person who is leaving on it.',
-      sprite: 'bed', color: '#c0c8d8', color2: '#6fa8dc',
-      size: S12, rotatable: true, hp: 260, mass: 220, flammable: false,
-      passable: false, fillPercent: 0.6, marketValue: 500,
-      buildCost: { steel: 120, components: 8, advancedComponents: 2 }, workToBuild: 3000,
-      buildCategory: 'ship', researchPrerequisite: 'shipCryptosleepTech',
-      leavings: { steel: 60, components: 2 },
-      building: bld({ powerConsumed: 60 })
-    },
-
-    /* ---- what the map was hiding ----
-       Not buildable, spawned by Research.populateMap into the corners
-       of the map the colony has not walked yet. Each carries a `study`
-       block: how much work it takes to get through, and what comes out
-       the other end. */
-
-    ancientRuins: {
-      label: 'ancient ruins',
-      description: 'Half a wall and a floor of something that is not concrete, older than ' +
-        'anyone who ever landed here. Somebody should go through it properly.',
-      sprite: 'wall', color: '#6b6b60', color2: '#4a4a44',
-      size: S22, hp: 400, mass: 400, flammable: false,
-      passable: true, pathCost: 16, fillPercent: 0.5, beauty: -2,
-      leavings: { stoneChunk: 2 },
-      study: { work: 3000, kind: 'ruins', points: 700 },
-      building: bld({})
-    },
-
-    ancientTerminal: {
-      label: 'ancient terminal',
-      description: 'A dead console on a pedestal, sealed against a weather that has been ' +
-        'working on it for centuries. Something is still warm inside it.',
-      sprite: 'research', color: '#4a4a52', color2: '#5c8f3e',
-      hp: 250, mass: 120, flammable: false,
-      passable: false, fillPercent: 0.6, beauty: -1,
-      leavings: { steel: 20, components: 1 },
-      study: { work: 3600, kind: 'terminal', points: 1100 },
-      building: bld({})
-    },
-
-    mechanoidWreck: {
-      label: 'mechanoid wreck',
-      description: 'A machine the size of a bear, dead on its side, half sunk into the ' +
-        'dirt. Taking it apart carefully teaches more than melting it down.',
-      sprite: 'turret', color: '#5a5a62', color2: '#c0392b',
-      hp: 300, mass: 260, flammable: false,
-      passable: false, fillPercent: 0.6, beauty: -3,
-      leavings: { steel: 60, components: 3 },
-      study: { work: 4200, kind: 'mechanoid', points: 1400 },
-      building: bld({})
-    }
-
-  }, BUILDING);
-
-  /* ============================================================
-     TERRAIN
-     Three surfaces a project opens up: one for the farm, one for the
-     greenhouse, and one for the room where somebody is cut open.
-     ============================================================ */
-  Defs.add('terrain', {
-
-    tilledSoil: {
-      label: 'tilled soil',
-      description: 'Broken up, cleared of stones and worked through with mulch. Plants ' +
-        'come in noticeably faster and it has to be laid before they are sown.',
-      color: '#4f3d2b', color2: '#3f3022',
-      fertility: 1.35, cleanliness: -1, beauty: 0, pathCost: 1,
-      supportsPlants: true, terrainCategory: 'soil',
-      buildCost: { wood: 3 }, workToBuild: 160,
-      buildCategory: 'floor', researchPrerequisite: 'agriculture',
-      removable: true, isWater: false, isNatural: false, passable: true
-    },
-
-    hydroponicTray: {
-      label: 'hydroponics tray',
-      description: 'A shallow nutrient bath under a steel lip. Nothing grows faster ' +
-        'anywhere, and it does not care what the ground underneath it was.',
-      color: '#2f5d5a', color2: '#4a8f86',
-      fertility: 2.6, cleanliness: 0.2, beauty: 1, pathCost: 4,
-      supportsPlants: true, terrainCategory: 'floor',
-      buildCost: { steel: 20, components: 1 }, workToBuild: 600,
-      buildCategory: 'floor', researchPrerequisite: 'hydroponics',
-      removable: true, isWater: false, isNatural: false, passable: true
-    },
-
-    sterileFloor: {
-      label: 'sterile tile',
-      description: 'A sealed, seamless surface that can be scrubbed to nothing. Lay it ' +
-        'under the beds where wounds are tended and infections go elsewhere.',
-      color: '#d8dde4', color2: '#c2c8d2',
-      fertility: 0, cleanliness: 1.2, beauty: 1, pathCost: 0,
-      supportsPlants: false, terrainCategory: 'floor',
-      buildCost: { steel: 8, components: 1 }, workToBuild: 320,
-      buildCategory: 'floor', researchPrerequisite: 'sterileConditions',
-      removable: true, isWater: false, isNatural: false, passable: true
-    }
-
-  });
+  root.Research = Research;
+})(this);
