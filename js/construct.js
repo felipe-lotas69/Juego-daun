@@ -218,7 +218,8 @@
   Construct.maxHpFor = function (defId, stuffId) {
     var def = buildDefOf(defId);
     if (!def) return 1;
-    return Math.max(1, Math.round((def.hp || 100) * stuffFactor(stuffId, 'hp')));
+    /* Thing defs state hp; the plant defs also alias it as maxHp. */
+    return Math.max(1, Math.round((def.maxHp || def.hp || 100) * stuffFactor(stuffId, 'hp')));
   };
 
   /* The live maximum for a thing that already exists, which is what
@@ -313,7 +314,9 @@
       }
 
       var b = map.buildingAt(cx, cy);
-      if (b && b.def) {
+      /* Ghosts are checked separately below, because a plan you can
+         overwrite is not the same obstacle as a building you cannot. */
+      if (b && b.def && !b.isBlueprint && !b.isFrame) {
         if (b.def.mineable) { fail = no('Mine the rock out first.'); return false; }
         /* A floor can go down under a conduit or a sleeping spot; it
            cannot go down under something solid. */
@@ -376,7 +379,8 @@
        made it, and it is why placing never silently fails on a cell
        that already holds one of your buildings. */
     var standing = map.buildingAt(x, y);
-    if (standing && standing.faction === 'player' && standing.def && !standing.def.mineable) {
+    if (standing && standing.def && standing.faction === 'player' &&
+        !standing.isBlueprint && !standing.isFrame && !standing.def.mineable) {
       Construct.designateDeconstruct(map, x, y);
       return null;
     }
@@ -384,9 +388,13 @@
     if (!Construct.canPlace(map, defId, x, y, rot).ok) return null;
 
     /* One ghost per cell keeps the whole thing predictable: planning a
-       wall over a planned floor replaces the floor. */
-    var old = Construct.ghostAt(map, x, y);
-    if (old) Construct.cancelGhost(map, old);
+       wall over a planned floor replaces the floor, and a plan that
+       covers several cells clears every plan it lands on. */
+    forEachCell(def, x, y, rot, function (cx, cy) {
+      var old = Construct.ghostAt(map, cx, cy);
+      if (old) Construct.cancelGhost(map, old);
+      return true;
+    });
 
     var stuff = null;
     if (def.stuffable) {
@@ -409,6 +417,11 @@
     bp.map = map;
     /* Deliberately no markPathDirty: a blueprint is a ghost and the
        cell walks exactly as it did a moment ago. */
+
+    /* A sleeping spot or a crafting spot costs nothing, so there is
+       nothing for a hauler to bring and it is a frame the moment it is
+       placed. Otherwise a zero-cost plan would sit there forever. */
+    if (Construct.isMaterialComplete(bp)) return Construct.toFrame(map, bp);
     return bp;
   };
 
@@ -540,7 +553,7 @@
       Construct.botch(map, thing, pawn);
       return false;
     }
-    Construct.finishFrame(map, thing);
+    Construct.finishFrame(map, thing, pawn);
     return true;
   };
 
@@ -611,7 +624,8 @@
       var plant = map.plantAt(cx, cy);
       if (plant) map.destroyThing(plant, 'built over');
       if (!solid) return true;
-      var items = map.items(cx, cy);
+      /* A copy, because moving an item mutates the cell's own list. */
+      var items = map.items(cx, cy).slice();
       for (var i = items.length - 1; i >= 0; i--) {
         var spot = freeNeighbour(map, cx, cy);
         if (spot) map.moveThing(items[i], spot.x, spot.y);
@@ -686,6 +700,8 @@
       if (n > 0) { map.addItem(k, x, y, n); dropped[k] = n; }
     }
     markBuildDirty(map, def, x, y, rot, true);
+    /* Taking out a wall is exactly as bad for the roof as mining one. */
+    if (def && def.holdsRoof) Construct.checkRoofCollapse(map, x, y);
     msg(U.cap(labelOf(def)) + ' deconstructed.', { type: 'info', x: x, y: y });
     return dropped;
   };
@@ -894,7 +910,13 @@
               var took = Construct.deliver(ghost, carried.defId, carried.stack || 1);
               if (took <= 0) return 'fail';
               carried.stack -= took;
-              if (carried.stack <= 0) pawn.carried = null;
+              if (carried.stack > 0) {
+                /* Someone else topped the blueprint up while we walked.
+                   The surplus goes on the floor rather than into a
+                   pawn who is about to start something else. */
+                map.addItem(carried.defId, pawn.x, pawn.y, carried.stack);
+              }
+              pawn.carried = null;
               return 'done';
             }
           })
@@ -938,7 +960,9 @@
           init: function (pawn, job, s) {
             var b = targetThing(job, 'A', pawn.map);
             s.total = b ? Construct.deconstructWork(b.defId) : 0;
-            s.done = 0;
+            /* Progress lives on the building, so a colonist who walks
+               off to eat does not hand the next one a fresh wall. */
+            s.done = b ? (b.workDone || 0) : 0;
           },
           tick: function (pawn, job, s) {
             var map = pawn.map;
@@ -946,6 +970,7 @@
             if (!b || !b.spawned) return 'fail';
             var rate = Construct.workRate(pawn, 'construction');
             s.done += rate;
+            b.workDone = s.done;
             gainSkill(pawn, 'construction', rate * XP_PER_WORK);
             if (s.done < s.total) return 'stay';
             Construct.completeDeconstruct(map, b, pawn);
@@ -972,7 +997,7 @@
           init: function (pawn, job, s) {
             var w = targetThing(job, 'A', pawn.map);
             s.total = Construct.mineWork(w ? w.defId : null);
-            s.done = 0;
+            s.done = w ? (w.workDone || 0) : 0;
           },
           tick: function (pawn, job, s) {
             var map = pawn.map;

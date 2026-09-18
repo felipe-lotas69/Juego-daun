@@ -54,6 +54,8 @@
 
   /* Comfort of bare ground. A pawn who never sits parks here. */
   var GROUND_COMFORT = 0.35;
+  /* Rest multiplier for sleeping on the floor with no bed at all. */
+  var NO_BED_REST = 0.65;
 
   function sys(name) { return typeof root[name] !== 'undefined' && root[name] ? root[name] : null; }
   function clamp01(v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
@@ -149,7 +151,7 @@
   /* Thoughts that are recomputed from the world instead of remembered. */
   var SITUATIONAL = {
     hungry: 1, starving: 1, pain: 1, sick: 1, coldRoom: 1, hotRoom: 1, darkness: 1,
-    uglyRoom: 1, prettyRoom: 1, comfortableBed: 1, soakingWet: 1,
+    uglyRoom: 1, prettyRoom: 1, comfortableBed: 1,
     naturalMoodBuff: 1, naturalMoodDebuff: 1
   };
 
@@ -164,6 +166,7 @@
     riceRaw: 0.05, potatoRaw: 0.05, cornRaw: 0.05, berries: 0.05, meatRaw: 0.05
   };
   var RAW_FOOD = { riceRaw: 1, potatoRaw: 1, cornRaw: 1, meatRaw: 1 };
+  var RAW_TASTY = { berries: 1 };
   var COOKED_MEAL = { mealSimple: 1, mealFine: 1 };
   var DISEASE_HEDIFFS = { flu: 1, plague: 1, infection: 1, foodPoisoning: 1, malaria: 1, gutWorms: 1 };
 
@@ -181,16 +184,26 @@
 
   /* ---------- def reading ---------- */
 
+  /* Memoised, but only once def_pawns.js has actually registered the def:
+     a fallback answer is never cached, so a lookup that happened early
+     does not pin the stand-in table for the rest of the game. */
+  var _defCache = {};
+
   function thoughtDef(id) {
+    var d = _defCache[id];
+    if (d) return d;
     var D = sys('Defs');
-    if (D && D.has('thought', id)) return D.get('thought', id);
+    if (D && D.has('thought', id)) {
+      d = D.get('thought', id);
+      _defCache[id] = d;
+      return d;
+    }
     return FALLBACK[id] || null;
   }
 
-  function defOfThought(t) {
-    if (!t.def) t.def = thoughtDef(t.defId);
-    return t.def;
-  }
+  /* Thoughts hold their def id, never the def object, so save.js can
+     serialise pawn.thoughts as it stands. */
+  function defOfThought(t) { return thoughtDef(t.defId); }
 
   /* def_pawns.js may state mood in need units or in RimWorld mood points;
      anything past 1.5 can only be the latter. */
@@ -386,6 +399,7 @@
     pawn._comfortTarget = GROUND_COMFORT;
     pawn._comfortX = -1;
     pawn._comfortY = -1;
+    refreshTraitCache(pawn);
     Needs.refreshBreakThresholds(pawn);
     return pawn.needs;
   };
@@ -402,18 +416,19 @@
 
     var asleep = isAsleep(pawn);
     var human = isHuman(pawn);
+    var fx = pawn._traitFx || refreshTraitCache(pawn);
 
-    n.food = clamp01(n.food - FOOD_FALL * foodFallFactor(pawn));
+    n.food = clamp01(n.food - FOOD_FALL * foodFallFactor(pawn, fx));
 
     if (asleep) n.rest = clamp01(n.rest + REST_GAIN * restGainFactor(pawn));
-    else n.rest = clamp01(n.rest - REST_FALL * restFallFactor(pawn));
+    else n.rest = clamp01(n.rest - REST_FALL * restFallFactor(fx));
 
     if (human) {
       var kind = asleep ? null : joyJobKind(pawn);
       if (kind) Needs.gainJoy(pawn, JOY_GAIN, kind);
       else if (!asleep) n.joy = clamp01(n.joy - JOY_FALL);
 
-      if (!hasTrait(pawn, 'ascetic')) {
+      if (!fx.ascetic) {
         /* The comfort source only changes when the pawn does, so the
            lookup is two integer compares on most ticks. */
         if (pawn.x !== pawn._comfortX || pawn.y !== pawn._comfortY) {
@@ -426,30 +441,45 @@
     }
 
     pawn._needTick = (pawn._needTick + 1) | 0;
-    if (((pawn._needTick + (pawn.id | 0)) % RARE) === 0) rareTick(pawn, asleep, human);
+    if (((pawn._needTick + (pawn.id | 0)) % RARE) === 0) rareTick(pawn, human);
   };
 
-  function foodFallFactor(pawn) {
-    var f = 1;
-    if (hasTrait(pawn, 'gourmand')) f *= 1.25;
+  /* The three traits the per-tick drift asks about, answered once instead
+     of walking the trait list on every pawn on every tick. Refreshed each
+     rare tick so a trait gained after generation still counts. */
+  function refreshTraitCache(pawn) {
+    pawn._traitFx = {
+      ascetic: hasTrait(pawn, 'ascetic'),
+      gourmand: hasTrait(pawn, 'gourmand'),
+      nightOwl: hasTrait(pawn, 'nightOwl')
+    };
+    return pawn._traitFx;
+  }
+
+  function foodFallFactor(pawn, fx) {
+    var f = fx.gourmand ? 1.25 : 1;
     if (pawn.kind && typeof pawn.kind.hungerRateFactor === 'number') f *= pawn.kind.hungerRateFactor;
     return f;
   }
 
   /* Night owls are wide awake after dark and drag through the morning. */
-  function restFallFactor(pawn) {
-    if (!hasTrait(pawn, 'nightOwl')) return 1;
+  function restFallFactor(fx) {
+    if (!fx.nightOwl) return 1;
     var h = hourNow();
     return (h >= 18 || h < 4) ? 0.80 : 1.20;
   }
 
+  /* 2.6/day is what a bed gives, so def_things' bed (effectiveness 1)
+     lands exactly on the balance figure and the floor has to be the
+     thing that is worse. A sleeping spot at 0.7 then sits where it
+     belongs: better than the bare boards, well short of a real bed. */
   function restGainFactor(pawn) {
     var bed = bedUnder(pawn);
-    if (!bed) return 1;
-    return bedRestEffectiveness(bed);
+    return bed ? bedRestEffectiveness(bed) : NO_BED_REST;
   }
 
-  function rareTick(pawn, asleep, human) {
+  function rareTick(pawn, human) {
+    refreshTraitCache(pawn);
     ageThoughts(pawn);
 
     if (human) {
@@ -459,12 +489,9 @@
       if (!pawn.breakThresholds) Needs.refreshBreakThresholds(pawn);
       recomputeMood(pawn);
     }
-
-    /* An empty stomach is Health's problem once it has been empty a while. */
-    if (pawn.needs.food <= 0.0001) {
-      var H = sys('Health');
-      if (H && H.addHediff) H.addHediff(pawn, 'malnutrition', 0.006);
-    }
+    /* Nothing here for an empty stomach on purpose: health.js reads
+       pawn.needs.food on its own rare tick and drives malnutrition from
+       it, so adding severity here would starve a pawn twice as fast. */
   }
 
   function updateOutdoors(pawn) {
@@ -522,6 +549,11 @@
       t.ageTicks = 0;
       t.durationTicks = duration;
       t.degree = degree;
+      /* health.js fires pain and sick as memories too. Whichever side
+         fires last owns the entry, and a situational one is reconciled
+         away the moment the cause is gone - which is the behaviour we
+         want for anything read straight off the world. */
+      if (opts.situational) t.situational = true;
       if (!opts.noStack && t.stacks < limit) t.stacks++;
       pawn._moodDirty = true;
       return t;
@@ -529,7 +561,6 @@
 
     var entry = {
       defId: thoughtId,
-      def: def,
       ageTicks: 0,
       degree: degree,
       stacks: 1,
@@ -585,10 +616,12 @@
     else if (n.food < TH.urgentlyHungry) want('hungry', 1);
     else if (n.food < TH.hungry) want('hungry', 0);
 
+    /* Same degree boundaries health.js uses, so the two never disagree
+       about how much a wound hurts. */
     var H = sys('Health');
     if (H && H.painLevel) {
       var p = H.painLevel(pawn) || 0;
-      if (p >= 0.05) want('pain', p < 0.2 ? 0 : (p < 0.4 ? 1 : (p < 0.65 ? 2 : 3)));
+      if (p > 0.05) want('pain', p > 0.7 ? 3 : (p > 0.4 ? 2 : (p > 0.2 ? 1 : 0)));
     }
 
     var sickness = worstSickness(pawn);
@@ -617,22 +650,22 @@
       if (c >= 0.6) want('comfortableBed', c >= 0.75 ? 1 : 0);
     }
 
-    var G = sys('Game');
-    if (G && G.weather && !roofedOver(pawn)) {
-      var w = typeof G.weather === 'function' ? G.weather() : G.weather;
-      var wid = w && (w.id || w);
-      if (wid === 'rain' || wid === 'thunderstorm' || wid === 'snowfall') want('soakingWet', 0);
-    }
-
     if (hasTrait(pawn, 'optimist')) want('naturalMoodBuff', 0);
     else if (hasTrait(pawn, 'pessimist')) want('naturalMoodDebuff', 0);
 
     reconcileSituational(pawn);
 
     /* Sleep quality is fired as a memory, not a situational, so waking up
-       does not instantly erase a night spent in the rain. Refreshing it
-       every rare tick keeps it alive for as long as the pawn sleeps. */
+       does not instantly erase a night spent on the bare ground.
+       Refreshing it every rare tick keeps it alive while the pawn sleeps. */
     if (asleep) refreshSleepThoughts(pawn);
+
+    /* Nothing in this climate rains, but wading a river will soak a pawn,
+       and they stay damp for a few hours after climbing out. */
+    var terr = (pawn.map && pawn.map.terrainAt) ? pawn.map.terrainAt(pawn.x, pawn.y) : null;
+    if (terr && terr.isWater) {
+      Needs.addThought(pawn, 'soakingWet', { noStack: true, duration: 0.25 * TICKS_PER_DAY });
+    }
   };
 
   function reconcileSituational(pawn) {
@@ -859,16 +892,25 @@
 
   Needs.isFood = function (def) { return Needs.nutritionOf(def) > 0; };
 
+  /* def_things.js tags every edible with foodType: raw / meal / kibble /
+     animal. Berries are raw but pleasant, which is the one exception the
+     mood system cares about. */
   function isRawFood(def) {
     if (!def) return false;
-    if (def.isRawFood) return true;
+    if (RAW_TASTY[def.id]) return false;
+    if (def.foodType === 'raw' || def.foodType === 'animal') return true;
     return !!RAW_FOOD[def.id];
   }
 
   function isCookedMeal(def) {
     if (!def) return false;
-    if (def.isMeal) return true;
+    if (def.foodType) return def.foodType === 'meal';
     return !!COOKED_MEAL[def.id];
+  }
+
+  function isKibble(def) {
+    if (!def) return false;
+    return def.foodType === 'kibble' || def.id === 'kibble';
   }
 
   function tableAdjacent(pawn) {
@@ -932,7 +974,7 @@
     var id = def.id || thing.defId;
     var ascetic = hasTrait(pawn, 'ascetic');
 
-    if (id === 'kibble') {
+    if (isKibble(def)) {
       Needs.addThought(pawn, 'ateKibble');
     } else if (isRawFood(def)) {
       Needs.addThought(pawn, 'ateRawFood');

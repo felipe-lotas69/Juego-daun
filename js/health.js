@@ -42,6 +42,9 @@
   function PawnLib() { return typeof root.Pawn !== 'undefined' ? root.Pawn : null; }
   function Defs() { return typeof root.Defs !== 'undefined' ? root.Defs : null; }
 
+  /* needs.js derives the pain and sick thoughts every rare tick from
+     painLevel() and hediff severity, so health.js fires only the memories
+     that belong to an event nobody else can see happen. */
   function thought(pawn, id, opts) {
     var n = Needs();
     if (n && n.addThought && pawn && pawn.isHuman !== false) n.addThought(pawn, id, opts || {});
@@ -104,7 +107,7 @@
       P('nose', 'head', 0.020, 'o', 10, null, 'l'),
       P('jaw', 'head', 0.030, 'o', 18, { talking: 0.75, eating: 0.5 }, 'l'),
       P('ribcage', 'torso', 0.35, 'i', 30, null, ''),
-      P('spine', 'torso', 0.20, 'i', 25, { moving: 0.24 }, ''),
+      P('spine', 'torso', 0.20, 'i', 25, null, ''),
       P('heart', 'torso', 0.20, 'i', 15, { bloodPumping: 1 }, 'v'),
       P('lungLeft', 'torso', 0.25, 'i', 15, { breathing: 0.5 }, ''),
       P('lungRight', 'torso', 0.25, 'i', 15, { breathing: 0.5 }, ''),
@@ -116,10 +119,10 @@
       P('armRight', 'torso', 0.07, 'o', 30, { manipulation: 0.35 }, 'l'),
       P('handLeft', 'armLeft', 0.04, 'o', 20, { manipulation: 0.15 }, 'l'),
       P('handRight', 'armRight', 0.04, 'o', 20, { manipulation: 0.15 }, 'l'),
-      P('legLeft', 'torso', 0.09, 'o', 30, { moving: 0.30 }, 'l'),
-      P('legRight', 'torso', 0.09, 'o', 30, { moving: 0.30 }, 'l'),
-      P('footLeft', 'legLeft', 0.04, 'o', 20, { moving: 0.08 }, 'l'),
-      P('footRight', 'legRight', 0.04, 'o', 20, { moving: 0.08 }, 'l')
+      P('legLeft', 'torso', 0.09, 'o', 30, { moving: 0.40 }, 'l'),
+      P('legRight', 'torso', 0.09, 'o', 30, { moving: 0.40 }, 'l'),
+      P('footLeft', 'legLeft', 0.04, 'o', 20, { moving: 0.10 }, 'l'),
+      P('footRight', 'legRight', 0.04, 'o', 20, { moving: 0.10 }, 'l')
     ],
     quadruped: [
       P('torso', null, 0.40, 'o', 40, null, 'v'),
@@ -132,16 +135,16 @@
       P('earLeft', 'head', 0.02, 'o', 8, { hearing: 0.5 }, 'l'),
       P('earRight', 'head', 0.02, 'o', 8, { hearing: 0.5 }, 'l'),
       P('jaw', 'head', 0.04, 'o', 16, { eating: 0.7 }, 'l'),
-      P('spine', 'torso', 0.20, 'i', 22, { moving: 0.20 }, ''),
+      P('spine', 'torso', 0.20, 'i', 22, null, ''),
       P('heart', 'torso', 0.20, 'i', 14, { bloodPumping: 1 }, 'v'),
       P('lungLeft', 'torso', 0.24, 'i', 14, { breathing: 0.5 }, ''),
       P('lungRight', 'torso', 0.24, 'i', 14, { breathing: 0.5 }, ''),
       P('liver', 'torso', 0.20, 'i', 16, null, 'v'),
       P('stomach', 'torso', 0.20, 'i', 16, null, ''),
-      P('legFrontLeft', 'torso', 0.08, 'o', 24, { moving: 0.20 }, 'l'),
-      P('legFrontRight', 'torso', 0.08, 'o', 24, { moving: 0.20 }, 'l'),
-      P('legRearLeft', 'torso', 0.08, 'o', 24, { moving: 0.20 }, 'l'),
-      P('legRearRight', 'torso', 0.08, 'o', 24, { moving: 0.20 }, 'l'),
+      P('legFrontLeft', 'torso', 0.08, 'o', 24, { moving: 0.25 }, 'l'),
+      P('legFrontRight', 'torso', 0.08, 'o', 24, { moving: 0.25 }, 'l'),
+      P('legRearLeft', 'torso', 0.08, 'o', 24, { moving: 0.25 }, 'l'),
+      P('legRearRight', 'torso', 0.08, 'o', 24, { moving: 0.25 }, 'l'),
       P('tail', 'torso', 0.03, 'o', 12, null, 'l')
     ],
     bird: [
@@ -437,6 +440,13 @@
       c[k] = totals[k] > 0 ? U.clamp01(sums[k] / totals[k]) : 1;
     }
 
+    /* Legs reach the rest of the pawn through the spine, so a damaged spine
+       drags moving down with it and a severed one is paralysis - the legs are
+       still attached, they just no longer take orders. */
+    for (i = 0; i < h.parts.length; i++) {
+      if (h.parts[i].defName === 'spine') { c.moving *= partEfficiency(h.parts[i]); break; }
+    }
+
     /* Hediff offsets are stated at severity 1 and scale down from there. */
     for (i = 0; i < h.hediffs.length; i++) {
       var mods = h.hediffs[i].def.capMods;
@@ -630,10 +640,16 @@
     part.hp = U.clamp(part.maxHp - total, 0, part.maxHp);
   }
 
-  function descendants(h, part, out) {
+  function descendants(h, part, out, seen) {
     out = out || [];
+    seen = seen || {};
+    if (seen[part.id]) return out;
+    seen[part.id] = true;
     for (var i = 0; i < h.parts.length; i++) {
-      if (h.parts[i].parent === part.id) { out.push(h.parts[i]); descendants(h, h.parts[i], out); }
+      if (h.parts[i].parent === part.id && !seen[h.parts[i].id]) {
+        out.push(h.parts[i]);
+        descendants(h, h.parts[i], out, seen);
+      }
     }
     return out;
   }
@@ -713,6 +729,7 @@
       h.injuries.push(injury);
       result.injury = injury;
       syncPartHp(h, part);
+      spillBlood(pawn, injury.bleedRate > 0 ? 30 + dealt * 2 : 0);
     }
 
     if (part.hp <= 0) {
@@ -739,15 +756,20 @@
     invalidate(pawn);
     recompute(pawn);
 
-    if (pawn.isHuman !== false && h.pain > 0.25) thought(pawn, 'pain', { degree: painDegree(h.pain) });
-
     checkDown(pawn);
     result.dead = h.dead;
     result.downed = h.downed;
     return result;
   };
 
-  function painDegree(p) { return p > 0.7 ? 3 : p > 0.4 ? 2 : p > 0.2 ? 1 : 0; }
+  /* The blood grid is map.js's, but this is where the blood comes from. */
+  function spillBlood(pawn, amount) {
+    if (!amount) return;
+    var map = pawn.map;
+    if (!map || !map.blood || !map.idx || !map.inBounds || !map.inBounds(pawn.x, pawn.y)) return;
+    var i = map.idx(pawn.x, pawn.y);
+    map.blood[i] = Math.min(255, map.blood[i] + Math.round(amount));
+  }
 
   Health.heal = function (pawn, injury, amount) {
     var h = ensure(pawn);
@@ -797,23 +819,23 @@
   var HEDIFFS = {
     infection: {
       id: 'infection', label: 'infection', lethal: true, immunizable: true, tendable: true,
-      severityPerDay: 0.24, immunityPerDay: 0.34, painOffset: 0.12, thought: 'sick',
+      severityPerDay: 0.32, immunityPerDay: 0.34, painOffset: 0.12, isDisease: true,
       capMods: { consciousness: -0.30, moving: -0.10 }, deathCause: 'an infection'
     },
     flu: {
       id: 'flu', label: 'flu', lethal: true, immunizable: true, tendable: true,
-      severityPerDay: 0.20, immunityPerDay: 0.31, painOffset: 0.05, thought: 'sick',
+      severityPerDay: 0.20, immunityPerDay: 0.31, painOffset: 0.05, isDisease: true,
       capMods: { consciousness: -0.25, moving: -0.15, manipulation: -0.10 },
       deathCause: 'the flu'
     },
     hypothermia: {
       id: 'hypothermia', label: 'hypothermia', lethal: true, driven: true, painOffset: 0.10,
-      thought: 'sick', capMods: { consciousness: -0.45, moving: -0.40, manipulation: -0.35 },
+      capMods: { consciousness: -0.45, moving: -0.40, manipulation: -0.35 },
       deathCause: 'hypothermia'
     },
     heatstroke: {
       id: 'heatstroke', label: 'heatstroke', lethal: true, driven: true, painOffset: 0.08,
-      thought: 'sick', capMods: { consciousness: -0.45, moving: -0.35, manipulation: -0.30 },
+      capMods: { consciousness: -0.45, moving: -0.35, manipulation: -0.30 },
       deathCause: 'heatstroke'
     },
     malnutrition: {
@@ -823,7 +845,7 @@
     },
     foodPoisoning: {
       id: 'foodPoisoning', label: 'food poisoning', lethal: false, painOffset: 0.15,
-      thought: 'sick', capMods: { consciousness: -0.20, moving: -0.15, manipulation: -0.20 }
+      isDisease: true, capMods: { consciousness: -0.20, moving: -0.15, manipulation: -0.20 }
     }
   };
   Health.HEDIFFS = HEDIFFS;
@@ -848,7 +870,6 @@
         ticks: 0, immunity: 0, tended: false, tendQuality: 0
       };
       h.hediffs.push(hd);
-      if (def.thought) thought(pawn, def.thought, {});
     }
     invalidate(pawn);
     return hd;
@@ -893,8 +914,12 @@
 
       if (def.immunizable) {
         hd.severity = U.clamp01(hd.severity + def.severityPerDay * days);
+        /* Tending is the whole difference between an infection you beat and
+           one that beats you: untended, severity outruns immunity and the
+           pawn dies in about three days; tended well, immunity wins in under
+           two even if the doctor got there late. */
         hd.immunity = U.clamp01(hd.immunity + h.immunityGain * days *
-          (def.immunityPerDay / 0.34) * (hd.tended ? 1 + hd.tendQuality * 0.5 : 1));
+          (def.immunityPerDay / 0.34) * (hd.tended ? 1 + hd.tendQuality : 1));
         if (hd.immunity >= 1) {
           h.hediffs.splice(i, 1);
           invalidate(pawn);
@@ -922,8 +947,11 @@
     if (Health.hasHediff(pawn, 'infection')) return;
     for (var i = 0; i < h.injuries.length; i++) {
       var inj = h.injuries[i];
-      if (inj.permanent || inj.tended || inj.amount < 4 || inj.ageTicks < 2500) continue;
-      var chance = 0.20 * days * (inj.amount / 15);
+      if (inj.permanent || inj.tended || inj.amount < 6 || inj.ageTicks < 2500) continue;
+      /* Roughly a one-in-five chance over the life of a moderate untended
+         wound: enough that a colony without a doctor loses people, not so
+         much that every scratch is a death sentence. */
+      var chance = 0.07 * days * (inj.amount / 15);
       if (U.chance(chance)) {
         inj.infection = 0.1;
         Health.addHediff(pawn, 'infection', 0.08);
@@ -1029,6 +1057,12 @@
     return U.clamp(base * potencyOf(medicine), 0.05, 1);
   };
 
+  /* Scars are permanent and need nothing; the stump of a severed limb is
+     permanent too but bleeds, and that a doctor very much can fix. */
+  function tendable(inj) {
+    return !inj.tended && (!inj.permanent || inj.bleedRate > 0);
+  }
+
   Health.tend = function (pawn, doctor, medicine) {
     var h = ensure(pawn);
     if (h.dead) return false;
@@ -1041,7 +1075,7 @@
     var any = false, i;
     for (i = 0; i < h.injuries.length; i++) {
       var inj = h.injuries[i];
-      if (inj.tended || inj.permanent) continue;
+      if (!tendable(inj)) continue;
       inj.tended = true;
       inj.tendQuality = q;
       /* Good tending all but stops the bleed; bad tending merely slows it. */
@@ -1071,7 +1105,7 @@
     if (!h || h.dead) return false;
     var i;
     for (i = 0; i < h.injuries.length; i++) {
-      if (!h.injuries[i].tended && !h.injuries[i].permanent) return true;
+      if (tendable(h.injuries[i])) return true;
     }
     for (i = 0; i < h.hediffs.length; i++) {
       if (h.hediffs[i].def.tendable && !h.hediffs[i].tended) return true;
@@ -1119,6 +1153,7 @@
 
     var bleed = Health.bleedRate(pawn);
     if (bleed > 0) {
+      if (bleed > 0.1 && U.chance(bleed)) spillBlood(pawn, 25 + bleed * 40);
       h.bloodLoss = U.clamp01(h.bloodLoss + bleed * days);
       if (h.bloodLoss >= 1) { Health.kill(pawn, 'blood loss'); return; }
     } else if (h.bloodLoss > 0) {
@@ -1128,6 +1163,10 @@
     h.immunityGain = immunityGainPerDay(pawn, h);
     rollInfection(pawn, h, days);
     if (tickHediffs(pawn, h, days)) return;
+    var infHd = Health.hediff(pawn, 'infection');
+    for (i = 0; i < h.injuries.length; i++) {
+      if (h.injuries[i].infection > 0) h.injuries[i].infection = infHd ? infHd.severity : 0;
+    }
 
     tickTemperature(pawn, h, days);
     tickNutrition(pawn, h, days);
@@ -1136,15 +1175,6 @@
     healInjuries(pawn, h, days);
 
     recompute(pawn);
-    if (h.pain > 0.15 && pawn.isHuman !== false) {
-      thought(pawn, 'pain', { degree: painDegree(h.pain) });
-    }
-    for (i = 0; i < h.hediffs.length; i++) {
-      if (h.hediffs[i].def.thought && h.hediffs[i].severity > 0.2) {
-        thought(pawn, h.hediffs[i].def.thought, {});
-        break;
-      }
-    }
     checkDown(pawn);
   };
 
@@ -1158,10 +1188,16 @@
     for (var i = h.injuries.length - 1; i >= 0; i--) {
       var inj = h.injuries[i];
       if (inj.permanent) continue;
-      if (inj.bleedRate > 0 && !inj.tended) continue;     /* open wounds do not knit */
       var rate = 3.0 * (inj.tended ? 0.6 + inj.tendQuality : 0.55) * restFactor;
       if (infected) rate *= 0.5;
+      var before = inj.amount;
       inj.amount -= rate * days;
+      /* A closing wound bleeds less: that is the race an untended colonist
+         runs, wound shrinking on one side, blood draining on the other. */
+      if (inj.bleedRate > 0 && before > 0) {
+        inj.bleedRate *= Math.max(0, inj.amount) / before;
+        if (inj.bleedRate < 0.005) inj.bleedRate = 0;
+      }
       touched[inj.partId] = true;
       if (inj.amount <= 0.05) {
         finishInjury(pawn, h, inj, partById(h, inj.partId));
