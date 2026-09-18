@@ -109,20 +109,30 @@
     ['Fire', 'tick'],                 /* flames spread before anything reads the map */
     ['Social', 'tick'],               /* who talked to whom */
     ['Husbandry', 'tick'],            /* training decay, breeding, produce */
+    ['Breakdowns', 'tick'],           /* machinery failing, things wearing out */
     ['Ideology', 'tickRituals']
   ];
   var PAWN_TICKERS = [
+    ['Medicine', 'tickPawn'],         /* disease and immunity race each other first */
+    ['Drugs', 'tickPawn'],            /* ...then what the pawn has taken for it */
+    ['Statuses', 'tickPawn'],         /* the unified view, after its sources have moved */
     ['Abilities', 'tickPawn'],
     ['Royalty', 'tickPawn'],
     ['Biotech', 'tickPawn'],
     ['Social', 'tickPawn'],
-    ['Husbandry', 'tickPawn']
+    ['Husbandry', 'tickPawn'],
+    ['Slavery', 'tickPawn'],
+    ['Tactics', 'tickPawn']
   ];
   var SLOW_TICKERS = [                /* every 500 ticks - things measured in hours */
     ['Caravans', 'tick'],
     ['Trade', 'tick'],
+    ['Economy', 'tick'],
+    ['Economy', 'tickContracts'],
     ['Policies', 'tick'],
-    ['Research', 'tickSlow']
+    ['Practice', 'tick'],
+    ['Research', 'tickSlow'],
+    ['Breakdowns', 'tickSlow']
   ];
 
   var mapTick = [], pawnTick = [], slowTick = [], systemsResolved = false;
