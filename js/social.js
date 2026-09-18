@@ -691,6 +691,8 @@
     };
   }
 
+  var EXCLUSIVE = { spouse: 1, fiance: 1, lover: 1, exSpouse: 1, exLover: 1 };
+
   Social.addRelation = function (a, b, kind, opts) {
     if (!isPerson(a) || !isPerson(b) || a === b) return false;
     var def = REL[kind];
@@ -698,6 +700,15 @@
     ensure(a); ensure(b);
     Social.removeRelation(a, b, kind);
     Social.removeRelation(b, a, def.rev);
+    /* Two people are lovers or exes, never both: leaving the old row in
+       place would pay the opinion for a relationship that ended. */
+    if (EXCLUSIVE[kind]) {
+      Object.keys(EXCLUSIVE).forEach(function (other) {
+        if (other === kind) return;
+        Social.removeRelation(a, b, other);
+        Social.removeRelation(b, a, other);
+      });
+    }
     a.relations.push(relationRow(a, b.id, kind, { gender: b.gender, name: fullName(b), age: b.ageYears }));
     b.relations.push(relationRow(b, a.id, def.rev, { gender: a.gender, name: fullName(a), age: a.ageYears }));
     dirty(a, b); dirty(b, a);
@@ -1856,7 +1867,7 @@
       if (U.cheb(pawn.x, pawn.y, p.x, p.y) > 14) continue;
       if (p.job && (p.job.defId === 'tendPatient' || p.job.defId === 'rescue')) continue;
       if (typeof p.capable === 'function' && !p.capable('doctor')) continue;
-      var e = entryFor(ensure(p) && s, p.id, t);
+      var e = entryFor(s, p.id, t);
       if (t - (e.debt || 0) < LIFE_DEBT_COOLDOWN * 3) continue;
       e.debt = t;
       Social.addMemory(pawn, p, 'leftMeBleeding');
@@ -2302,6 +2313,7 @@
     pruneMemories(s, t);
     refreshWorkBonus(pawn, map);
     standingThoughts(pawn, map);
+    woundWatch(pawn, s);
 
     if ((s.rare % 3) === 0) corpseCheck(pawn, map);
     if ((s.rare % 5) === 0) quartersThought(pawn, map);
@@ -2320,8 +2332,37 @@
     if ((s.rare % 6) === 0 && pawn.faction === 'player') trySocialise(pawn, map);
   };
 
+  /* combat.js has no "somebody was hurt" hook and is not ours to edit, so
+     the wound count is watched instead: more injuries than last time means
+     something happened to them since, and the people who care hear about
+     it. The attacker, when one is known, was recorded by noteHurt. */
+  function woundWatch(pawn, s) {
+    var h = pawn.health;
+    var n = (h && h.injuries) ? h.injuries.length : 0;
+    if (s.injN === undefined) { s.injN = n; return; }
+    if (n > s.injN && pawn.faction === 'player') {
+      Social.noteHurt(pawn, freshAttacker(pawn, h));
+    }
+    s.injN = n;
+  }
+
+  /* health.js stamps every injury with whoever caused it, so the newest
+     wound names the person the colony is about to resent. */
+  function freshAttacker(pawn, h) {
+    if (!h || !h.injuries) return null;
+    var best = null, youngest = Infinity;
+    for (var i = 0; i < h.injuries.length; i++) {
+      var inj = h.injuries[i];
+      if (!inj.instigatorId || inj.instigatorId === pawn.id) continue;
+      var age = inj.ageTicks === undefined ? 0 : inj.ageTicks;
+      if (age < youngest) { youngest = age; best = inj.instigatorId; }
+    }
+    if (best === null || youngest > RARE * 2) return null;
+    return findPawn(pawn.map, best);
+  }
+
   function tryFight(pawn, map) {
-    if (pawn.drafted || pawn.job && pawn.job.playerForced) return false;
+    if (pawn.drafted || (pawn.job && pawn.job.playerForced)) return false;
     var list = map.pawns;
     for (var i = 0; i < list.length; i++) {
       var other = list[i];

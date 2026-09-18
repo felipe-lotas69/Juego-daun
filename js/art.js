@@ -131,8 +131,16 @@
 
   var shadeMemo = Object.create(null);
 
-  /* f > 0 lightens toward white, f < 0 darkens toward black. */
+  /* f > 0 lightens toward white, f < 0 darkens toward black.
+
+     The factor is rounded to a hundredth before it becomes a cache key.
+     Half the painters below shade by a random amount - a plank is a
+     little lighter than its neighbour - and without the rounding every
+     one of those calls would add a permanent entry to this table. A
+     hundredth of a step is far below what the eye resolves, and it caps
+     the table at a couple of hundred entries per colour. */
   function shade(c, f) {
+    f = Math.round(f * 100) / 100;
     var k = c + '|' + f;
     var hit = shadeMemo[k];
     if (hit) return hit;
@@ -148,7 +156,9 @@
 
   var rgbaMemo = Object.create(null);
 
+  /* Alpha is rounded for the same reason the shade factor is. */
   function rgba(c, a) {
+    a = Math.round(a * 100) / 100;
     var k = c + '|' + a;
     var hit = rgbaMemo[k];
     if (hit) return hit;
@@ -376,36 +386,54 @@
      of any tainting question on file://.
      ------------------------------------------------------------------ */
 
-  var scratchPool = new Map();
+  var NOISE = 64;
+  var noiseTiles = null;
 
-  function scratchFor(w, h) {
-    var k = w + 'x' + h;
-    var c = scratchPool.get(k);
-    if (!c) { c = makeCanvas(w, h); scratchPool.set(k, c); }
-    return c;
+  /* Four tiles of per-pixel noise, built once and then stamped wherever
+     grain is wanted. Filling a fresh ImageData for every sprite is an
+     honest way to do this and a slow one: a few hundred sprites is over
+     a million pixel writes at boot, for noise nobody can tell apart.
+     Four tiles, stamped at a random offset, cannot be told apart from
+     four hundred once they are sitting under a wall at 30% opacity. */
+  function noiseTile(i) {
+    if (!noiseTiles) {
+      noiseTiles = [];
+      var rnd = seeded(0x9e3779b9);
+      for (var t = 0; t < 4; t++) {
+        var c = makeCanvas(NOISE, NOISE), cg = c.getContext('2d');
+        var img = cg.createImageData(NOISE, NOISE);
+        var d = img.data;
+        for (var k = 0, n = NOISE * NOISE; k < n; k++) {
+          var o = k << 2, v = rnd() - 0.5;
+          var lum = v < 0 ? 0 : 255;
+          d[o] = lum; d[o + 1] = lum; d[o + 2] = lum;
+          d[o + 3] = (Math.min(1, Math.abs(v) * 2) * 255) | 0;
+        }
+        cg.putImageData(img, 0, 0);
+        noiseTiles.push(c);
+      }
+    }
+    return noiseTiles[i & 3];
   }
 
   /* `mode` picks how the grain meets the paint underneath: 'overlay'
      for material texture that keeps the hue, 'source-atop' to spatter
      an actual colour inside whatever is already drawn. */
-  function grain(g, rnd, x, y, w, h, alpha, mode, bias) {
+  function grain(g, rnd, x, y, w, h, alpha, mode) {
     w = Math.round(w); h = Math.round(h);
     if (w <= 0 || h <= 0) return;
-    var sc = scratchFor(w, h), sg = sc.getContext('2d');
-    var img = sg.createImageData(w, h);
-    var d = img.data;
-    if (!d) return;
-    bias = bias || 0;
-    for (var i = 0, n = w * h; i < n; i++) {
-      var o = i << 2, v = rnd() - 0.5 + bias;
-      var lum = v < 0 ? 0 : 255;
-      d[o] = lum; d[o + 1] = lum; d[o + 2] = lum;
-      d[o + 3] = (Math.min(1, Math.abs(v) * 2) * 255) | 0;
-    }
-    sg.putImageData(img, 0, 0);
+    var tile = noiseTile((rnd() * 4) | 0);
+    var ox = (rnd() * NOISE) | 0, oy = (rnd() * NOISE) | 0;
+    g.save();
+    g.beginPath();
+    g.rect(x, y, w, h);
+    g.clip();
     g.globalAlpha = alpha;
     g.globalCompositeOperation = mode || 'overlay';
-    g.drawImage(sc, x, y);
+    for (var yy = -oy; yy < h; yy += NOISE) {
+      for (var xx = -ox; xx < w; xx += NOISE) g.drawImage(tile, x + xx, y + yy);
+    }
+    g.restore();
     g.globalAlpha = 1;
     g.globalCompositeOperation = 'source-over';
   }

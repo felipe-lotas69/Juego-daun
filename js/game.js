@@ -110,6 +110,7 @@
     ['Social', 'tick'],               /* who talked to whom */
     ['Husbandry', 'tick'],            /* training decay, breeding, produce */
     ['Breakdowns', 'tick'],           /* machinery failing, things wearing out */
+    ['Gore', 'tick'],                 /* blood drying, corpses turning */
     ['Ideology', 'tickRituals']
   ];
   var PAWN_TICKERS = [
@@ -132,7 +133,12 @@
     ['Policies', 'tick'],
     ['Practice', 'tick'],
     ['Research', 'tickSlow'],
-    ['Breakdowns', 'tickSlow']
+    ['Breakdowns', 'tickSlow'],
+    ['Ecology', 'tick'],              /* populations move over days, not ticks */
+    ['Beauty', 'tick'],
+    ['Starmap', 'tickLaunch'],
+    ['Aliens', 'tick'],
+    ['Anomaly', 'tick']
   ];
 
   var mapTick = [], pawnTick = [], slowTick = [], systemsResolved = false;
