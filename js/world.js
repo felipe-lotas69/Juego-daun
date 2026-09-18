@@ -56,32 +56,23 @@
   var COLONY_VARIETY = { temperateForest: 1, aridShrubland: 0.7, borealForest: 0.6 };
 
   /* def_factions.js owns the worldBiome defs and its numbers always win.
-     This is the same table in miniature, for the day something loads the
-     planet without them: same field names, same bands, so the generator
-     below never has to know which of the two it is reading. */
+     These are the same bands in miniature, for the day something loads the
+     planet without them. Columns: id, label, colour, the map biome MapGen
+     builds for it, travel cost, how much it wants settling, then the
+     temperature, rainfall and latitude bands that claim a tile. */
   var BIOME_FALLBACK = [
-    { id: 'temperateForest', label: 'temperate forest', color: '#4e7a3a', mapBiome: 'temperateForest',
-      habitable: true, travelCostFactor: 1, settlementWeight: 1.6,
-      temperatureBand: [-8, 28], rainfallBand: [0.42, 0.78], latitudeBand: [0.28, 0.62] },
-    { id: 'grassland', label: 'grassland', color: '#7d9a4a', mapBiome: 'temperateForest',
-      habitable: true, travelCostFactor: 0.85, settlementWeight: 1.5,
-      temperatureBand: [-4, 31], rainfallBand: [0.3, 0.55], latitudeBand: [0.2, 0.5] },
-    { id: 'aridShrubland', label: 'arid shrubland', color: '#9d9350', mapBiome: 'aridShrubland',
-      habitable: true, travelCostFactor: 0.95, settlementWeight: 1.1,
-      temperatureBand: [2, 38], rainfallBand: [0.16, 0.34], latitudeBand: [0.12, 0.42] },
-    { id: 'desert', label: 'desert', color: '#c2b280', mapBiome: 'aridShrubland',
-      habitable: true, travelCostFactor: 1.2, settlementWeight: 0.45,
-      temperatureBand: [6, 46], rainfallBand: [0.03, 0.16], latitudeBand: [0.14, 0.38] },
-    { id: 'borealForest', label: 'boreal forest', color: '#3e5f4a', mapBiome: 'borealForest',
-      habitable: true, travelCostFactor: 1.15, settlementWeight: 0.9,
-      temperatureBand: [-28, 22], rainfallBand: [0.35, 0.75], latitudeBand: [0.58, 0.8] },
-    { id: 'tundra', label: 'tundra', color: '#8a927f', mapBiome: 'borealForest',
-      habitable: true, travelCostFactor: 1.3, settlementWeight: 0.35,
-      temperatureBand: [-38, 14], rainfallBand: [0.12, 0.6], latitudeBand: [0.76, 0.92] },
-    { id: 'ocean', label: 'ocean', color: '#2f5d78', mapBiome: 'temperateForest',
-      habitable: false, impassable: true, travelCostFactor: 0, settlementWeight: 0,
-      temperatureBand: [-2, 26], rainfallBand: [0, 1], latitudeBand: [0, 1] }
-  ];
+    ['temperateForest', 'temperate forest', '#4e7a3a', 'temperateForest', 1, 1.6, [-8, 28], [0.42, 0.78], [0.28, 0.62]],
+    ['grassland', 'grassland', '#7d9a4a', 'temperateForest', 0.85, 1.5, [-4, 31], [0.3, 0.55], [0.2, 0.5]],
+    ['aridShrubland', 'arid shrubland', '#9d9350', 'aridShrubland', 0.95, 1.1, [2, 38], [0.16, 0.34], [0.12, 0.42]],
+    ['desert', 'desert', '#c2b280', 'aridShrubland', 1.2, 0.45, [6, 46], [0.03, 0.16], [0.14, 0.38]],
+    ['borealForest', 'boreal forest', '#3e5f4a', 'borealForest', 1.15, 0.9, [-28, 22], [0.35, 0.75], [0.58, 0.8]],
+    ['tundra', 'tundra', '#8a927f', 'borealForest', 1.3, 0.35, [-38, 14], [0.12, 0.6], [0.76, 0.92]],
+    ['ocean', 'ocean', '#2f5d78', 'temperateForest', 0, 0, [-2, 26], [0, 1], [0, 1]]
+  ].map(function (r) {
+    return { id: r[0], label: r[1], color: r[2], mapBiome: r[3], travelCostFactor: r[4],
+             settlementWeight: r[5], temperatureBand: r[6], rainfallBand: r[7], latitudeBand: r[8],
+             habitable: r[0] !== 'ocean', impassable: r[0] === 'ocean' };
+  });
 
   /* ---------- state ---------- */
 
@@ -241,37 +232,22 @@
     h = Math.max(6, nh | 0);
     size = w * h;
     grids = {
-      biome: new Uint8Array(size),
-      elevation: new Float32Array(size),
-      temperature: new Float32Array(size),
-      rainfall: new Float32Array(size),
-      settlement: new Int32Array(size),
-      roads: new Uint8Array(size),
-      river: new Uint8Array(size)
+      biome: new Uint8Array(size), roads: new Uint8Array(size), river: new Uint8Array(size),
+      elevation: new Float32Array(size), temperature: new Float32Array(size),
+      rainfall: new Float32Array(size), settlement: new Int32Array(size)
     };
     _g = new Float64Array(size);
-    _seen = new Int32Array(size);
-    _closed = new Int32Array(size);
-    _from = new Int32Array(size);
-    _heap = new U.MinHeap();
-    _mark = 0;
-    settlements.length = 0;
-    settlementsById.clear();
-    sites = [];
-    siteInfo.clear();
-    _pathCache.clear();
+    _seen = new Int32Array(size); _closed = new Int32Array(size); _from = new Int32Array(size);
+    _heap = new U.MinHeap(); _mark = 0;
+    settlements.length = 0; settlementsById.clear();
+    sites = []; siteInfo.clear(); _pathCache.clear();
   }
 
   function publish() {
-    World.w = w; World.h = h; World.size = size;
-    World.tiles = grids;
-    World.settlements = settlements;
-    World.sites = sites;
-    World.colonyTile = colonyTile;
-    World.seed = worldSeed;
-    World.noiseSeeds = noiseSeeds;
+    World.w = w; World.h = h; World.size = size; World.tiles = grids;
+    World.settlements = settlements; World.sites = sites; World.colonyTile = colonyTile;
+    World.seed = worldSeed; World.noiseSeeds = noiseSeeds; World.generated = !!grids;
     World.biomeIds = biomeDefs.map(function (b) { return b.id; });
-    World.generated = !!grids;
   }
 
   /* ---------- generation ---------- */
@@ -721,8 +697,9 @@
   World.idx = function (x, y) { return grids ? idx(x, y) : 0; };
   World.xOf = function (i) { return grids ? xOf(i) : 0; };
   World.yOf = function (i) { return grids ? yOf(i) : 0; };
-  World.inBounds = function (x, y) { return !!grids && y >= 0 && y < h; };
   World.wrapX = function (x) { return grids ? wrapX(x) : 0; };
+  /* x wraps, so only the row can be out of bounds. */
+  World.inBounds = function (x, y) { return !!grids && y >= 0 && y < h; };
   World.latitudeOf = function (i) { return grids ? latOf(i) : 0; };
   World.rainfallMm = function (i) { return grids ? grids.rainfall[i] * RAIN_MM : 0; };
   World.roadAt = function (i) { return grids ? grids.roads[i] : 0; };
@@ -730,7 +707,6 @@
   World.isHabitable = function (i) {
     return !!grids && !isOceanIdx(i) && biomeDefs[grids.biome[i]].habitable;
   };
-
   World.neighbours = function (i) {
     var out = [];
     if (!grids) return out;
@@ -1057,17 +1033,20 @@
       settlementGrid: Array.prototype.slice.call(grids.settlement),
       elevation: elevation, temperature: temperature, rainfall: rainfall,
       sites: sites.slice(),
-      settlements: settlements.map(function (s) {
-        return {
-          id: s.id, tile: s.tile, factionId: s.factionId, kind: s.kind, name: s.name,
-          wealth: s.wealth, lastRestockTick: s.lastRestockTick, destroyed: !!s.destroyed,
-          stock: (s.stock || []).map(function (it) {
-            return { defId: it.defId, count: it.count, price: it.price };
-          })
-        };
-      })
+      settlements: settlements.map(copySettlement)
     };
   };
+
+  function copySettlement(s) {
+    return {
+      id: s.id, tile: s.tile, factionId: s.factionId || null, kind: s.kind || 'village',
+      name: s.name || '', wealth: s.wealth || 0, lastRestockTick: s.lastRestockTick || 0,
+      destroyed: !!s.destroyed,
+      stock: (s.stock || []).map(function (it) {
+        return { defId: it.defId, count: it.count, price: it.price };
+      })
+    };
+  }
 
   function copyInto(target, src) {
     if (!src) return;
@@ -1100,15 +1079,7 @@
     sites = (obj.sites || []).slice();
     var list = obj.settlements || [];
     for (var i = 0; i < list.length; i++) {
-      var raw = list[i];
-      var s = {
-        id: raw.id, tile: raw.tile, factionId: raw.factionId || null,
-        kind: raw.kind || 'village', name: raw.name || '', wealth: raw.wealth || 0,
-        stock: (raw.stock || []).map(function (it) {
-          return { defId: it.defId, count: it.count, price: it.price };
-        }),
-        lastRestockTick: raw.lastRestockTick || 0, destroyed: !!raw.destroyed
-      };
+      var s = copySettlement(list[i]);
       settlements.push(s);
       settlementsById.set(s.id, s);
       if (!s.destroyed && s.tile >= 0 && s.tile < size) grids.settlement[s.tile] = s.id;
@@ -1137,27 +1108,17 @@
   }
 
   World.reset = function () {
-    grids = null;
-    settlements.length = 0;
-    settlementsById.clear();
-    sites = [];
-    siteInfo.clear();
-    colonyTile = 0;
-    _pathCache.clear();
-    World.tiles = null;
-    World.generated = false;
+    grids = null; colonyTile = 0;
+    settlements.length = 0; settlementsById.clear();
+    sites = []; siteInfo.clear(); _pathCache.clear();
+    World.tiles = null; World.generated = false;
   };
 
   World.SEA_LEVEL = SEA_LEVEL;
   World.BASE_TICKS_PER_TILE = BASE_TICKS_PER_TILE;
-  World.w = DEFAULT_W;
-  World.h = DEFAULT_H;
-  World.size = 0;
-  World.tiles = null;
-  World.settlements = settlements;
-  World.sites = sites;
-  World.colonyTile = 0;
-  World.generated = false;
+  World.w = DEFAULT_W; World.h = DEFAULT_H; World.size = 0; World.colonyTile = 0;
+  World.tiles = null; World.generated = false;
+  World.settlements = settlements; World.sites = sites;
 
   root.World = World;
 })(this);

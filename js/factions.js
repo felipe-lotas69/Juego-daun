@@ -676,7 +676,7 @@
   function invalidate() { _hostileCache.clear(); }
   Factions.invalidateRelations = invalidate;
 
-  function pairKey(a, b) { return a < b ? a + ' ' + b : b + ' ' + a; }
+  function pairKey(a, b) { return a < b ? a + '|' + b : b + '|' + a; }
 
   /* The built-in 'raider' id is the map's generic enemy and behaves like a
      pirate band that never got a name. */
