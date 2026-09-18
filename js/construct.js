@@ -137,37 +137,21 @@
     return s ? (s.level || 0) : 0;
   }
 
-  /* Pawn owns the xp curve if it exposes one; otherwise apply the
-     contract's curve here rather than silently dropping the xp. */
+  /* Routed through the same helper Toils.work uses, so a job that
+     applies its own work learns at exactly the rate a job that leans on
+     the toil does - passion, traits and the above-ten grind included,
+     all of which live in pawn.js. */
   function gainSkill(pawn, id, xp) {
-    if (!pawn || !xp || xp <= 0) return;
-    if (typeof pawn.learn === 'function') { pawn.learn(id, xp); return; }
-    if (typeof pawn.gainXp === 'function') { pawn.gainXp(id, xp); return; }
-    var s = pawn.skills && pawn.skills[id];
-    if (!s) return;
-    var mult = [0.35, 1.0, 1.5][s.passion || 0];
-    s.xp = (s.xp || 0) + xp * (mult === undefined ? 1 : mult);
-    while (s.level < 20 && s.xp >= 1000 * (s.level + 1)) {
-      s.xp -= 1000 * (s.level + 1);
-      s.level++;
-    }
+    if (!pawn || !(xp > 0)) return;
+    root.Jobs.learn(pawn, id, xp);
   }
 
   /* Work units per tick. pawn.js owns the whole rate - skill, traits and
-     injuries together - so defer to it, and keep the contract's own
-     curve for anything that does not carry one. The floor is not
-     cosmetic: a rate of zero would leave a work toil returning 'stay'
-     for ever instead of finishing. */
+     injuries together - so defer to it. The floor is not cosmetic: a
+     rate of zero would leave a work toil returning 'stay' for ever
+     instead of finishing. */
   Construct.workRate = function (pawn, skillId) {
-    var rate;
-    if (pawn && typeof pawn.workRate === 'function') {
-      rate = pawn.workRate(skillId);
-    } else {
-      rate = 0.4 + 0.08 * skillLevel(pawn, skillId);
-      var H = root.Health;
-      if (H && H.workSpeedFactor) rate *= H.workSpeedFactor(pawn);
-    }
-    return Math.max(0.05, rate);
+    return Math.max(0.05, pawn.workRate(skillId));
   };
 
   /* ---------- materials ---------- */
@@ -239,41 +223,19 @@
   };
 
   /* ---------- finding ghosts ----------
-     Blueprints and frames are ordinary things, so map.byDef lists them
-     and map's own ghost grid answers "what is planned on this cell". */
+     Blueprints and frames are ordinary things, so map.byDef lists them,
+     and map.js keeps them on their own cell grid so "what is planned on
+     this cell" is one array read rather than a scan. */
 
-  function ghostList(map, defId) {
-    var l = map.byDef ? map.byDef(defId) : null;
-    return l || [];
-  }
+  Construct.ghostAt = function (map, x, y) { return map.ghostAt(x, y); };
 
-  function ghostCovers(g, x, y) {
-    var def = buildDefOf(g.buildDefId);
-    var f = footprint(def, g.rot | 0);
-    return x >= g.x && x < g.x + f.w && y >= g.y && y < g.y + f.h;
-  }
-
-  /* map.js keeps ghosts on their own cell grid, which answers this in
-     O(1); the scan is the fallback for a map that does not. */
-  Construct.ghostAt = function (map, x, y) {
-    if (map.ghostAt) return map.ghostAt(x, y);
-    var lists = [ghostList(map, 'blueprint'), ghostList(map, 'frame')];
-    for (var l = 0; l < lists.length; l++) {
-      var arr = lists[l];
-      for (var i = 0; i < arr.length; i++) {
-        if (arr[i].spawned && ghostCovers(arr[i], x, y)) return arr[i];
-      }
-    }
-    return null;
-  };
-
-  Construct.blueprints = function (map) { return ghostList(map, 'blueprint'); };
-  Construct.frames = function (map) { return ghostList(map, 'frame'); };
+  Construct.blueprints = function (map) { return map.byDef('blueprint'); };
+  Construct.frames = function (map) { return map.byDef('frame'); };
 
   /* Everything a constructor could usefully walk to: both kinds of
      ghost, in one array, for workgivers.js to sort through. */
   Construct.buildTargets = function (map) {
-    return ghostList(map, 'blueprint').concat(ghostList(map, 'frame'));
+    return map.byDef('blueprint').concat(map.byDef('frame'));
   };
 
   /* A designation is a marked cell; what a work giver wants is the
@@ -298,7 +260,10 @@
   /* ---------- placement ---------- */
 
   function no(reason) { return { ok: false, reason: reason }; }
-  var YES = { ok: true, reason: '' };
+  /* A fresh object rather than a shared constant: render.js asks this
+     for every cell of a drag preview and a caller that annotated the
+     answer would annotate every answer after it. */
+  function yes() { return { ok: true, reason: '' }; }
 
   /* A floor slips under a conduit or a bed; everything else that is
      already standing on the cell is genuinely in the way. */
@@ -336,7 +301,6 @@
     var fail = null;
 
     forEachCell(def, x, y, rot, function (cx, cy) {
-      if (fail) return false;
       if (!map.inBounds(cx, cy)) { fail = no('Outside the map.'); return false; }
 
       var t = map.terrainAt(cx, cy);
@@ -349,10 +313,11 @@
         return false;
       }
 
+      /* Ghosts live on their own grid and are checked separately below,
+         because a plan you can overwrite is not the same obstacle as a
+         building you cannot. */
       var b = map.buildingAt(cx, cy);
-      /* Ghosts are checked separately below, because a plan you can
-         overwrite is not the same obstacle as a building you cannot. */
-      if (b && b.def && !b.isBlueprint && !b.isFrame) {
+      if (b && b.def) {
         if (b.def.mineable) { fail = no('Mine the rock out first.'); return false; }
         if (conflicts(def, b.def)) {
           fail = no('There is already a ' + labelOf(b.def) + ' here.');
@@ -383,11 +348,8 @@
        player discover it when the bills never get done. */
     var spot = Construct.interactionCell(def, x, y, rot);
     if (spot) {
-      var inside = false;
-      forEachCell(def, x, y, rot, function (cx, cy) {
-        if (cx === spot.x && cy === spot.y) inside = true;
-        return true;
-      });
+      var f = footprint(def, rot);
+      var inside = spot.x >= x && spot.x < x + f.w && spot.y >= y && spot.y < y + f.h;
       if (!inside) {
         if (!map.inBounds(spot.x, spot.y)) return no('Its interaction spot is off the map.');
         var st = map.terrainAt(spot.x, spot.y);
@@ -397,7 +359,7 @@
       }
     }
 
-    return YES;
+    return yes();
   };
 
   Construct.placeBlueprint = function (map, defId, x, y, rot, stuffId) {
@@ -409,14 +371,19 @@
     /* Dragging the wall tool across your own wall reads as "take that
        down" - it is how a player erases a mistake with the tool that
        made it, and it is why placing never silently fails on a cell
-       that already holds one of your buildings. */
-    var standing = map.buildingAt(x, y);
-    if (standing && standing.def && standing.faction === 'player' &&
-        !standing.isBlueprint && !standing.isFrame && !standing.def.mineable &&
-        conflicts(def, standing.def)) {
-      Construct.designateDeconstruct(map, x, y);
-      return null;
-    }
+       that already holds one of your buildings. The whole footprint is
+       asked, not just the origin, or a 1x2 bed dropped one tile off its
+       twin would do nothing at all. */
+    var marked = false;
+    forEachCell(def, x, y, rot, function (cx, cy) {
+      var standing = map.buildingAt(cx, cy);
+      if (standing && standing.def && standing.faction === 'player' &&
+          !standing.def.mineable && conflicts(def, standing.def)) {
+        if (Construct.designateDeconstruct(map, cx, cy)) marked = true;
+      }
+      return true;
+    });
+    if (marked) return null;
 
     if (!Construct.canPlace(map, defId, x, y, rot).ok) return null;
 
@@ -434,22 +401,13 @@
       stuff = (stuffId && STUFF[stuffId]) ? stuffId : Construct.defaultStuff(defId);
     }
 
+    /* spawnThing recognises the two ghost defs and sets isBlueprint,
+       buildDefId, an empty materials table and workDone itself, so all
+       this hands it is what the plan is for. */
     var bp = map.spawnThing('blueprint', x, y, {
       rot: rot, faction: 'player', blueprintOf: defId, stuff: stuff
     });
     if (!bp) return null;
-
-    bp.isBlueprint = true;
-    bp.isFrame = false;
-    bp.buildDefId = defId;
-    bp.stuff = stuff;
-    bp.rot = rot;
-    bp.materials = {};
-    bp.workDone = 0;
-    bp.faction = 'player';
-    bp.map = map;
-    /* Deliberately no markPathDirty: a blueprint is a ghost and the
-       cell walks exactly as it did a moment ago. */
 
     /* A sleeping spot or a crafting spot costs nothing, so there is
        nothing for a hauler to bring and it is a frame the moment it is
@@ -478,9 +436,18 @@
   Construct.cancelAt = function (map, x, y) {
     var ghost = Construct.ghostAt(map, x, y);
     if (ghost) return Construct.cancelGhost(map, ghost);
+
     var d = map.designationAt(x, y);
     if (d && (d.type === 'deconstruct' || d.type === 'mine')) {
       map.undesignate(x, y, d.type);
+      return true;
+    }
+    /* A 2x2 table is marked on its origin, so clicking any other corner
+       of it finds nothing above and has to ask the building where its
+       own mark is. */
+    var b = map.buildingAt(x, y);
+    if (b && (b.x !== x || b.y !== y) && map.designationAt(b.x, b.y, 'deconstruct')) {
+      map.undesignate(b.x, b.y, 'deconstruct');
       return true;
     }
     return false;
@@ -536,17 +503,12 @@
       rot: rot, faction: 'player', blueprintOf: defId, stuff: stuff
     });
     if (!next) return null;
-    next.isFrame = asDefId === 'frame';
-    next.isBlueprint = !next.isFrame;
-    next.buildDefId = defId;
-    next.stuff = stuff;
-    next.rot = rot;
     next.materials = mats;
     next.workDone = work;
-    next.faction = 'player';
-    next.map = map;
-    /* The frame def stays passable on purpose (see def_things.js) but it
-       does add move cost either way, so the grid has to be told. */
+    /* The frame def stays passable on purpose (see def_things.js), so
+       map.js sees only a move-cost change on these cells. Rooms care
+       about the swap for other reasons, and only markBuildDirty tells
+       them unconditionally. */
     markBuildDirty(map, buildDefOf(defId), x, y, rot, false);
     return next;
   }
@@ -567,7 +529,7 @@
   Construct.successChance = function (pawn, def) {
     var skillId = (def && def.buildSkill) || 'construction';
     var lvl = skillLevel(pawn, skillId);
-    return U.clamp(U.curve([[0, 0.55], [2, 0.70], [4, 0.82], [8, 0.95], [12, 1]], lvl), 0.2, 1);
+    return U.curve([[0, 0.55], [2, 0.70], [4, 0.82], [8, 0.95], [12, 1]], lvl);
   };
 
   Construct.workOn = function (pawn, thing, amount) {
@@ -633,21 +595,17 @@
     if (isTerrainDef(def)) {
       map.setTerrain(x, y, defId);
     } else {
-      var hp = Construct.maxHpFor(defId, stuff);
+      /* Passing hp is what makes a steel wall stand at 270 rather than
+         the def's 180: spawnThing takes it as both hp and maxHp, and
+         nothing else on the map knows the material scaled it. */
       built = map.spawnThing(defId, x, y, {
-        rot: rot, faction: 'player', hp: hp, stuff: stuff,
+        rot: rot, faction: 'player', stuff: stuff,
+        hp: Construct.maxHpFor(defId, stuff),
         quality: rollQuality(pawn, def)
       });
-      if (built) {
-        built.stuff = stuff;
-        built.maxHp = hp;
-        built.hp = hp;
-        built.faction = 'player';
-      }
     }
 
     markBuildDirty(map, def, x, y, rot, true);
-    msg(U.cap(labelOf(def)) + ' built.', { type: 'good', x: x, y: y });
     return built;
   };
 
@@ -662,10 +620,12 @@
       if (!solid) return true;
       /* A copy, because moving an item mutates the cell's own list. */
       var items = map.items(cx, cy).slice();
-      for (var i = items.length - 1; i >= 0; i--) {
-        var spot = spotOutside(map, cx, cy, x, y, f);
-        if (spot) map.moveThing(items[i], spot.x, spot.y);
-      }
+      if (!items.length) return true;
+      /* One search for the whole cell: the answer cannot change while
+         the stacks move, since nothing here makes a tile impassable. */
+      var spot = spotOutside(map, cx, cy, x, y, f);
+      if (!spot) return true;
+      for (var i = items.length - 1; i >= 0; i--) map.moveThing(items[i], spot.x, spot.y);
       return true;
     });
   }
@@ -723,10 +683,11 @@
   };
 
   Construct.canDeconstruct = function (map, x, y) {
+    /* Ghosts are on their own grid, so this only ever sees the
+       finished article. */
     var b = map.buildingAt(x, y);
     if (!b || !b.def) return null;
     if (b.def.mineable || b.def.natural) return null;
-    if (b.isBlueprint || b.isFrame) return null;
     if (b.faction !== 'player') return null;
     return b;
   };
@@ -755,7 +716,6 @@
     markBuildDirty(map, def, x, y, rot, true);
     /* Taking out a wall is exactly as bad for the roof as mining one. */
     if (def && def.holdsRoof) Construct.checkRoofCollapse(map, x, y);
-    msg(U.cap(labelOf(def)) + ' deconstructed.', { type: 'info', x: x, y: y });
     return dropped;
   };
 
@@ -813,7 +773,7 @@
   Construct.holdsRoof = function (map, x, y) {
     if (!map.inBounds(x, y)) return false;
     var b = map.buildingAt(x, y);
-    if (!b || !b.def || b.isBlueprint || b.isFrame) return false;
+    if (!b || !b.def) return false;
     return !!(b.def.holdsRoof || b.def.mineable || b.def.natural);
   };
 
@@ -886,7 +846,9 @@
      building is only crushed once. */
   Construct.collapseRoofAt = function (map, i, hitList) {
     var x = map.xOf(i), y = map.yOf(i);
-    if (map.setRoof) map.setRoof(x, y, 0); else map.roof[i] = 0;
+    /* Through setRoof rather than the grid, so the room under it stops
+       counting as indoors. */
+    map.setRoof(x, y, 0);
 
     var H = root.Health;
     var pawns = map.pawnsAt(x, y);
@@ -938,33 +900,23 @@
      accumulates a number cannot ask for them.
      ============================================================ */
 
-  var Jobs = root.Jobs, Toils = root.Toils, T = root.T, Res = root.Res, Path = root.Path;
-  var PE = (Path && Path.PE) || { ON_CELL: 0, TOUCH: 1, ADJACENT: 2, INTERACTION: 3 };
+  var Jobs = root.Jobs, Toils = root.Toils, T = root.T, PE = root.Path.PE;
 
   function targetThing(job, which, map) {
     var t = job['target' + which];
-    return t && T ? T.resolve(t, map) : null;
+    return t ? T.resolve(t, map) : null;
   }
 
   function targetPos(job, which, map) {
     var t = job['target' + which];
-    return t && T ? T.pos(t, map) : null;
+    return t ? T.pos(t, map) : null;
   }
 
   /* Claim the thing before walking to it, so two constructors do not
-     spend a minute each walking to the same frame. */
-  function reserveToil(which) {
-    return Toils.custom({
-      name: 'reserve',
-      tick: function (pawn, job) {
-        var t = job['target' + which];
-        if (!t) return 'fail';
-        if (Res && Res.canReserve && !Res.canReserve(pawn, t, 1)) return 'fail';
-        if (Res && Res.reserve) Res.reserve(pawn, t, 1);
-        return 'next';
-      }
-    });
-  }
+     spend a minute each walking to the same frame. Jobs.end releases it
+     however the job ends, which is what keeps a failed walk from
+     locking a frame out of the colony. */
+  function reserveToil(which) { return Toils.reserve(which, 1); }
 
   /* --- construct ---
      Two shapes share one job def, exactly as RimWorld does:
@@ -998,7 +950,9 @@
             var item = targetThing(j, 'B', map);
             if (!ghost || !item) return 0;
             var need = Construct.materialsNeeded(ghost)[item.defId] || 0;
-            return Math.min(need, item.stack || 1, j.count || Infinity);
+            /* job.count is -1 when nobody asked for a number, and -1 is
+               the one value Math.min would happily hand back. */
+            return Math.min(need, item.stack || 1, j.count > 0 ? j.count : Infinity);
           }),
           Toils.goto('A', { pe: PE.TOUCH, failIfGone: true }),
           Toils.custom({
@@ -1020,13 +974,13 @@
 
               var took = ghost ? Construct.deliver(ghost, carried.defId, carried.stack || 1) : 0;
               carried.stack -= took;
-              /* Whatever is left over goes on the floor. A pawn who walks
-                 off to do something else still holding five steel is five
-                 steel the colony has quietly lost. */
-              if (carried.stack > 0) {
-                map.addItem(carried.defId, pawn.x, pawn.y, carried.stack);
-              }
-              pawn.carried = null;
+              /* Whatever is left over goes on the floor, through the same
+                 helper the hauling jobs use so it merges into a stack that
+                 is already there. A pawn who walks off to do something
+                 else still holding five steel is five steel the colony
+                 has quietly lost. */
+              if (carried.stack > 0) Toils.placeCarried(pawn, pawn.x, pawn.y);
+              else pawn.carried = null;
               return took > 0 ? 'done' : 'fail';
             }
           })
@@ -1038,17 +992,16 @@
         Toils.custom({
           name: 'build',
           tick: function (pawn, j) {
-            var map = pawn.map;
-            var frame = targetThing(j, 'A', map);
-            if (!frame || !frame.spawned) return 'fail';
-            /* A botch can drop a frame back to a blueprint mid-job.
-               That is not work any more, so hand it back: the work
-               giver will re-issue it as a delivery run. */
-            if (!frame.isFrame) return 'fail';
+            var frame = targetThing(j, 'A', pawn.map);
+            if (!frame || !frame.spawned || !frame.isFrame) return 'fail';
             var def = buildDefOf(frame.buildDefId);
             var rate = Construct.workRate(pawn, (def && def.buildSkill) || 'construction');
             if (Construct.workOn(pawn, frame, rate)) return 'done';
-            return frame.spawned ? 'stay' : 'done';
+            /* A botch drops the frame back to a blueprint, which is a new
+               thing on the same cell. There is no build work left here,
+               so fail rather than report a wall that was never raised;
+               the work giver re-issues it as a delivery run. */
+            return frame.spawned ? 'stay' : 'fail';
           }
         })
       ];
@@ -1074,20 +1027,21 @@
           Toils.goto('A', { pe: PE.TOUCH, failIfGone: true }),
           Toils.custom({
             name: id + 'Work',
-            init: function (pawn, job, s) {
-              var t = spec.find(job, pawn.map);
-              s.total = spec.work(t);
-              s.done = (t && t.workDone) || 0;
-            },
+            init: function (pawn, job, s) { s.done = -1; },
             tick: function (pawn, job, s) {
               var map = pawn.map;
               var t = spec.find(job, map);
               if (!t) return 'fail';
+              /* Both totals are read off the live target rather than
+                 cached at init: a total of zero taken from a target that
+                 was not there yet would finish the job on its first tick
+                 and hand over the rock for nothing. */
+              if (s.done < 0) s.done = t.workDone || 0;
               var rate = Construct.workRate(pawn, spec.skill);
               s.done += rate;
               t.workDone = s.done;
               gainSkill(pawn, spec.skill, rate * XP_PER_WORK);
-              if (s.done < s.total) return 'stay';
+              if (s.done < spec.work(t)) return 'stay';
               spec.finish(map, t, pawn);
               return 'done';
             }
@@ -1104,7 +1058,7 @@
       var t = targetThing(job, 'A', map);
       return t && t.spawned ? t : null;
     },
-    work: function (t) { return t ? Construct.deconstructWork(t.defId) : 0; },
+    work: function (t) { return Construct.deconstructWork(t.defId); },
     finish: function (map, t, pawn) { Construct.completeDeconstruct(map, t, pawn); }
   });
 
@@ -1117,7 +1071,7 @@
       var pos = targetPos(job, 'A', map);
       return pos ? Construct.canMine(map, pos.x, pos.y) : null;
     },
-    work: function (t) { return Construct.mineWork(t ? t.defId : null); },
+    work: function (t) { return Construct.mineWork(t.defId); },
     finish: function (map, t, pawn) { Construct.completeMine(map, t.x, t.y, pawn); }
   });
 

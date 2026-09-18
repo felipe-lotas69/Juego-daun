@@ -404,17 +404,25 @@
   function resolveSpec(ctx, spec, out) {
     var byNutrition = spec.nutrition > 0;
     var need = byNutrition ? spec.nutrition : Math.max(1, spec.count || 1);
-    var pool = candidateThings(ctx.map, spec), usable = [], i, t;
+    var pool = candidateThings(ctx.map, spec), usable = [], i, t, have = 0;
 
     for (i = 0; i < pool.length; i++) {
       t = pool[i];
       if (!t || !t.spawned || t === ctx.bench) continue;
-      if (((t.stack || 1) - (ctx.taken[t.id] || 0)) <= 0) continue;
+      var free = (t.stack || 1) - (ctx.taken[t.id] || 0);
+      if (free <= 0) continue;
       if (U.dist(ctx.origin.x, ctx.origin.y, t.x, t.y) > ctx.radius) continue;
       if (byNutrition && unitNutrition(t) <= 0) continue;
       if (!unreserved(ctx.map, ctx.pawn, t)) continue;
+      have += byNutrition ? free * unitNutrition(t) : free;
       usable.push(t);
     }
+
+    /* Most of the time a colony simply has no berries left, and the work
+       scan asks anyway. Adding up what is in radius costs two integer
+       reads a stack, so the hopeless case gives up here rather than
+       sorting the pool and putting a path query behind it. */
+    if (have < need - 1e-6) return false;
 
     /* A tile of walking is worth a tenth of a preference point: enough
        that a cook takes the nearer of two like stacks, nowhere near
@@ -650,6 +658,35 @@
     map.despawnThing(t);
   }
 
+  /* Does the pile at the bench actually pay for the recipe. Without this
+     a driver that arrived empty-handed - a job restarted on a plan that
+     was already consumed, a caller passing nothing - would spawn the
+     meal anyway, and a colony would cook out of thin air. Each entry
+     pays for at most one ingredient line, so two lines cannot both be
+     settled with the same stack. Nutrition is counted off the def and
+     not off the stack's rot, because the search deliberately takes
+     extra units of half-rotten food and the food goes on rotting while
+     the cook works - re-deriving the rotted total here would reject a
+     pile the same code chose ten seconds earlier. */
+  function ingredientsCover(recipe, ingredients) {
+    var specs = recipe.ingredients || [];
+    if (!specs.length) return true;
+    var spent = new Array(ingredients.length);
+    for (var i = 0; i < specs.length; i++) {
+      var spec = specs[i], ids = specDefIds(spec);
+      var byNutrition = spec.nutrition > 0;
+      var need = byNutrition ? spec.nutrition : Math.max(1, spec.count || 1);
+      for (var k = 0; k < ingredients.length && need > 1e-6; k++) {
+        var e = ingredients[k], def = e && e.thing && defOf(e.thing);
+        if (spent[k] || !def || ids.indexOf(def.id) < 0) continue;
+        spent[k] = true;
+        need -= byNutrition ? (def.nutrition || 0) * e.count : e.count;
+      }
+      if (need > 1e-6) return false;
+    }
+    return true;
+  }
+
   /* Spawns the products and eats the ingredients. Returns what it made,
      or an empty array if anything was missing - and in that case
      nothing at all has been consumed. */
@@ -661,6 +698,7 @@
 
     var i;
     for (i = 0; i < ingredients.length; i++) if (!stillThere(ingredients[i])) return [];
+    if (!ingredientsCover(recipe, ingredients)) return [];
 
     /* Everything that will come out is worked out BEFORE anything is
        eaten, because butchering reads the carcass it destroys. */
@@ -809,8 +847,11 @@
     if (!Production.benchAccepts(bench, bill.recipeId)) return null;
     if (!Production.billShouldDo(map, bill)) return null;
 
-    var plan = job.state.plan || job.state.ingredients || Production.findIngredients(map, pawn, bill);
-    if (!plan) return null;
+    /* A plan left on the job by an earlier run of it names stacks that
+       have since been eaten, so only a list a work giver resolved for
+       this start is worth reusing. */
+    var plan = job.state.ingredients || Production.findIngredients(map, pawn, bill);
+    if (!plan || !plan.length) return null;
 
     var i;
     if (Res && Res.reserve) {
@@ -939,7 +980,6 @@
         if (!made.length) return 'fail';
         releaseClaims(pawn, job);
         job.state.delivered = [];
-        job.state.plan = [];
         announce(pawn, made);
         return 'done';
       }

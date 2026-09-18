@@ -356,7 +356,6 @@
       msg('Caravan refused: there is no land route to that tile.', 'info');
       return null;
     }
-    var ticks = world.travelTicks(from, dest, check.speed);
     var map = g ? g.map : (pawns[0] && pawns[0].map);
 
     /* Cargo comes off the floor before anyone leaves, so a caravan that
@@ -384,6 +383,16 @@
       return null;
     }
 
+    /* Everything the party is told is measured on the ledger that actually
+       left the stockpile. Asking for a hundred meals the colony does not
+       have and being told you have a fortnight of food is the one lie this
+       file could tell that would get people killed. */
+    var capacity = capacityOf(pawns);
+    var load = itemsMass(packed) + U.sum(pawns, gearMass);
+    var speed = partySpeed(pawns, load, capacity);
+    var ticks = world.travelTicks(from, dest, speed);
+    var foodDays = itemsNutrition(packed) / (pawns.length * 1.6);
+
     for (var p = 0; p < pawns.length; p++) detach(pawns[p], map);
 
     var settlement = world.settlementAt(dest);
@@ -394,7 +403,7 @@
       path: path, progress: 0, destination: dest,
       purpose: opts.purpose || 'trade',
       ticksToArrive: ticks, totalTicks: ticks,
-      food: 0, mass: 0, speed: check.speed,
+      food: 0, mass: 0, speed: speed,
       state: 'travelling',
       settlementId: settlement ? settlement.id : 0,
       deal: null,
@@ -406,10 +415,13 @@
     refreshCargo(c);
     caravans.push(c);
 
+    var legDays = ticks / TICKS_PER_DAY;
     letter(c.label + ' departs',
       listNames(pawns) + ' set out for ' + destinationName(c) + ' with ' + U.fmt(c.mass, 0) +
-      ' kg of goods and ' + U.fmt(check.foodDays, 1) + ' days of food. About ' +
-      U.fmt(ticks / TICKS_PER_DAY, 1) + ' days each way.', 'neutral');
+      ' kg of goods and ' + U.fmt(foodDays, 1) + ' days of food. About ' + U.fmt(legDays, 1) +
+      ' days each way.' +
+      (foodDays < legDays * 2 ? ' That is not enough to get them there and back.' : ''),
+      foodDays < legDays * 2 ? 'threat' : 'neutral');
     return c;
   };
 
@@ -576,13 +588,31 @@
     return needs && needs.thresholds ? needs.thresholds.hungry : HUNGRY;
   }
 
+  /* How much a grazing animal can crop from the ground it is crossing.
+     Grassland keeps a muffalo fat; an ice sheet is why you pack kibble. */
+  function grazingHere(c) {
+    var world = W();
+    var def = world && world.biomeDef ? world.biomeDef(c.tile) : null;
+    var density = def && typeof def.plantDensity === 'number' ? def.plantDensity : 1;
+    return 2.2 * U.clamp(density, 0, 1.5);
+  }
+
   function feed(c, elapsed) {
     var days = elapsed / TICKS_PER_DAY, needs = Nd();
+    var graze = -1;
     for (var i = 0; i < c.pawns.length; i++) {
       var pawn = c.pawns[i], n = pawn.needs;
       if (!n || pawn.dead) continue;
 
       n.food = U.clamp01(n.food - 1.6 * days);
+
+      /* A grazer crops the country it is walking through, which is the
+         whole reason a muffalo is worth bringing: it carries seventy kilos
+         and, outside a desert, costs nothing to feed. */
+      if (pawn.isAnimal && pawn.kind && pawn.kind.grazer) {
+        if (graze < 0) graze = grazingHere(c);
+        n.food = U.clamp01(n.food + graze * days);
+      }
       if (n.food >= 0.999) continue;
 
       var rec = bestFoodFor(c, pawn);
@@ -1183,7 +1213,9 @@
   function arriveHome(c) {
     var g = G();
     var map = g ? g.map : null;
-    if (!map) { c.state = 'trading'; return; }        /* no colony to walk onto yet: wait */
+    /* No colony map under them (a load part-way through). Stand at the
+       gate and try again next tick rather than drop people into nothing. */
+    if (!map) { c.ticksToArrive = 1; c.state = 'travelling'; return; }
 
     /* The edge they come in by is the edge they left from, when it has
        room; the other three are there for a map walled in by mountains. */

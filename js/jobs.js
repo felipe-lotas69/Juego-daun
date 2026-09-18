@@ -494,10 +494,6 @@
     return new Job(defId, targetA, targetB, opts);
   };
 
-  /* Starting a job is the one place the whole plan is checked: the def
-     exists, it produces a toil list, and the thing the job is about
-     still exists. Everything after this point is allowed to assume the
-     plan was sane once. */
   /* A work giver claims its target before it hands the job over, so a
      job that never starts has to give those claims back or the target is
      locked out of the colony until the pawn happens to end another job.
@@ -508,6 +504,10 @@
     return false;
   }
 
+  /* Starting a job is the one place the whole plan is checked: the def
+     exists, it produces a toil list, and the thing the job is about
+     still exists. Everything after this point is allowed to assume the
+     plan was sane once. */
   Jobs.start = function (pawn, job) {
     if (!pawn || !job) return false;
     var def = job.def || Jobs.defs[job.defId];
@@ -589,6 +589,7 @@
 
       /* 'next', and anything a toil returned by mistake, advances. */
       finishToil(pawn, job, d);
+      if (pawn.job !== job) return;
       d.idx++;
       if (d.idx >= d.toils.length) { Jobs.end(pawn, 'done'); return; }
       d.entered = false;

@@ -17,14 +17,15 @@
    failure and nobody is cold indoors because it is snowing outside.
 
    Both are rebuilt from scratch, never patched, and only when something
-   that actually changes them has changed. map.js marks a cell dirty on
-   every path-cost change, which includes a berry falling on the floor,
-   so the first thing an update does is ask whether any of those dirty
-   cells crossed a passability or wall boundary. Almost always none did,
-   and the whole tick costs a flag read. When one did, the rebuild is two
+   that actually changes them has changed. map.js marks a cell dirty
+   whenever its move cost changes and whenever a roof goes on or off, so
+   a dropped stone chunk arrives here alongside a finished wall. The
+   first thing an update does is ask whether any of those dirty cells
+   crossed a passability or wall boundary. Almost always none did, and
+   the whole tick costs a flag read. When one did, the rebuild is two
    flood fills over preallocated Int32Array stacks - no recursion, no
    object per cell - which is a couple of milliseconds for a 160x160 map
-   and happens when a wall goes up, not when a pawn drops a plank.
+   and happens when a wall goes up, not when a pawn drops a chunk.
 
    Room STATS (beauty, cleanliness, roof, role, temperature) are the
    expensive half and run on the rare tick, off the back of
@@ -97,8 +98,9 @@
     Regions.markDirtyIdx(map, y * map.w + x);
   };
 
-  /* O(1) and allocation free: this runs thousands of times during map
-     generation and once for every item that touches the floor. */
+  /* O(1) and allocation free: map generation calls this thousands of
+     times, and in play every roof laid and every chunk dropped in a
+     doorway comes through here. */
   Regions.markDirtyIdx = function (map, i) {
     if (!map || i < 0 || i >= map.size) return;
     var st = stateOf(map);
@@ -172,7 +174,10 @@
      area grid would tell him the far side of the mountain is a place
      that cannot be reached. */
   function rebuild(map, st) {
-    st.outdoorTemp = outdoorTempGuess();
+    /* Keep the last outdoor temperature we were told when Game cannot be
+       asked: a wall going up during a cold snap must not hand the new
+       room a spring afternoon to start from. */
+    st.outdoorTemp = outdoorTempGuess(st.outdoorTemp);
     labelAreas(map, st);
     labelRooms(map, st);
     computeStats(map, st);
@@ -515,12 +520,11 @@
        doorway is really in one of the rooms it joins, and the warmer
        answer - an actual room over the outdoors - is the useful one. */
     if (st.kind[i] !== OPEN) {
-      var best = null, w = map.w, h = map.h, n;
-      if (y > 0)     { n = map.roomId[i - w]; if (n > 0) best = st.rooms.get(n) || best; }
-      if (y < h - 1) { n = map.roomId[i + w]; if (n > 0 && !best) best = st.rooms.get(n) || best; }
-      if (x > 0)     { n = map.roomId[i - 1]; if (n > 0 && !best) best = st.rooms.get(n) || best; }
-      if (x < w - 1) { n = map.roomId[i + 1]; if (n > 0 && !best) best = st.rooms.get(n) || best; }
-      if (best) return best;
+      var w = map.w, h = map.h, n;
+      if (y > 0)     { n = map.roomId[i - w]; if (n > 0 && st.rooms.has(n)) return st.rooms.get(n); }
+      if (y < h - 1) { n = map.roomId[i + w]; if (n > 0 && st.rooms.has(n)) return st.rooms.get(n); }
+      if (x > 0)     { n = map.roomId[i - 1]; if (n > 0 && st.rooms.has(n)) return st.rooms.get(n); }
+      if (x < w - 1) { n = map.roomId[i + 1]; if (n > 0 && st.rooms.has(n)) return st.rooms.get(n); }
     }
     return st.rooms.get(0) || null;
   };
@@ -551,11 +555,19 @@
     if (!map || !cells || !cells.length) return false;
     var st = stateOf(map);
     Regions.update(map);
-    var roomId = map.roomId;
+    var roomId = map.roomId, i;
     for (var k = 0; k < cells.length; k++) {
       var c = cells[k];
-      var i = typeof c === 'number' ? c : (c.y * map.w + c.x);
-      if (i < 0 || i >= map.size) return false;
+      if (typeof c === 'number') {
+        i = c;
+        if (i < 0 || i >= map.size) return false;
+      } else {
+        /* An x off either side of the map folds into the row above or
+           below and would answer about some other cell entirely, so both
+           coordinates are checked rather than the index they make. */
+        if (!c || !map.inBounds(c.x, c.y)) return false;
+        i = c.y * map.w + c.x;
+      }
       var id = roomId[i];
       if (id <= 0) return false;
       var room = st.rooms.get(id);
@@ -573,13 +585,16 @@
      TEMPERATURE
      ============================================================ */
 
-  function outdoorTempGuess() {
+  /* Game.outdoorTemp reads Game.weather, so a Game object that exists but
+     has not started a colony yet would throw: the weather block is the
+     cheapest proof that it is ready to be asked. */
+  function outdoorTempGuess(fallback) {
     var G = root.Game;
     if (G && G.weather && typeof G.outdoorTemp === 'function') {
       var v = G.outdoorTemp();
       if (typeof v === 'number' && isFinite(v)) return v;
     }
-    return DEFAULT_TEMP;
+    return typeof fallback === 'number' && isFinite(fallback) ? fallback : DEFAULT_TEMP;
   }
 
   /* How fast the room gives up and matches the world outside, per rare
@@ -715,7 +730,9 @@
       rebuilds: st.rebuilds,
       statsPasses: st.statsPasses,
       skippedUpdates: st.skipped,
-      dirty: st.dirty,
+      /* The graph is current by now - update() just ran - so what is left
+         to report is whether stats are still waiting on the rare tick. */
+      dirty: st.dirty || st.statsDirty,
       outdoorTemp: st.outdoorTemp
     };
   };

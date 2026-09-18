@@ -1,11 +1,11 @@
 /* ============================================================
    def_recipes.js - every bill a workbench can be told to run.
 
-   A recipe is data plus two small resolved helpers. Fields, beyond the
-   self-explaining ones: `workAmount` is in work units, and a colonist does
-   about one per tick at normal speed times their skill factor
-   (0.4 + 0.08 x level), so 300 work is roughly five seconds for a hopeless
-   cook. `workType` says which work column scans the bill - cooking and
+   A recipe is data plus the handful of helpers resolved onto it below.
+   Fields, beyond the self-explaining ones: `workAmount` is in work units,
+   and a colonist does about one per tick at normal speed times their skill
+   factor (0.4 + 0.08 x level), so 300 work is roughly five seconds for a
+   hopeless cook. `workType` says which work column scans the bill - cooking and
    butchering are 'cook', everything else 'craft'. `workbenches` is the
    reverse of a building's recipe list: which benches offer this bill.
 
@@ -23,8 +23,8 @@
          interchangeable by the piece. The category resolves to a concrete
          `anyOf` list at load time (def_things.js is already registered by
          then), and a `count` is filled in too, so a consumer that only
-         understands counts still behaves: it is the unit count at the
-         cheapest candidate's nutrition, the worst case, which can never
+         understands counts still behaves: it is how many of the least
+         nourishing candidate the total would take, which can never
          under-deliver.
 
    Every ingredient also carries matches(thingDef) -> bool and every recipe
@@ -37,9 +37,9 @@
   var Defs = root.Defs, U = root.U;
 
   /* Ingredient categories are listed by id rather than filtered out of the
-     thing table: the id registry is frozen by the contract, while the field
-     names def_things.js uses to mark food are its own business. Ids that did
-     not register get dropped, so a category can never yield a dangling ref. */
+     thing table: the id registry is frozen by the contract, while how
+     def_things.js classifies a thing is not. Ids that did not register get
+     dropped, so a category can never yield a dangling ref. */
   var CATEGORY_IDS = {
     rawPlantFood: ['riceRaw', 'potatoRaw', 'cornRaw', 'berries'],
     meat: ['meatRaw'],
@@ -48,21 +48,14 @@
     smeltableWeapon: ['knife', 'spear', 'pistol', 'boltRifle', 'autoRifle', 'shotgun', 'sniperRifle']
   };
 
-  /* Nutrition per unit, read from the thing def under whichever of the
-     plausible names it uses, else from the contract's balance table. */
-  var NUTRITION_FALLBACK = { mealSimple: 0.9, mealFine: 0.9, kibble: 0.05 };
+  /* Nutrition per unit. def_things.js states it as a plain field on the def;
+     the fallback is the contract's figure for raw food, which is what every
+     ingredient category in this file is made of. */
   var RAW_NUTRITION = 0.05;
 
   function nutritionOf(defId) {
-    var d = Defs.maybe('thing', defId), n;
-    if (d) {
-      n = d.nutrition;
-      if (n === undefined && d.food) n = d.food.nutrition;
-      if (n === undefined && d.ingestible) n = d.ingestible.nutrition;
-      if (typeof n === 'number' && n > 0) return n;
-    }
-    if (NUTRITION_FALLBACK[defId] !== undefined) return NUTRITION_FALLBACK[defId];
-    return RAW_NUTRITION;
+    var d = Defs.maybe('thing', defId);
+    return (d && d.nutrition > 0) ? d.nutrition : RAW_NUTRITION;
   }
 
   function resolveCategory(name) {
@@ -82,9 +75,13 @@
       ing.anyOf.forEach(function (id) { set[id] = true; });
       ing.matches = function (thingDef) { return !!(thingDef && set[thingDef.id]); };
       if (ing.count === undefined) {
-        var per = RAW_NUTRITION;
+        /* How many of the least nourishing candidate it would take, so a
+           consumer that reads counts and not nutrition over-collects rather
+           than arriving at the bench short. */
+        var per = Infinity;
         ing.anyOf.forEach(function (id) { per = Math.min(per, nutritionOf(id)); });
-        ing.count = Math.max(1, Math.ceil((ing.nutrition || 0) / (per || RAW_NUTRITION)));
+        if (!(per > 0) || per === Infinity) per = RAW_NUTRITION;
+        ing.count = Math.max(1, Math.ceil((ing.nutrition || 0) / per));
       }
     } else if (ing.thing) {
       var only = ing.thing;
@@ -123,8 +120,15 @@
     return U.clamp(0.6 + 0.02 * skillLevel(pawn, 'cooking'), 0.6, 1);
   }
 
+  function yieldsNothing(table) {
+    if (!table) return true;
+    for (var id in table) if (table[id] > 0) return false;
+    return true;
+  }
+
   /* butcherCorpse is the one recipe whose output is not knowable from the def:
-     it depends on what died. Production calls this with the ingredients it
+     it depends on what died, who is holding the knife and how long the body
+     has been lying there. Production calls this with the ingredients it
      actually consumed, either as bare Things or as {thing, count} rows. */
   function butcherProductsFor(ingredients, pawn) {
     var corpse = null, i, t;
@@ -137,9 +141,20 @@
     if (kind && root.Animals && typeof root.Animals.butcherProducts === 'function') {
       base = root.Animals.butcherProducts(kind);
     }
-    if (!base && kind && kind.butcherProducts) base = kind.butcherProducts;
-    if (!base) base = { meatRaw: 30 };
-    var factor = butcherYieldFactor(pawn), out = {};
+    /* Animals hands back an empty table for any kind it does not treat as an
+       animal - every human kind - and an empty table is an absent answer
+       rather than an answer of nothing, so the fallbacks still get a turn. */
+    if (yieldsNothing(base)) base = kind && kind.butcherProducts;
+    if (yieldsNothing(base)) {
+      base = { meatRaw: 30 };
+      if (kind && kind.leatherAmount > 0) base[kind.leatherDef || 'leather'] = kind.leatherAmount;
+    }
+    /* A carcass rots down to half its yield. production.js applies the same
+       reduction to the table it falls back on, and it prefers this function
+       whenever a recipe carries one, so stating rot here is the only thing
+       that stops a week-old corpse butchering like a fresh one. */
+    var factor = butcherYieldFactor(pawn) * (1 - 0.5 * U.clamp01(corpse.rotProgress || 0));
+    var out = {};
     Object.keys(base).forEach(function (id) {
       if (!Defs.has('thing', id)) return;
       var n = Math.floor(base[id] * factor);
@@ -148,9 +163,6 @@
     return out;
   }
 
-  /* ------------------------------------------------------------------
-     The recipes.
-     ------------------------------------------------------------------ */
   var RECIPES = {
 
     /* ---- cooking ---- */

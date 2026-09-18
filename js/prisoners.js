@@ -71,6 +71,12 @@
      which is fast enough that an open door matters within a day. */
   var ESCAPE_CHANCE = 0.02;
 
+  /* Ticks of walking between pauses on an escape, and how long a pause
+     lasts. 90 and 60 put an escapee at three fifths of a colonist's pace. */
+  var ESCAPE_DASH = 90;
+  var ESCAPE_PAUSE = 60;
+  var ESCAPE_TIMEOUT = 40000;
+
   var MODES = ['hold', 'recruit', 'release', 'execute'];
 
   var Prisoners = {};
@@ -454,7 +460,48 @@
     var J = sys('Jobs');
     if (!J) return false;
     if (pawn.job) J.end(pawn, 'interrupted');
-    return J.start(pawn, J.make('prisonerEscape', T.cell(x, y)));
+    /* A run that cannot be started is a run abandoned: standing in the
+       corridor with the escaping flag set would keep a warden chasing
+       somebody who has already given up and sat down. */
+    if (!J.start(pawn, J.make('prisonerEscape', T.cell(x, y)))) {
+      st.escaping = false;
+      return false;
+    }
+    return true;
+  }
+
+  /* Confinement.
+
+     think.js does not know what a prisoner is, and it is right not to: a
+     prisoner has needs like anyone and the tree answers them the way it
+     answers a colonist's, by sending them to the nearest meal. The cell
+     is what stops that, and it has to be enforced on the tick rather than
+     on the rare beat - a hungry prisoner is out of the door and across the
+     colony inside two hundred ticks, and a warden with a plate of food
+     would arrive at an empty bed.
+
+     The test is three array reads: which room they are standing in, which
+     room the walk in progress ends in, and whether either is a prison. */
+  function confine(pawn, st) {
+    if (!Regions) return;
+    var map = pawn.map;
+    var prisons = prisonRoomIds(map);
+    var inside = !!prisons[Regions.roomIdAt(map, pawn.x, pawn.y)];
+
+    var leaving = false;
+    if (pawn.path && pawn.pathIdx < pawn.path.length && pawn.destX >= 0) {
+      leaving = !prisons[Regions.roomIdAt(map, pawn.destX, pawn.destY)];
+    }
+    if (inside && !leaving) return;
+
+    /* Already walking back to their own bunk: let them finish. */
+    if (!leaving && pawn.job && pawn.job.defId === 'layDown') return;
+    if (st.confineCool > 0) { st.confineCool--; return; }
+    st.confineCool = 30;
+
+    var J = sys('Jobs');
+    if (pawn.job && J) J.end(pawn, 'interrupted');
+    if (!sendHome(pawn, st) && Jobs.stopMoving) Jobs.stopMoving(pawn);
   }
 
   /* Back to the cell under their own steam, which is what a prisoner does
@@ -498,6 +545,7 @@
       return;
     }
 
+    confine(pawn, st);
     if ((t + pawn.id) % RARE !== 0) return;
 
     if (watchedNow(pawn)) st.lastWatchedTick = t;
@@ -507,10 +555,6 @@
     var opening = Prisoners.escapeOpening(pawn);
     if (!opening) {
       st.escapeWill = Math.max(0, st.escapeWill - 0.05);
-      /* Wandered into the corner of their own cell is fine; wandered into
-         the kitchen is not, and think.js will keep doing it unless the
-         job in hand is replaced. */
-      if (!Prisoners.isInPrison(pawn) && !pawn.asleep) sendHome(pawn, st);
       return;
     }
 
@@ -550,19 +594,31 @@
      dies inside somebody else's tick and is found by the sweep instead.
      ============================================================ */
 
-  var roster = [];
+  /* The roster hangs off the map rather than off this module, so a new
+     colony starts with an empty one and a loaded save refills it from the
+     first tick of every prisoner it restored. */
+  function roster(map) {
+    if (!map.__prisonerWatch) map.__prisonerWatch = [];
+    return map.__prisonerWatch;
+  }
 
   function watch(pawn) {
-    for (var i = 0; i < roster.length; i++) if (roster[i] === pawn) return;
-    roster.push(pawn);
+    if (!pawn.map) return;
+    var list = roster(pawn.map);
+    if (list.indexOf(pawn) < 0) list.push(pawn);
+  }
+
+  function unwatch(pawn) {
+    if (pawn.map) U.remove(roster(pawn.map), pawn);
   }
 
   Prisoners.sweep = function (map) {
-    for (var i = roster.length - 1; i >= 0; i--) {
-      var p = roster[i];
-      if (!p || !p.prisoner) { roster.splice(i, 1); continue; }
-      if (p.dead) { noteDeath(p, p.prisoner); roster.splice(i, 1); continue; }
-      if (map && p.map !== map && !p.map) roster.splice(i, 1);
+    if (!map || !map.__prisonerWatch) return;
+    var list = map.__prisonerWatch;
+    for (var i = list.length - 1; i >= 0; i--) {
+      var p = list[i];
+      if (!p || !p.prisoner) { list.splice(i, 1); continue; }
+      if (p.dead) { noteDeath(p, p.prisoner); list.splice(i, 1); }
     }
   };
 
@@ -572,9 +628,6 @@
 
     var cause = (pawn.health && pawn.health.deathCause) || 'unknown causes';
     var starved = cause === 'starvation';
-    var executed = !!st.executed;
-    if (executed) return;                    /* execute() has already paid for it */
-
     var map = pawn.map;
     var who = fullName(pawn);
 
@@ -680,7 +733,7 @@
     prisoner.faction = 'player';
     prisoner.workPriority = st.workPriority || prisoner.workPriority || {};
     prisoner.drafted = false;
-    U.remove(roster, prisoner);
+    unwatch(prisoner);
 
     /* Their bunk was a cell. Let them find a bed like anybody else. */
     var bed = prisoner.ownedBedId && map ? map.thing(prisoner.ownedBedId) : null;
@@ -726,7 +779,7 @@
     prisoner.prisoner = false;
     prisoner.faction = st.factionId || 'neutral';
     prisoner.released = true;
-    U.remove(roster, prisoner);
+    unwatch(prisoner);
 
     var bed = prisoner.ownedBedId && map ? map.thing(prisoner.ownedBedId) : null;
     if (bed && bed.ownerId === prisoner.id) bed.ownerId = null;
@@ -757,9 +810,10 @@
     if (!st || prisoner.dead) return false;
     var map = prisoner.map;
     var who = fullName(prisoner);
-    st.executed = true;
+    /* Claim the death before Health.kill fires it, so the generic
+       "a prisoner died" fallout does not land on top of this one. */
     st.deathNoted = true;
-    U.remove(roster, prisoner);
+    unwatch(prisoner);
 
     var H = sys('Health');
     if (H && H.kill) H.kill(prisoner, 'execution');
@@ -1107,6 +1161,57 @@
     }
   });
 
+  /* An escape is not a sprint.
+
+     A prisoner making for the edge of the map moves at exactly a
+     colonist's pace, and a warden who sets off after one would follow them
+     across the map without ever closing the gap - the chase would always
+     end at the map edge, and "carry an escaping prisoner back" would be a
+     work giver that never finished a job. So the run is what it would
+     really be: short dashes between cover, with a pause at each one to
+     look back down the corridor. That is about two thirds of walking pace,
+     which is slow enough to be caught and fast enough to be a problem. */
+  /* Toils.goto is not the right walk for either of these. It gives up
+     after six thousand ticks, which is shorter than a walk across a large
+     map from the middle, and it fails outright the first time the way is
+     shut rather than picking another way off the edge. This one keeps
+     re-aiming until it is out of patience. `paced` adds the pauses. */
+  function walkToEdgeToil(paced) {
+    return Toils.custom({
+      name: paced ? 'creepToEdge' : 'walkToEdge',
+      init: function (pawn, job, s) { s.ticks = 0; s.dash = 0; s.pause = 0; s.retries = 0; },
+      tick: function (pawn, job, s) {
+        var map = pawn.map;
+        var pos = T.pos(job.targetA, map);
+        if (!pos) return 'fail';
+        if (pawn.x === pos.x && pawn.y === pos.y) { Jobs.stopMoving(pawn); return 'next'; }
+        if (++s.ticks > ESCAPE_TIMEOUT) return 'fail';
+
+        if (paced && s.pause > 0) {
+          s.pause--;
+          if (pawn.path) Jobs.stopMoving(pawn);
+          return 'stay';
+        }
+        if (!(pawn.path && pawn.pathIdx < pawn.path.length)) {
+          if (!Jobs.walkTo(pawn, pos.x, pos.y, PE.ON_CELL)) {
+            /* That way off the map has closed - a door locked, a wall
+               raised. Try another edge before giving up on leaving. */
+            var fresh = (s.retries++ < 3) ? escapeCell(pawn) : null;
+            if (!fresh) {
+              if (pawn.prisoner) pawn.prisoner.escaping = false;
+              return 'fail';
+            }
+            job.targetA = T.cell(fresh.x, fresh.y);
+            return 'stay';
+          }
+          s.retries = 0;
+        }
+        if (paced && ++s.dash >= ESCAPE_DASH) { s.dash = 0; s.pause = ESCAPE_PAUSE; }
+        return 'stay';
+      }
+    });
+  }
+
   /* The prisoner's own two jobs. Both walk off the edge of the map; only
      the letter at the end of them differs. */
   function walkOffToil(escaped) {
@@ -1122,7 +1227,7 @@
         var who = fullName(pawn);
         if (st) {
           pawn.prisoner = false;
-          U.remove(roster, pawn);
+          unwatch(pawn);
           var F = sys('Factions');
           if (escaped && F && F.adjustGoodwill && st.factionId && st.factionId !== 'player') {
             /* They walk home with a story about your cells, which is worth
@@ -1152,7 +1257,7 @@
     suspendable: false,
     alwaysShow: true,
     toils: function () {
-      return [Toils.goto('A', { pe: PE.ON_CELL }), walkOffToil(true)];
+      return [walkToEdgeToil(true), walkOffToil(true)];
     }
   });
 
@@ -1162,7 +1267,7 @@
     suspendable: false,
     alwaysShow: true,
     toils: function () {
-      return [Toils.goto('A', { pe: PE.ON_CELL }), walkOffToil(false)];
+      return [walkToEdgeToil(false), walkOffToil(false)];
     }
   });
 
@@ -1254,15 +1359,14 @@
     WorkGivers.register({
       id: 'wardenFeed', workType: 'warden', order: 20, label: 'feed prisoners',
       tryGiveJob: function (pawn) {
-        var N = sys('Needs');
         var cands = prisonersFor(pawn, function (p) {
-          if (!p.needs) return false;
-          return p.needs.food < FEED_AT;
+          return !!p.needs && p.needs.food < FEED_AT;
         });
         var target = nearest(pawn, cands);
         if (!target) return null;
+        /* Claiming a prisoner the colony has nothing to feed would park a
+           warden on them for a walk that ends in a failed job. */
         if (!Jobs.findFood || !Jobs.findFood(pawn.map, pawn, { forOther: true })) return null;
-        if (N && N.nutritionOf) { /* Needs decides what counts as food; findFood asked it. */ }
         return claimed(pawn, 'feedPrisoner', T.pawn(target));
       }
     });

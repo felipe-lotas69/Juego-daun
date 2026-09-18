@@ -540,7 +540,7 @@
       if (parts.length) { parts.push('everything else'); return shorten(parts); }
       /* A category switched off denies every def in it, so the holes are
          named back as the category the player actually clicked rather
-         than as the eleven defs that clicking it happened to list. */
+         than as the dozen defs that one click happened to deny. */
       var out = [], covered = new Set();
       CATEGORIES.forEach(function (c) {
         var defs = Zones.defsInCategory(c);

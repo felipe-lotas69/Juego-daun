@@ -757,6 +757,8 @@
      next toil and on any failure, so nothing outlives its hunt. */
   var _quarry = new Map();
 
+  /* pawn.js spawns the corpse when something dies. If a kill somehow left
+     nothing behind, the meat is not allowed to vanish with it. */
   function makeCorpse(map, state) {
     if (!Defs.has('thing', 'corpse') || !map.spawnThing) return null;
     return map.spawnThing('corpse', state.x, state.y, {

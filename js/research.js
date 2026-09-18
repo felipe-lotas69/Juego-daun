@@ -162,16 +162,18 @@
 
   /* Work units to research points. The research toil hands over roughly
      one work unit a tick, so this constant alone sets the pace of the
-     whole tree: at 0.08 a middling researcher earns ~0.075 points a
-     tick, which is 500 points in about 6500 ticks - a couple of hours
-     of game time - and the full tree in a fortnight of dedicated study. */
+     whole tree: at 0.08 a skill-8 researcher earns ~0.078 points a tick,
+     which is 500 points in about 6400 ticks - two and a half hours of
+     game time - and all 16,600 points of the tree in three and a half
+     days of somebody doing nothing else. */
   var POINTS_PER_WORK = 0.08;
 
-  /* The research toil already grants intellectual xp for the time spent.
-     This grant is for the points actually earned, so a sharp researcher
-     learns a little faster than a slow one; it is deliberately the
-     smaller of the two so the two together do not run away. */
-  var XP_PER_POINT = 0.5;
+  /* The research toil pays no xp of its own; it hands the whole
+     intellectual payout to addProgress, so the rate here is the
+     contract's rate for a work toil, 0.11 xp per work unit. It is paid
+     on the work that went into the bench rather than on the points that
+     came out: sitting there blind earns fewer points, not less study. */
+  var XP_PER_WORK = 0.11;
 
   var PASSION = [0.35, 1.0, 1.5];
 
@@ -188,8 +190,12 @@
      lives per project and Research.progress mirrors the current one. */
   var banked = {};
 
-  /* Both caches are rebuilt on the next read after anything finishes. */
+  /* Rebuilt on the next read after a project finishes. */
   var unlockedCache = null;
+
+  /* Unlock id to the project that lists it. Built once on demand: it is
+     derived from def data, which stops changing when the def files have
+     all loaded. */
   var reverseIndex = null;
 
   function defOf(id) { return Defs.maybe('research', id); }
@@ -272,6 +278,7 @@
     var def = defOf(id);
     if (!def || Research.done.has(id) || !Research.prereqsMet(def)) return false;
     if (Research.currentId === id) return true;
+    if (Research.currentId) banked[Research.currentId] = Research.progress;
     Research.currentId = id;
     Research.progress = banked[id] || 0;
     var g = theGame();
@@ -292,7 +299,9 @@
      square it and make a level 20 scientist twenty-five times an
      amateur. What is left is the shallow half of the curve - still a
      real reason to put your smart colonist on the bench - plus sight,
-     which no general work rate accounts for and which reading needs. */
+     which no general work rate accounts for and which reading needs.
+     Traits stay out of it: their work speed belongs to the pawn's work
+     rate, which pawn.js owns. */
   Research.speedFactor = function (pawn) {
     if (!pawn) return 1;
     var f = 0.7 + 0.03 * skillLevel(pawn, 'intellectual');
@@ -301,18 +310,11 @@
       var sight = H.capacity(pawn, 'sight');
       if (sight < 1) f *= U.clamp(0.4 + 0.6 * sight, 0.4, 1);
     }
-    /* def_pawns.js owns the trait table, so read a research modifier off
-       it only if that file chose to define one. */
-    var traits = pawn.traits || [];
-    for (var i = 0; i < traits.length; i++) {
-      var t = Defs.maybe('trait', traits[i]);
-      if (t && typeof t.researchSpeedFactor === 'number') f *= t.researchSpeedFactor;
-    }
     return Math.max(0.05, f);
   };
 
-  /* Returns the points actually added, which is what a caller that wants
-     to report a rate should show. */
+  /* `amount` is work units, the same unit every other toil spends.
+     Returns the points actually banked. */
   Research.addProgress = function (amount, pawn) {
     var id = Research.currentId;
     if (!id || !(amount > 0)) return 0;
@@ -324,7 +326,7 @@
 
     Research.progress += gain;
     banked[id] = Research.progress;
-    if (pawn) grantXp(pawn, gain * XP_PER_POINT);
+    if (pawn) grantXp(pawn, amount * XP_PER_WORK);
     if (Research.progress >= def.cost) Research.finish(id);
     return gain;
   };
@@ -374,8 +376,10 @@
   };
 
   /* The gate the build menu and the bill list ask. A def with no
-     prerequisite is always available; the field may also be an array,
-     in which case every project in it has to be finished. */
+     prerequisite is always available; an id that names no def at all is
+     not, because a build button for a thing that does not exist is worse
+     than a missing one. The field may also be an array, in which case
+     every project in it has to be finished. */
   Research.isUnlocked = function (thingDef) {
     var def = (typeof thingDef === 'string') ? anyDef(thingDef) : thingDef;
     if (!def) return false;
@@ -450,8 +454,9 @@
     }
   };
 
-  /* Used by tools/harness.js: every unlock has to name a real def, or
-     the tree is promising something the colony can never build. */
+  /* Defs.validate checks prerequisites but not unlocks, so the def
+     verifier has this to call instead: every unlock has to name a real
+     def, or the tree promises something the colony can never build. */
   Research.validateUnlocks = function () {
     var errors = [];
     Research.projects().forEach(function (d) {

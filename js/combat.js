@@ -41,6 +41,7 @@
   var Combat = {};
 
   var TICKS_PER_SECOND = 60;
+  var TAU = Math.PI * 2;
 
   /* The four ranges the weapon accuracy curve is quoted at. */
   var BAND_TOUCH = 3, BAND_SHORT = 12, BAND_MEDIUM = 25, BAND_LONG = 40;
@@ -123,7 +124,6 @@
      nobody else. animals.js keeps the decision in pawn.animalMind and the
      attack itself in the job; either is enough to read the intent. */
   function aggroTargetId(a) {
-    if (a.preyId) return a.preyId;
     var mind = a.animalMind;
     if (mind && (mind.preyId || mind.revengeId)) return mind.preyId || mind.revengeId;
     var job = a.job;
@@ -147,6 +147,12 @@
     wild: {}
   };
 
+  function factionsFight(fa, fb) {
+    if (!fa || !fb || fa === fb) return false;
+    var ea = FACTION_ENEMIES[fa], eb = FACTION_ENEMIES[fb];
+    return !!((ea && ea[fb]) || (eb && eb[fa]));
+  }
+
   function startsFightWith(a, b) {
     /* A berserk pawn has no friends. */
     if (isBerserk(a)) return true;
@@ -161,8 +167,15 @@
     return !!(enemies && enemies[fb]);
   }
 
+  /* Two entities, or - the way think.js asks it when Game is not there to
+     answer - two faction ids. The table settles both questions, and only
+     the entity form can see a berserk colonist or a manhunter hare. */
   Combat.hostile = function (a, b) {
     if (!a || !b || a === b) return false;
+    if (typeof a === 'string' || typeof b === 'string') {
+      return factionsFight(typeof a === 'string' ? a : a.faction,
+                           typeof b === 'string' ? b : b.faction);
+    }
     return startsFightWith(a, b) || startsFightWith(b, a);
   };
 
@@ -190,29 +203,47 @@
     return !!(b && b.isDoor && thing.open === true);
   }
 
-  function blocksSight(map, x, y) {
+  function wallBlocksSight(map, x, y) {
     var b = map.buildingAt(x, y);
     if (!b || !b.def || !b.def.blocksLight) return false;
     return !isOpenDoor(b);
   }
 
-  /* Bresenham, start cell excluded: a pawn standing in a doorway can
-     still shoot out of it. */
-  Combat.lineOfSight = function (map, x1, y1, x2, y2) {
+  /* A grown tree carries blocksLight and its def promises it breaks a
+     raider's line of sight, and this file is the only thing that reads the
+     flag. A sapling is knee high and stops nothing, so the canopy has to
+     be up before the sightline goes down. */
+  var CANOPY_GROWTH = 0.4;
+
+  function blocksSight(map, x, y) {
+    if (wallBlocksSight(map, x, y)) return true;
+    var p = map.plantAt ? map.plantAt(x, y) : null;
+    if (!p || !p.def || !p.def.blocksLight) return false;
+    return p.growth === undefined || p.growth >= CANOPY_GROWTH;
+  }
+
+  /* Bresenham, start and end cells excluded: a pawn standing in a doorway
+     can still shoot out of it, and one standing under a tree can still be
+     shot. `plantsToo` is false for a blast, which a hedge does not contain. */
+  function traceClear(map, x1, y1, x2, y2, plantsToo) {
     if (!map) return false;
     x1 = x1 | 0; y1 = y1 | 0; x2 = x2 | 0; y2 = y2 | 0;
     if (!map.inBounds(x1, y1) || !map.inBounds(x2, y2)) return false;
     var dx = Math.abs(x2 - x1), sx = x1 < x2 ? 1 : -1;
     var dy = -Math.abs(y2 - y1), sy = y1 < y2 ? 1 : -1;
     var err = dx + dy, x = x1, y = y1;
-    for (;;) {
-      if (x === x2 && y === y2) return true;
+    while (x !== x2 || y !== y2) {
       var e2 = 2 * err;
       if (e2 >= dy) { err += dy; x += sx; }
       if (e2 <= dx) { err += dx; y += sy; }
       if (x === x2 && y === y2) return true;
-      if (blocksSight(map, x, y)) return false;
+      if (plantsToo ? blocksSight(map, x, y) : wallBlocksSight(map, x, y)) return false;
     }
+    return true;
+  }
+
+  Combat.lineOfSight = function (map, x1, y1, x2, y2) {
+    return traceClear(map, x1, y1, x2, y2, true);
   };
 
   /* Reused so that asking for a hit chance every frame in the UI does not
@@ -330,7 +361,7 @@
       return {
         damage: kind.meleeDamage || 5,
         type: kind.meleeDamageType || 'bite',
-        cooldown: kind.meleeCooldownTicks || kind.meleeCooldown || 100,
+        cooldown: kind.meleeCooldownTicks || 100,
         pen: kind.meleeArmorPen || 0,
         source: kind
       };
@@ -564,7 +595,7 @@
       /* The forced miss is chosen now, so the bullet visibly flies at the
          wrong cell rather than evaporating on arrival. */
       var r = w.forcedMissRadius > 0 ? w.forcedMissRadius : missRadiusFor(U.dist(shooter.x, shooter.y, aimX, aimY));
-      var ang = U.rand() * 6.283185307179586;
+      var ang = U.rand() * TAU;
       var rad = 0.7 + Math.sqrt(U.rand()) * r;
       tx = Math.round(aimX + Math.cos(ang) * rad);
       ty = Math.round(aimY + Math.sin(ang) * rad);
@@ -670,26 +701,36 @@
     });
   }
 
+  /* Flown in steps of at most one tile even when the round covers more
+     than that in a tick. A sniper round moves 1.33 tiles a tick, and a
+     single jump of that length rounds straight past every third cell -
+     which is a bullet through a one-tile wall. */
   function advanceProjectile(map, p) {
-    p.travelled += p.speed;
-    if (p.travelled >= p.dist) {
-      p.x = p.tx; p.y = p.ty;
-      p.dead = true;
-      impact(map, p);
-      return;
-    }
-    var t = p.travelled / p.dist;
-    p.x = p.sx + (p.tx - p.sx) * t;
-    p.y = p.sy + (p.ty - p.sy) * t;
-    var cx = Math.round(p.x), cy = Math.round(p.y);
-    if (cx === p.cellX && cy === p.cellY) return;
-    p.cellX = cx; p.cellY = cy;
-    if (!map.inBounds(cx, cy)) { p.dead = true; return; }
-    var hit = interceptAt(map, p, cx, cy);
-    if (hit) {
-      p.blocked = hit;
-      p.dead = true;
-      impact(map, p);
+    var left = p.speed;
+    while (left > 0) {
+      var step = left > 1 ? 1 : left;
+      left -= step;
+      p.travelled += step;
+      if (p.travelled >= p.dist) {
+        p.x = p.tx; p.y = p.ty;
+        p.dead = true;
+        impact(map, p);
+        return;
+      }
+      var t = p.travelled / p.dist;
+      p.x = p.sx + (p.tx - p.sx) * t;
+      p.y = p.sy + (p.ty - p.sy) * t;
+      var cx = Math.round(p.x), cy = Math.round(p.y);
+      if (cx === p.cellX && cy === p.cellY) continue;
+      p.cellX = cx; p.cellY = cy;
+      if (!map.inBounds(cx, cy)) { p.dead = true; return; }
+      var hit = interceptAt(map, p, cx, cy);
+      if (hit) {
+        p.blocked = hit;
+        p.dead = true;
+        impact(map, p);
+        return;
+      }
     }
   }
 
@@ -703,9 +744,16 @@
   var _chain = 0;
 
   Combat.explosion = function (map, x, y, radius, damage, type, opts) {
-    opts = opts || {};
     if (!map || !map.inBounds(x, y) || _chain >= MAX_CHAIN) return null;
+    /* The depth has to come back down even if something inside the blast
+       radius throws on the way, or one bad tick silently disarms every
+       explosion for the rest of the game. */
     _chain++;
+    try { return detonate(map, x, y, radius, damage, type, opts || {}); }
+    finally { _chain--; }
+  };
+
+  function detonate(map, x, y, radius, damage, type, opts) {
     var fire = type === 'flame' || type === 'incendiary' || type === 'fire' || type === 'burn';
     type = fire ? 'burn' : (type || 'explosion');
     radius = Math.max(0.5, radius);
@@ -720,8 +768,8 @@
       var d = U.dist(x, y, cx, cy);
       if (d > radius) continue;
       /* Walls contain a blast: past the first ring, only cells the centre
-         can actually see are inside it. */
-      if (d > 1.5 && !Combat.lineOfSight(map, x, y, cx, cy)) continue;
+         can actually reach are inside it. */
+      if (d > 1.5 && !traceClear(map, x, y, cx, cy, false)) continue;
       var amount = Math.max(1, Math.round(damage * (1 - 0.55 * (d / radius))));
 
       /* Backwards: killing a pawn takes it straight out of the per-cell
@@ -758,9 +806,8 @@
       type: type, ticksLeft: 22, maxTicks: 22
     };
     Combat.explosions.push(rec);
-    _chain--;
     return rec;
-  };
+  }
 
   /* ------------------------------------------------------------------
      Stances
@@ -808,7 +855,7 @@
       shotsLeft: Math.max(1, w.burstCount || 1),
       burstTicks: Math.max(1, w.burstTicks || 1),
       cooldown: cool, w: w, source: weaponSource || null,
-      target: target, lastTick: now()
+      target: target
     };
     _stances.set(shooter.id, st);
     if (shooter.stanceTicks !== undefined) shooter.stanceTicks = warm;
@@ -854,7 +901,7 @@
     _stances.set(attacker.id, {
       id: attacker.id, owner: attacker, map: map, ranged: false, mode: 'cooldown',
       ticksLeft: cd, total: cd, cooldown: cd, shotsLeft: 0,
-      burstTicks: 1, w: null, source: m.source, target: target, lastTick: now()
+      burstTicks: 1, w: null, source: m.source, target: target
     });
     if (attacker.stanceTicks !== undefined) attacker.stanceTicks = cd;
     return true;
@@ -862,7 +909,6 @@
 
   function advanceStance(st) {
     var e = st.owner, map = st.map;
-    st.lastTick = now();
     if (st.mode !== 'cooldown') {
       var t = liveTarget(st.target);
       if (!t) {
@@ -1004,6 +1050,11 @@
     }
 
     if (opts.includeBuildings) {
+      /* Held from before the structure scan: the penalty below is meant to
+         say "a live pawn beats the wall behind it", and reading `best` as
+         the loop fills it would instead penalise every structure after the
+         first one found and make the answer depend on scan order. */
+      var foundPawn = best !== null;
       for (var s = 0; s < STRUCTURE_TARGETS.length; s++) {
         var defId = STRUCTURE_TARGETS[s];
         var things = map.byDef ? map.byDef(defId) : null;
@@ -1016,8 +1067,7 @@
           if (d > maxDist) continue;
           if (needLoS && !Combat.lineOfSight(map, pawn.x, pawn.y, b.x, b.y)) continue;
           score = 8 * (STRUCTURE_VALUE[defId] || 1) / distanceWeight(d);
-          /* A live pawn is always worth more than the wall behind it. */
-          if (best) score *= 0.5;
+          if (foundPawn) score *= 0.5;
           if (score > bestScore) { bestScore = score; best = b; }
         }
       }
@@ -1040,7 +1090,13 @@
     var tx = threat ? threat.x : pawn.x, ty = threat ? threat.y : pawn.y;
     var dx = pawn.x - tx, dy = pawn.y - ty;
     var len = Math.sqrt(dx * dx + dy * dy);
-    if (len < 0.001) { dx = 1; dy = 0; len = 1; }
+    /* Panic with nothing to run from - think.js hands the panicFlee break
+       a bare flee job - still has to pick a heading, and every such pawn
+       bolting due east looks like a bug because it is one. */
+    if (len < 0.001) {
+      var a0 = U.rand() * TAU;
+      dx = Math.cos(a0); dy = Math.sin(a0); len = 1;
+    }
     dx /= len; dy /= len;
 
     var best = null, bestScore = -Infinity;
@@ -1077,9 +1133,12 @@
     var b = thing.def.building;
     if (!b || !b.isTurret) return;
     if (thing.tickFn !== turretTickFn && map.setTickFn) map.setTickFn(thing, turretTickFn);
-    var t = now();
-    if (thing._turretTick === t) return;
-    thing._turretTick = t;
+    /* _tick, not Game.tick: this is only here to stop the two paths that
+       reach a turret - map's tick list and the sweep in Combat.tick - from
+       firing it twice in one tick, and combat has to be able to answer
+       that on its own clock. */
+    if (thing._turretTick === _tick) return;
+    thing._turretTick = _tick;
 
     var st = _stances.get(thing.id);
     if (b.powerConsumed > 0 && thing.powered === false) {
@@ -1090,7 +1149,7 @@
 
     /* Re-acquiring every tick would be the most expensive thing in the
        game; twice a second is faster than anything can cross a tile. */
-    if ((t + thing.id) % 30 !== 0) return;
+    if ((_tick + thing.id) % 30 !== 0) return;
     var w = Combat.turretWeapon(thing.def);
     if (!w) return;
     var target = Combat.findTarget(thing, {
@@ -1160,7 +1219,6 @@
      ------------------------------------------------------------------ */
 
   Combat.tick = function (map) {
-    _tick++;
     if (!map) return;
     var list = Combat.projectiles, i, w = 0, p;
     for (i = 0; i < list.length; i++) {
@@ -1190,16 +1248,23 @@
     if (traps) for (i = traps.length - 1; i >= 0; i--) Combat.tickTrap(map, traps[i]);
 
     if (_stances.size) _stances.forEach(tickStance, map);
+
+    /* Bumped last, not first. map.js reaches a turret through its own tick
+       list before this runs, so the value the two paths compare has to be
+       the one that was standing when map.tick went past. */
+    _tick++;
   };
 
   /* One tick of every warmup, burst and cooldown in the world. A stance
      whose owner has died, gone down or left the map is dropped: an aim is
-     only worth keeping while there is somebody behind it. */
+     only worth keeping while there is somebody behind it. A pawn who walks
+     off with a caravan leaves the map without dying, and a stance nothing
+     drops keeps firing rounds out of an empty tile. */
   function tickStance(st, id, all) {
     /* `this` is the map Combat.tick was handed; Map.forEach passes it. */
     var e = st.owner;
     if (st.map !== this || !e || e.dead ||
-        (isPawn(e) ? e.downed : e.spawned === false)) {
+        (isPawn(e) ? (e.downed || e.map !== st.map) : e.spawned === false)) {
       all.delete(id);
       if (e && e.stanceTicks !== undefined) { e.stanceTicks = 0; e.aimTarget = null; }
       return;
@@ -1254,10 +1319,16 @@
     return true;
   }
 
+  /* pawn.js owns the move state, and its own stopPath clears the four
+     fields a half-cleared path leaves lying around - moveProgress, the
+     destination index and the interpolated draw position. */
   function stopChasing(pawn) {
     if (!pawn.path) return;
+    if (typeof pawn.stopPath === 'function') { pawn.stopPath(); return; }
     pawn.path = null;
     pawn.pathIdx = 0;
+    pawn.moveProgress = 0;
+    pawn.pathDest = -1;
   }
 
   /* A downed enemy is out of the fight, and a colonist does not execute
@@ -1361,11 +1432,18 @@
           Toils.custom({
             name: 'pickFleeCell',
             tick: function (pawn, job) {
-              if (job.targetA) return 'next';
-              var threat = targetOf(job, 'B', pawn.map);
-              var cell = Combat.fleeCell(pawn.map, pawn, threat);
+              var map = pawn.map;
+              var a = job.targetA;
+              /* A cell in targetA is somewhere to run to. Anything else in
+                 it is the thing being run from: think.js builds its flee
+                 job as makeJob('flee', target('pawn', from)), and taking
+                 that at face value would send the pawn at the raider. */
+              if (a && a.k === 'c') return 'next';
+              var threat = a ? (T ? T.resolve(a, map) : null) : targetOf(job, 'B', map);
+              var cell = Combat.fleeCell(map, pawn, threat);
               if (!cell) return 'fail';
               job.targetA = T ? T.cell(cell.x, cell.y) : { k: 'c', x: cell.x, y: cell.y };
+              if (threat && !job.targetB) job.targetB = a;
               return 'next';
             }
           }),
