@@ -265,7 +265,9 @@
 
   Particles.spawn = function (kindName, x, y, opts) {
     var k = typeof kindName === 'number' ? kindName : NAMES[kindName];
-    if (k === undefined || !(x === x) || !(y === y)) return -1;
+    /* typeof rather than a plain undefined check: a kind name of
+       'constructor' would otherwise find something on Object.prototype. */
+    if (typeof k !== 'number' || k >= KINDS || !(x === x) || !(y === y)) return -1;
     if (k === K.EXPLOSION && (!opts || !opts.plain)) {
       explosionAt(x, y, opts && opts.radius, opts);
       return -1;
@@ -275,7 +277,7 @@
 
   Particles.burst = function (kindName, x, y, n, opts) {
     var k = typeof kindName === 'number' ? kindName : NAMES[kindName];
-    if (k === undefined || !(x === x) || !(y === y)) return;
+    if (typeof k !== 'number' || k >= KINDS || !(x === x) || !(y === y)) return;
     n = Math.max(1, Math.min(160, n | 0 || 1));
     if (k === K.EXPLOSION) { explosionAt(x, y, (opts && opts.radius) || (0.6 + n * 0.12), opts); return; }
     var o = opts || null;
@@ -724,7 +726,7 @@
 
   var weather = { kind: 'none', intensity: 0, manual: false };
   var windX = 0, windY = 0, windStrength = 0;
-  var clock = 0, weatherCheck = 0;
+  var clock = 0, weatherCheck = 0, autoAt = -1;
 
   var WEATHERS = { none: 1, rain: 1, snow: 1, fog: 1 };
 
@@ -772,6 +774,10 @@
         return;
       }
     }
+    /* The calendar does not change in a third of a second, and hashing a
+       freshly built string every frame to learn that is work for nothing. */
+    if (clock - autoAt < 0.3) return;
+    autoAt = clock;
     var day = G.day ? G.day() : 0;
     var frac = G.timeOfDay ? G.timeOfDay() : 0;
     var wet = (U.hash('rimdaun-sky-' + day) % 1000) / 1000;

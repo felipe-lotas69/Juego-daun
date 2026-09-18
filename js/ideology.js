@@ -1797,8 +1797,18 @@
      or a work giver asks it a question first.
      ============================================================ */
 
-  Ideology.tickRituals = function (g) {
-    var G = g || game();
+  /* game.js calls its map tickers as fn(map, game) and everything else
+     calls this with the game alone, so the argument is sniffed rather
+     than assumed: whichever of the two is the game wins, and a caller
+     that passes nothing gets the live one. */
+  function gameFrom(a, b) {
+    if (a && a.doTick && a.colonists) return a;
+    if (b && b.doTick && b.colonists) return b;
+    return game();
+  }
+
+  Ideology.tickRituals = function (a, b) {
+    var G = gameFrom(a, b);
     if (!G || !G.map) return;
     ensureState();
     var t = now();
