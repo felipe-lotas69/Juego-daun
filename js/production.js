@@ -39,7 +39,14 @@
   function sys(name) { return root[name] || null; }
   function tickNow() { var G = sys('Game'); return (G && typeof G.tick === 'number') ? G.tick : 0; }
   function defOf(t) { return t ? (t.def || Defs.maybe('thing', t.defId)) : null; }
-  function skillLevel(pawn, id) { var s = pawn && pawn.skills && pawn.skills[id]; return s ? (s.level || 0) : 0; }
+  /* Pawn owns the skill table; animals answer through the same call
+     with numbers that live on their kind. */
+  function skillLevel(pawn, id) {
+    if (!pawn || !id) return 0;
+    if (typeof pawn.skillLevel === 'function') return pawn.skillLevel(id) || 0;
+    var s = pawn.skills && pawn.skills[id];
+    return s ? (s.level || 0) : 0;
+  }
   function hasTrait(pawn, id) { return !!(pawn && pawn.traits && pawn.traits.indexOf(id) >= 0); }
 
   function mapFor(building, pawn) {

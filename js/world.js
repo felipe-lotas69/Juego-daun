@@ -3,22 +3,23 @@
 
    Three ideas run through this file.
 
-   Oceans are grown, not sprinkled. A threshold on a noise field gives
+   Oceans are grown, not sprinkled. A threshold on a noise field puts
    water every third cell, and a world you cannot walk across is not a
-   world. Here the sea floods outward from a handful of seeds and always
-   eats the lowest land left on its shore, so what comes out is a
-   coastline with bays and headlands and a continent wide enough to
-   spend a fortnight crossing.
+   world. Here the sea floods out from a handful of seeds and always
+   takes the lowest land left on its shore, so what comes out is a
+   coastline with bays and headlands, and a continent wide enough that
+   crossing it is a fortnight of someone's life.
 
    Distance is the point of everything built on top of this file. A
    caravan is an interesting decision only because the trip costs days
    you could have spent farming, so travelTicks is honest about biome,
-   hills and roads - and a road is worth the route it bends.
+   hills and roads, and a road really is worth the detour.
 
-   All the planet knows lives in typed arrays plus one list of
-   settlements. save.js has to write the lot out and read it back, and a
-   save file is no place for a graph of live object references, so the
-   only things pointing at each other are integers.
+   Nothing here decides who owns what. The planet lays out sites where
+   a town could stand; factions.js says whose flag flies over them.
+   Everything the world knows lives in typed arrays plus one list of
+   settlements, because save.js has to write the lot out and read it
+   back, and a save file is no place for live object references.
    ============================================================ */
 (function (root) {
   'use strict';
@@ -36,61 +37,55 @@
   var BASE_TICKS_PER_TILE = 30000;   /* half a day on flat temperate ground */
   var DIAG = 1.4142135623730951;
   var ROAD_FACTOR = [1, 0.55, 0.45]; /* none, road, the highway a second route wore in */
-  var MIN_SITE_DIST = 4;             /* no two settlements within three tiles */
-  var MAX_ROAD_DIST = 13;            /* further apart than this and nobody bothers */
-  var RIVER_RAIN_BONUS = 200;
+  var MIN_SITE_DIST = 4;             /* keeps settlements three clear tiles apart */
+  var MAX_ROAD_DIST = 13;            /* further than this and nobody keeps a road up */
+  var RIVER_RAIN_BONUS = 0.1;
   var PATH_CACHE_MAX = 900;
+  var RAIN_MM = 2000;                /* rainfall is stored 0..1; this is what 1 means */
 
-  var OCEAN = 0;
-  /* The Uint8 biome grid stores an index into this list, so the order is
-     as frozen as the ids themselves. */
-  var BIOME_ORDER = ['ocean', 'tundra', 'borealForest', 'temperateForest', 'aridShrubland', 'desert'];
-
-  /* def_factions.js registers the worldBiome defs; these are the numbers
-     the planet falls back on when it does not, and the base every
-     registered def is merged over. Bands are [min, max] and a biome is
-     picked by whichever misses the tile's climate by least. */
-  var BIOME_FALLBACK = {
-    ocean: {
-      label: 'ocean', mapBiome: null, habitable: false, water: true, impassable: true,
-      travelCostFactor: 8, forageability: 0, color: '#2f5d78',
-      temperature: null, rainfall: null
-    },
-    tundra: {
-      label: 'tundra', mapBiome: 'borealForest', habitable: true, travelCostFactor: 1.55,
-      forageability: 0.05, color: '#a9b7b1', temperature: [-80, -5], rainfall: [0, 2000]
-    },
-    borealForest: {
-      label: 'boreal forest', mapBiome: 'borealForest', habitable: true, travelCostFactor: 1.3,
-      forageability: 0.5, color: '#3d5c40', temperature: [-5, 8], rainfall: [200, 2000]
-    },
-    temperateForest: {
-      label: 'temperate forest', mapBiome: 'temperateForest', habitable: true, travelCostFactor: 1,
-      forageability: 0.85, color: '#5c7a3e', temperature: [6, 32], rainfall: [800, 2000]
-    },
-    aridShrubland: {
-      label: 'arid shrubland', mapBiome: 'aridShrubland', habitable: true, travelCostFactor: 1.15,
-      forageability: 0.4, color: '#9a9a52', temperature: [4, 40], rainfall: [300, 900]
-    },
-    desert: {
-      label: 'desert', mapBiome: 'aridShrubland', habitable: true, travelCostFactor: 1.45,
-      forageability: 0.08, color: '#c2b280', temperature: [12, 60], rainfall: [0, 400]
-    }
-  };
-
-  /* Rain by latitude: wet on the equator, the subtropical dry belt at a
-     quarter of the way to the pole, temperate rain again, then cold desert. */
+  /* Rain by latitude: wet on the equator, the subtropical dry belt a
+     quarter of the way to the pole, temperate rain again, then the cold
+     desert nobody thinks of as a desert. */
   var RAIN_BY_LAT = [[0, 1], [0.12, 0.95], [0.28, 0.3], [0.42, 0.55], [0.58, 0.9], [0.75, 0.6], [1, 0.3]];
   var RAIN_BY_TEMP = [[-25, 0.25], [-5, 0.6], [5, 0.85], [15, 1], [40, 1]];
   var TEMP_LIVEABLE = [[-25, 0], [-10, 0.15], [0, 0.5], [10, 1], [22, 1], [32, 0.5], [42, 0.05]];
-  var RAIN_LIVEABLE = [[0, 0.1], [200, 0.35], [600, 0.8], [1200, 1], [2000, 0.85]];
+  var RAIN_LIVEABLE = [[0, 0.08], [0.1, 0.35], [0.3, 0.8], [0.6, 1], [1, 0.85]];
   var SEASON_OPPOSITE = { spring: 'fall', summer: 'winter', fall: 'spring', winter: 'summer' };
+
+  /* def_factions.js owns the worldBiome defs and its numbers always win.
+     This is the same table in miniature, for the day something loads the
+     planet without them: same field names, same bands, so the generator
+     below never has to know which of the two it is reading. */
+  var BIOME_FALLBACK = [
+    { id: 'temperateForest', label: 'temperate forest', color: '#4e7a3a', mapBiome: 'temperateForest',
+      habitable: true, travelCostFactor: 1, settlementWeight: 1.6,
+      temperatureBand: [-8, 28], rainfallBand: [0.42, 0.78], latitudeBand: [0.28, 0.62] },
+    { id: 'grassland', label: 'grassland', color: '#7d9a4a', mapBiome: 'temperateForest',
+      habitable: true, travelCostFactor: 0.85, settlementWeight: 1.5,
+      temperatureBand: [-4, 31], rainfallBand: [0.3, 0.55], latitudeBand: [0.2, 0.5] },
+    { id: 'aridShrubland', label: 'arid shrubland', color: '#9d9350', mapBiome: 'aridShrubland',
+      habitable: true, travelCostFactor: 0.95, settlementWeight: 1.1,
+      temperatureBand: [2, 38], rainfallBand: [0.16, 0.34], latitudeBand: [0.12, 0.42] },
+    { id: 'desert', label: 'desert', color: '#c2b280', mapBiome: 'aridShrubland',
+      habitable: true, travelCostFactor: 1.2, settlementWeight: 0.45,
+      temperatureBand: [6, 46], rainfallBand: [0.03, 0.16], latitudeBand: [0.14, 0.38] },
+    { id: 'borealForest', label: 'boreal forest', color: '#3e5f4a', mapBiome: 'borealForest',
+      habitable: true, travelCostFactor: 1.15, settlementWeight: 0.9,
+      temperatureBand: [-28, 22], rainfallBand: [0.35, 0.75], latitudeBand: [0.58, 0.8] },
+    { id: 'tundra', label: 'tundra', color: '#8a927f', mapBiome: 'borealForest',
+      habitable: true, travelCostFactor: 1.3, settlementWeight: 0.35,
+      temperatureBand: [-38, 14], rainfallBand: [0.12, 0.6], latitudeBand: [0.76, 0.92] },
+    { id: 'ocean', label: 'ocean', color: '#2f5d78', mapBiome: 'temperateForest',
+      habitable: false, impassable: true, travelCostFactor: 0, settlementWeight: 0,
+      temperatureBand: [-2, 26], rainfallBand: [0, 1], latitudeBand: [0, 1] }
+  ];
 
   /* ---------- state ---------- */
 
   var w = 0, h = 0, size = 0;
   var grids = null;
-  var biomeDefs = null;
+  var biomeDefs = null;              /* index-aligned with the Uint8 biome grid */
+  var oceanIndex = 0, landIndex = 0;
   var settlements = [];
   var settlementsById = new Map();
   var sites = [];
@@ -105,11 +100,10 @@
   var _pathCache = new Map();
 
   /* ---------- seeded value noise ----------
-     Written here rather than borrowed from utils because it has to be a
-     pure function of (seed, position): the same tile must give the same
-     number no matter what order the generator walks the map in, and it
-     has to be periodic in x or the world would have a seam down the
-     antimeridian. */
+     Written here rather than borrowed, because it has to be a pure
+     function of (seed, position): the same tile must give the same
+     number whatever order the generator walks the map in, and it has to
+     be periodic in x or the world would have a seam down one meridian. */
 
   function hashLattice(seed, xi, yi) {
     var n = (seed ^ Math.imul(xi | 0, 374761393) ^ Math.imul(yi | 0, 668265263)) | 0;
@@ -120,15 +114,14 @@
 
   function smoothstep(t) { return t * t * (3 - 2 * t); }
 
-  /* u runs 0..1 across the world and wraps; v runs 0..1 pole to pole and
-     does not. fx is the number of lattice columns, which is why it must be
-     a whole number: that is the period. */
+  /* u runs 0..1 around the world and wraps; v runs pole to pole and does
+     not. fx is the number of lattice columns, so it must be a whole
+     number: it is the period that hides the seam. */
   function valueNoise(seed, u, v, fx, fy) {
     var px = u * fx, py = v * fy;
     var x0 = Math.floor(px), y0 = Math.floor(py);
     var tx = smoothstep(px - x0), ty = smoothstep(py - y0);
-    var xa = ((x0 % fx) + fx) % fx;
-    var xb = (((x0 + 1) % fx) + fx) % fx;
+    var xa = ((x0 % fx) + fx) % fx, xb = (((x0 + 1) % fx) + fx) % fx;
     var n00 = hashLattice(seed, xa, y0), n10 = hashLattice(seed, xb, y0);
     var n01 = hashLattice(seed, xa, y0 + 1), n11 = hashLattice(seed, xb, y0 + 1);
     return U.lerp(U.lerp(n00, n10, tx), U.lerp(n01, n11, tx), ty);
@@ -151,13 +144,12 @@
   function xOf(i) { return i % w; }
   function yOf(i) { return (i / w) | 0; }
   function latOf(i) { return Math.abs((yOf(i) + 0.5) / h - 0.5) * 2; }
-  function isOceanIdx(i) { return grids.biome[i] === OCEAN; }
+  function isOceanIdx(i) { return grids.biome[i] === oceanIndex; }
 
   function neighbourIdx(i, d) {
-    var dx = U.ADJ8[d][0], dy = U.ADJ8[d][1];
-    var ny = yOf(i) + dy;
+    var ny = yOf(i) + U.ADJ8[d][1];
     if (ny < 0 || ny >= h) return -1;
-    return ny * w + wrapX(xOf(i) + dx);
+    return ny * w + wrapX(xOf(i) + U.ADJ8[d][0]);
   }
 
   function distanceIdx(a, b) {
@@ -170,50 +162,45 @@
   /* ---------- biome defs ---------- */
 
   function resolveBiomeDefs() {
-    var registered = null;
+    var list = null;
     try {
-      if (Defs && typeof Defs.all === 'function') registered = Defs.all('worldBiome');
-      if ((!registered || !registered.length) && Defs && typeof Defs.table === 'function') {
-        var table = Defs.table('worldBiome');
-        if (table) registered = Object.keys(table).map(function (k) { return table[k]; });
-      }
-    } catch (e) { registered = null; }
+      if (Defs && typeof Defs.all === 'function') list = Defs.all('worldBiome');
+    } catch (e) { list = null; }
+    if (!list || !list.length) list = BIOME_FALLBACK;
 
-    var byId = {};
-    if (registered) {
-      for (var r = 0; r < registered.length; r++) {
-        var def = registered[r];
-        if (def && def.id) byId[def.id] = def;
-      }
-    }
-    return BIOME_ORDER.map(function (id, index) {
-      var out = { id: id, index: index };
-      var base = BIOME_FALLBACK[id];
-      Object.keys(base).forEach(function (k) { out[k] = base[k]; });
-      var reg = byId[id];
-      if (reg) {
-        Object.keys(reg).forEach(function (k) {
-          if (k === 'id' || k === 'defIndex' || k === 'defCategory') return;
-          if (reg[k] !== undefined && reg[k] !== null) out[k] = reg[k];
-        });
-      }
-      if (typeof out.travelCostFactor !== 'number' || !(out.travelCostFactor > 0)) {
-        out.travelCostFactor = base.travelCostFactor;
-      }
-      return out;
+    biomeDefs = list.map(function (def, i) {
+      var band = def.temperatureBand || [-60, 60];
+      return {
+        id: def.id, index: i, def: def,
+        label: def.label || def.id,
+        color: def.color || '#5c7a3e',
+        mapBiome: def.mapBiome || 'temperateForest',
+        habitable: def.habitable !== false && !def.impassable,
+        impassable: !!def.impassable,
+        travelCostFactor: def.travelCostFactor > 0 ? def.travelCostFactor : 1,
+        settlementWeight: def.settlementWeight === undefined ? 1 : def.settlementWeight,
+        temperatureBand: band,
+        rainfallBand: def.rainfallBand || [0, 1],
+        latitudeBand: def.latitudeBand || [0, 1]
+      };
     });
-  }
 
-  /* The A* heuristic may never overestimate, so it is scaled by the
-     cheapest step the planet can possibly offer. */
-  function computeMinStepFactor() {
-    var min = Infinity;
-    for (var i = 1; i < biomeDefs.length; i++) {
-      if (biomeDefs[i].impassable) continue;
-      min = Math.min(min, biomeDefs[i].travelCostFactor);
+    oceanIndex = 0;
+    landIndex = -1;
+    for (var k = 0; k < biomeDefs.length; k++) {
+      if (biomeDefs[k].id === 'ocean' || biomeDefs[k].impassable) oceanIndex = k;
+      else if (landIndex < 0) landIndex = k;
     }
-    if (!isFinite(min)) min = 1;
-    return Math.max(0.05, min * ROAD_FACTOR[2]);
+    if (landIndex < 0) landIndex = oceanIndex === 0 ? 1 : 0;
+
+    /* The A* heuristic may never overestimate, so it is scaled by the
+       cheapest step the planet could possibly offer. */
+    var min = Infinity;
+    for (var j = 0; j < biomeDefs.length; j++) {
+      if (j !== oceanIndex && !biomeDefs[j].impassable) min = Math.min(min, biomeDefs[j].travelCostFactor);
+    }
+    minStepFactor = Math.max(0.05, (isFinite(min) ? min : 1) * ROAD_FACTOR[2]);
+    return biomeDefs;
   }
 
   function bandMiss(value, band) {
@@ -223,13 +210,18 @@
     return 0;
   }
 
-  function pickBiomeIndex(temp, rain) {
-    var best = 1, bestMiss = Infinity;
-    for (var i = 1; i < biomeDefs.length; i++) {
-      var def = biomeDefs[i];
-      /* Rainfall is in millimetres and temperature in degrees, so the two
-         misses are put on the same scale before they are added. */
-      var miss = bandMiss(temp, def.temperature) + bandMiss(rain, def.rainfall) / 120;
+  /* Whichever biome's three bands the tile misses by least. Degrees,
+     a 0..1 rainfall fraction and a 0..1 latitude are not comparable
+     numbers, so each miss is scaled before they are added: climate
+     decides, and latitude only breaks the ties climate leaves. */
+  function pickBiomeIndex(temp, rain, lat) {
+    var best = landIndex, bestMiss = Infinity;
+    for (var i = 0; i < biomeDefs.length; i++) {
+      var b = biomeDefs[i];
+      if (i === oceanIndex || b.impassable) continue;
+      var miss = bandMiss(temp, b.temperatureBand) / 8 +
+                 bandMiss(rain, b.rainfallBand) * 6 +
+                 bandMiss(lat, b.latitudeBand) * 3;
       if (miss < bestMiss) { bestMiss = miss; best = i; }
     }
     return best;
@@ -264,38 +256,34 @@
     settlementsById.clear();
     sites = [];
     siteInfo.clear();
-    clearPathCache();
+    _pathCache.clear();
   }
 
   function publish() {
-    World.w = w;
-    World.h = h;
-    World.size = size;
+    World.w = w; World.h = h; World.size = size;
     World.tiles = grids;
     World.settlements = settlements;
     World.sites = sites;
     World.colonyTile = colonyTile;
     World.seed = worldSeed;
     World.noiseSeeds = noiseSeeds;
+    World.biomeIds = biomeDefs.map(function (b) { return b.id; });
     World.generated = !!grids;
   }
-
-  function clearPathCache() { _pathCache.clear(); }
 
   /* ---------- generation ---------- */
 
   World.generate = function (opts) {
     opts = opts || {};
-    /* The world is a pure function of the seed, so it borrows the shared
+    /* The planet is a pure function of the seed, so it borrows the shared
        stream, winds it to a world-only starting point and hands it back
-       exactly where it found it. MapGen rolls the same dice either way. */
+       exactly where it found it: MapGen rolls the same dice either way. */
     var streamState = U.getSeed();
     worldSeed = (opts.seed === undefined ? U.randInt(1, 2000000000) : opts.seed) >>> 0;
     U.seed((worldSeed ^ 0x776f726c) >>> 0);
 
     allocate(opts.w || DEFAULT_W, opts.h || DEFAULT_H);
-    biomeDefs = resolveBiomeDefs();
-    minStepFactor = computeMinStepFactor();
+    resolveBiomeDefs();
 
     noiseSeeds = {
       elevation: U.randInt(1, 2000000000),
@@ -330,27 +318,24 @@
            ridges, peninsulas and inlets. */
         var wu = u + (valueNoise(noiseSeeds.warp, u, v, 3, 2) - 0.5) * 0.22;
         var wv = v + (valueNoise(noiseSeeds.warp + 101, u, v, 3, 2) - 0.5) * 0.14;
-        var n = fbm(noiseSeeds.elevation, wu, wv, 5, 4, 2);
-        e[y * w + x] = U.clamp01((n - 0.5) * 1.55 + 0.5);
+        e[y * w + x] = U.clamp01((fbm(noiseSeeds.elevation, wu, wv, 5, 4, 2) - 0.5) * 1.55 + 0.5);
       }
     }
   }
 
   /* Priority flood: the sea starts at a few low points and repeatedly
      swallows the lowest tile on its own shore until it has taken about a
-     third of the planet. Basins fill first, so the result is seas with
-     coastlines rather than noise above a threshold. */
+     third of the planet. Basins fill first, so what comes out is seas
+     with coastlines instead of noise above a threshold. */
   function floodOceans() {
     var e = grids.elevation, biome = grids.biome;
     var target = Math.round(size * OCEAN_FRACTION);
-    var seedTiles = [];
+    var seedTiles = [], guard = 0;
     var wanted = U.randInt(3, 5);
-    var guard = 0;
     while (seedTiles.length < wanted && guard < 600) {
       guard++;
       var i = U.randInt(0, size - 1);
-      var limit = guard < 300 ? 0.45 : 1;
-      if (e[i] > limit) continue;
+      if (e[i] > (guard < 300 ? 0.45 : 1)) continue;
       var far = true;
       for (var s = 0; s < seedTiles.length; s++) {
         if (distanceIdx(i, seedTiles[s]) < w * 0.16) { far = false; break; }
@@ -363,8 +348,8 @@
       seedTiles.push(low);
     }
 
-    /* The biome grid is not written until the land climate is known, so
-       the flood keeps its own record of what is under water. */
+    /* The biome grid is not written until the climate is known, so the
+       flood keeps its own record of what is under water. */
     var sea = new Uint8Array(size);
     var heap = _heap;
     heap.clear();
@@ -378,7 +363,6 @@
         if (n >= 0 && !sea[n]) heap.push(n, e[n]);
       }
     }
-
     while (count < target && !heap.isEmpty()) {
       var next = heap.pop();
       if (sea[next]) continue;
@@ -391,12 +375,12 @@
     }
 
     smoothCoast(sea);
-    for (var j = 0; j < size; j++) biome[j] = sea[j] ? OCEAN : 1;
+    for (var j = 0; j < size; j++) biome[j] = sea[j] ? oceanIndex : landIndex;
   }
 
   /* Two rounds of majority smoothing: a spit of land with the sea on six
-     sides drowns, a one-tile pond dries up. Nothing else moves, so the
-     shape of the coast survives. */
+     sides drowns, a one-tile pond dries up, and the shape of the coast
+     survives both. */
   function smoothCoast(sea) {
     for (var pass = 0; pass < 2; pass++) {
       var next = sea.slice();
@@ -417,13 +401,12 @@
     }
   }
 
-  /* Land is stretched to fill the range above sea level and the sea bed
-     below it, so "elevation" reads the same everywhere: 0.32 is the
-     waterline, 1 is the top of the highest mountain. */
+  /* Land is stretched to fill the range above the waterline and the sea
+     bed the range below it, so elevation reads the same everywhere: 0.32
+     is the shore, 1 is the top of the highest mountain. */
   function normaliseElevation() {
     var e = grids.elevation;
-    var landMin = Infinity, landMax = -Infinity, seaMin = Infinity, seaMax = -Infinity;
-    var i;
+    var landMin = Infinity, landMax = -Infinity, seaMin = Infinity, seaMax = -Infinity, i;
     for (i = 0; i < size; i++) {
       if (isOceanIdx(i)) {
         if (e[i] < seaMin) seaMin = e[i];
@@ -455,19 +438,19 @@
         var i = y * w + x, u = (x + 0.5) / w;
         var wobble = (fbm(noiseSeeds.detail, u, v, 3, 5, 3) - 0.5) * 9;
         var t = latTemp + wobble - 30 * Math.max(0, e[i] - SEA_LEVEL);
-        /* Water holds its heat: the sea is never as cold or as hot as the
-           latitude alone would make it. */
+        /* Water holds its heat: the sea is never as cold, or as hot, as
+           the latitude on its own would make it. */
         if (isOceanIdx(i)) t = U.lerp(t, 12, 0.45);
         temp[i] = t;
-        var r = 2000 * band * (0.35 + 1.15 * fbm(noiseSeeds.rainfall, u, v, 4, 3, 2));
-        rain[i] = U.clamp(r * U.curve(RAIN_BY_TEMP, t), 0, 2000);
+        var r = band * (0.35 + 1.15 * fbm(noiseSeeds.rainfall, u, v, 4, 3, 2));
+        rain[i] = U.clamp01(r * U.curve(RAIN_BY_TEMP, t));
       }
     }
   }
 
   /* Rivers run downhill from wet high ground until they reach the sea,
-     join another river or settle into a basin with no way out. They are
-     what makes an inland settlement site worth having. */
+     join a bigger river, or settle into a basin with no way out. They
+     are what makes an inland town worth founding. */
   function carveRivers() {
     var e = grids.elevation, river = grids.river, rain = grids.rainfall;
     var wanted = Math.max(3, Math.round(size / 260));
@@ -476,13 +459,13 @@
       for (var k = 0; k < 24; k++) {
         var i = U.randInt(0, size - 1);
         if (isOceanIdx(i) || river[i]) continue;
-        var score = (e[i] - SEA_LEVEL) * 2 + rain[i] / 2000;
+        var score = (e[i] - SEA_LEVEL) * 2 + rain[i];
         if (score > bestScore) { bestScore = score; best = i; }
       }
       if (best >= 0) traceRiver(best);
     }
     for (var j = 0; j < size; j++) {
-      if (river[j]) rain[j] = Math.min(2000, rain[j] + RIVER_RAIN_BONUS);
+      if (river[j]) rain[j] = U.clamp01(rain[j] + RIVER_RAIN_BONUS);
     }
   }
 
@@ -495,45 +478,45 @@
       for (var d = 0; d < 8; d++) {
         var n = neighbourIdx(cur, d);
         if (n < 0) continue;
-        if (isOceanIdx(n)) return;                 /* reached the sea */
-        if (river[n] && e[n] <= e[cur]) return;    /* joined a bigger river */
-        if (river[n]) continue;
+        if (isOceanIdx(n)) return;                  /* reached the sea */
+        if (river[n]) { if (e[n] <= e[cur]) return; continue; }
         if (e[n] < low) { low = e[n]; next = n; }
       }
-      if (next < 0) return;                        /* a lake with no outflow */
+      if (next < 0) return;                         /* a lake with no outflow */
       cur = next;
     }
   }
 
   function assignBiomes() {
-    var biome = grids.biome, temp = grids.temperature, rain = grids.rainfall;
+    var biome = grids.biome;
     for (var i = 0; i < size; i++) {
-      if (biome[i] === OCEAN) continue;
-      biome[i] = pickBiomeIndex(temp[i], rain[i]);
+      if (biome[i] === oceanIndex) continue;
+      biome[i] = pickBiomeIndex(grids.temperature[i], grids.rainfall[i], latOf(i));
     }
   }
 
-  /* ---------- where the player lands ---------- */
+  /* ---------- where the pods come down ---------- */
 
   function pickColonyTile() {
     var pool = [], i;
     for (i = 0; i < size; i++) {
       if (isOceanIdx(i)) continue;
-      var def = biomeDefs[grids.biome[i]];
-      if (!def.habitable) continue;
+      var b = biomeDefs[grids.biome[i]];
+      if (!b.habitable) continue;
       var lat = latOf(i);
       if (lat < 0.14 || lat > 0.58) continue;
       var t = grids.temperature[i];
       if (t < 2 || t > 28) continue;
       if (grids.elevation[i] > SEA_LEVEL + 0.42) continue;
-      var score = habitability(t, grids.rainfall[i]) +
-        (def.id === 'temperateForest' ? 0.5 : 0) +
-        (grids.river[i] ? 0.15 : 0);
-      pool.push({ i: i, score: score });
+      pool.push({
+        i: i,
+        score: habitability(t, grids.rainfall[i]) +
+          (b.mapBiome === 'temperateForest' ? 0.4 : 0) + (grids.river[i] ? 0.15 : 0)
+      });
     }
     if (!pool.length) {
       for (i = 0; i < size; i++) {
-        if (isOceanIdx(i)) continue;
+        if (isOceanIdx(i) || !biomeDefs[grids.biome[i]].habitable) continue;
         pool.push({ i: i, score: habitability(grids.temperature[i], grids.rainfall[i]) + 0.01 });
       }
     }
@@ -545,57 +528,55 @@
   }
 
   /* ---------- settlement sites ----------
-     The world lays out where a town could plausibly stand: on the coast
-     or on a river, somewhere a person could live, and never crowded in
-     on top of its neighbour. Who owns each one is factions.js's call. */
+     The planet lays out where a town could plausibly stand: on the coast
+     or on a river, on ground someone could live off, and never crowded
+     in on its neighbour. Who owns each one is factions.js's business. */
 
-  function siteScore(i) {
-    var def = biomeDefs[grids.biome[i]];
-    if (!def.habitable) return -1;
+  function scoreSite(i) {
+    var b = biomeDefs[grids.biome[i]];
+    if (!b.habitable || b.settlementWeight <= 0) return -1;
     var hab = habitability(grids.temperature[i], grids.rainfall[i]);
-    if (hab < 0.22) return -1;
+    if (hab < 0.2) return -1;
     var coastal = false;
     for (var d = 0; d < 8; d++) {
       var n = neighbourIdx(i, d);
       if (n >= 0 && isOceanIdx(n)) { coastal = true; break; }
     }
     var river = grids.river[i] !== 0;
-    var score = hab + (coastal ? 0.35 : 0) + (river ? 0.25 : 0);
-    score -= Math.max(0, grids.elevation[i] - SEA_LEVEL - 0.25) * 0.8;
     siteInfo.set(i, { tile: i, coastal: coastal, river: river, habitability: hab });
-    return { score: score, water: coastal || river };
+    return hab * b.settlementWeight + (coastal ? 0.35 : 0) + (river ? 0.3 : 0) -
+      Math.max(0, grids.elevation[i] - SEA_LEVEL - 0.25) * 0.8;
   }
 
   function pickSites() {
     var target = U.clamp(Math.round(size / 90), 6, 40);
-    var scored = [];
-    for (var i = 0; i < size; i++) {
+    var scored = [], i;
+    for (i = 0; i < size; i++) {
       if (isOceanIdx(i)) continue;
-      var s = siteScore(i);
-      if (s === -1) continue;
-      /* A little noise on the score so two worlds with the same coastline
-         do not put their towns on exactly the same headlands. */
-      scored.push({ i: i, score: s.score + U.rand() * 0.25, water: s.water });
+      var s = scoreSite(i);
+      if (s < 0) continue;
+      var info = siteInfo.get(i);
+      /* A little noise on the score, so two worlds with the same coast do
+         not put their towns on exactly the same headlands. */
+      scored.push({ i: i, score: s + U.rand() * 0.25, water: info.coastal || info.river });
     }
     scored.sort(function (a, b) { return b.score - a.score || a.i - b.i; });
 
     var out = [];
     function tryTake(cand) {
-      if (out.length >= target) return;
       if (distanceIdx(cand.i, colonyTile) < MIN_SITE_DIST) return;
       for (var k = 0; k < out.length; k++) {
         if (distanceIdx(cand.i, out[k]) < MIN_SITE_DIST) return;
       }
       out.push(cand.i);
     }
-    var j;
-    for (j = 0; j < scored.length && out.length < target; j++) {
-      if (scored[j].water) tryTake(scored[j]);
+    for (i = 0; i < scored.length && out.length < target; i++) {
+      if (scored[i].water) tryTake(scored[i]);
     }
-    /* Inland worlds exist. If the coast and the rivers could not supply
-       enough room, the rest of the continent gets a turn. */
-    for (j = 0; j < scored.length && out.length < target; j++) {
-      if (!scored[j].water) tryTake(scored[j]);
+    /* Landlocked worlds exist. If the coasts and rivers could not supply
+       enough room, the rest of the continent gets its turn. */
+    for (i = 0; i < scored.length && out.length < target; i++) {
+      if (!scored[i].water) tryTake(scored[i]);
     }
     return out;
   }
@@ -604,11 +585,11 @@
   World.siteInfo = function (tile) { return siteInfo.get(tile) || null; };
 
   /* ---------- roads ----------
-     A minimum spanning tree over the sites that are near each other, plus
-     a few short extra links so the network has loops in it. Each road is
-     an A* path over land, and because roads are already cheap by the time
-     the next one is laid, later routes merge onto earlier ones and wear
-     them into highways. */
+     A minimum spanning tree over the sites near enough to each other to
+     bother, plus a few short extra links so the network has loops in it.
+     Every road is an A* path over land, and since roads are already cheap
+     by the time the next one is laid, later routes merge onto earlier
+     ones and wear them into highways. */
 
   function buildRoadNetwork(tiles) {
     if (tiles.length < 2) return;
@@ -616,7 +597,7 @@
     for (i = 0; i < tiles.length; i++) {
       for (j = i + 1; j < tiles.length; j++) {
         var d = distanceIdx(tiles[i], tiles[j]);
-        if (d <= MAX_ROAD_DIST) edges.push({ a: i, b: j, d: d });
+        if (d <= MAX_ROAD_DIST) edges.push({ a: i, b: j, d: d, used: false });
       }
     }
     edges.sort(function (x, y) { return x.d - y.d || x.a - y.a || x.b - y.b; });
@@ -625,23 +606,17 @@
     for (i = 0; i < tiles.length; i++) parent.push(i);
     function find(x) { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
 
-    var linked = [];
     for (i = 0; i < edges.length; i++) {
-      var e = edges[i];
-      var ra = find(e.a), rb = find(e.b);
+      var ra = find(edges[i].a), rb = find(edges[i].b);
       if (ra === rb) continue;
-      if (!layRoad(tiles[e.a], tiles[e.b])) continue;
+      if (!layRoad(tiles[edges[i].a], tiles[edges[i].b])) continue;
       parent[ra] = rb;
-      linked.push(e);
+      edges[i].used = true;
     }
-    /* Redundant links: short hops that the tree skipped, so a caravan is
-       not always funnelled through the same junction. */
     for (i = 0; i < edges.length; i++) {
-      if (edges[i].d > 8) continue;
-      if (linked.indexOf(edges[i]) >= 0) continue;
+      if (edges[i].used || edges[i].d > 8) continue;
       if (U.chance(0.3)) layRoad(tiles[edges[i].a], tiles[edges[i].b]);
     }
-    clearPathCache();
   }
 
   function layRoad(a, b) {
@@ -649,10 +624,8 @@
     if (!path) return false;
     var roads = grids.roads;
     roads[a] = Math.min(2, roads[a] + 1);
-    for (var i = 0; i < path.length; i++) {
-      roads[path[i]] = Math.min(2, roads[path[i]] + 1);
-    }
-    clearPathCache();
+    for (var i = 0; i < path.length; i++) roads[path[i]] = Math.min(2, roads[path[i]] + 1);
+    _pathCache.clear();      /* every cached cost was priced without this road */
     return true;
   }
 
@@ -665,14 +638,14 @@
   }
   tileProp('x', function () { return xOf(this.i); });
   tileProp('y', function () { return yOf(this.i); });
-  tileProp('biome', function () { return BIOME_ORDER[grids.biome[this.i]]; });
+  tileProp('biome', function () { return biomeDefs[grids.biome[this.i]].id; });
   tileProp('biomeDef', function () { return biomeDefs[grids.biome[this.i]]; });
   tileProp('elevation', function () { return grids.elevation[this.i]; });
   tileProp('temperature', function () { return grids.temperature[this.i]; });
   tileProp('rainfall', function () { return grids.rainfall[this.i]; });
   tileProp('river', function () { return grids.river[this.i] !== 0; });
   tileProp('roads', function () { return grids.roads[this.i]; });
-  tileProp('ocean', function () { return grids.biome[this.i] === OCEAN; });
+  tileProp('ocean', function () { return grids.biome[this.i] === oceanIndex; });
   tileProp('settlement', function () { return settlementsById.get(grids.settlement[this.i]) || null; });
 
   World.tileAt = function (i, y) {
@@ -688,6 +661,12 @@
   World.inBounds = function (x, y) { return !!grids && y >= 0 && y < h; };
   World.wrapX = function (x) { return grids ? wrapX(x) : 0; };
   World.latitudeOf = function (i) { return grids ? latOf(i) : 0; };
+  World.rainfallMm = function (i) { return grids ? grids.rainfall[i] * RAIN_MM : 0; };
+  World.roadAt = function (i) { return grids ? grids.roads[i] : 0; };
+  World.isOcean = function (i) { return !!grids && grids.biome[i] === oceanIndex; };
+  World.isHabitable = function (i) {
+    return !!grids && !isOceanIdx(i) && biomeDefs[grids.biome[i]].habitable;
+  };
 
   World.neighbours = function (i) {
     var out = [];
@@ -699,33 +678,22 @@
     return out;
   };
 
-  World.biomeOf = function (i) { return grids ? BIOME_ORDER[grids.biome[i]] : 'ocean'; };
+  World.biomeOf = function (i) { return grids ? biomeDefs[grids.biome[i]].id : 'ocean'; };
+  World.biomes = function () { return (biomeDefs || resolveBiomeDefs()).slice(); };
   World.biomeDef = function (key) {
-    if (!biomeDefs) biomeDefs = resolveBiomeDefs();
+    if (!biomeDefs) resolveBiomeDefs();
     if (typeof key === 'string') {
-      var at = BIOME_ORDER.indexOf(key);
-      return at < 0 ? null : biomeDefs[at];
+      for (var i = 0; i < biomeDefs.length; i++) if (biomeDefs[i].id === key) return biomeDefs[i];
+      return null;
     }
-    if (key >= 0 && key < size && grids) return biomeDefs[grids.biome[key]];
-    return null;
+    return (grids && key >= 0 && key < size) ? biomeDefs[grids.biome[key]] : null;
   };
-  World.biomes = function () {
-    if (!biomeDefs) biomeDefs = resolveBiomeDefs();
-    return biomeDefs.slice();
-  };
-  World.isOcean = function (i) { return !!grids && grids.biome[i] === OCEAN; };
-  World.isHabitable = function (i) {
-    if (!grids || grids.biome[i] === OCEAN) return false;
-    return !!biomeDefs[grids.biome[i]].habitable;
-  };
-  World.roadAt = function (i) { return grids ? grids.roads[i] : 0; };
 
-  /* The colony map's biome is decided by the tile the pods came down on;
-     MapGen only knows three, which is what mapBiome translates to. */
+  /* The colony map's biome is decided by the tile the pods came down on.
+     MapGen understands three of them, which is what mapBiome names. */
   World.colonyBiome = function () {
     if (!grids) return 'temperateForest';
-    var def = biomeDefs[grids.biome[colonyTile]];
-    return (def && def.mapBiome) || 'temperateForest';
+    return biomeDefs[grids.biome[colonyTile]].mapBiome || 'temperateForest';
   };
 
   /* ---------- distance and travel ---------- */
@@ -733,23 +701,21 @@
   World.distance = function (a, b) { return grids ? distanceIdx(a, b) : 0; };
 
   function travelFactor(i) {
-    var def = biomeDefs[grids.biome[i]];
-    return def.impassable ? 999 : def.travelCostFactor;
+    var b = biomeDefs[grids.biome[i]];
+    return b.impassable ? 999 : b.travelCostFactor;
   }
 
   function stepCost(a, b, diag) {
     var e = grids.elevation, roads = grids.roads;
     var terrain = (travelFactor(a) + travelFactor(b)) * 0.5;
-    var mean = (e[a] + e[b]) * 0.5 - SEA_LEVEL;
-    var climb = 1 + 1.1 * Math.max(0, mean) + 2.2 * Math.max(0, e[b] - e[a]);
+    var climb = 1 + 1.1 * Math.max(0, (e[a] + e[b]) * 0.5 - SEA_LEVEL) + 2.2 * Math.max(0, e[b] - e[a]);
     var road = (roads[a] && roads[b]) ? ROAD_FACTOR[Math.min(roads[a], roads[b])] : 1;
     return BASE_TICKS_PER_TILE * (diag ? DIAG : 1) * terrain * climb * road;
   }
 
   World.stepCost = function (a, b) {
     if (!grids) return 0;
-    var diag = xOf(a) !== xOf(b) && yOf(a) !== yOf(b);
-    return stepCost(a, b, diag);
+    return stepCost(a, b, xOf(a) !== xOf(b) && yOf(a) !== yOf(b));
   };
 
   /* ---------- A* over the planet ---------- */
@@ -760,7 +726,6 @@
     if (!grids || a === b) return null;
     if (!(a >= 0 && a < size && b >= 0 && b < size)) return null;
     if (isOceanIdx(a) || isOceanIdx(b)) return null;
-
     var cached = _pathCache.get(cacheKey(a, b));
     if (cached) return cached.path;
 
@@ -775,7 +740,6 @@
       if (_closed[cur] === _mark) continue;
       _closed[cur] = _mark;
       if (cur === b) return finishPath(a, b);
-
       var cx = xOf(cur), cy = yOf(cur);
       for (var d = 0; d < 8; d++) {
         var dx = U.ADJ8[d][0], dy = U.ADJ8[d][1];
@@ -783,18 +747,13 @@
         if (ny < 0 || ny >= h) continue;
         var nx = wrapX(cx + dx);
         var n = ny * w + nx;
-        if (isOceanIdx(n)) continue;
+        if (isOceanIdx(n) || _closed[n] === _mark) continue;
         var diag = dx !== 0 && dy !== 0;
-        if (diag) {
-          /* No squeezing between two headlands that only touch corners. */
-          if (isOceanIdx(cy * w + nx) && isOceanIdx(ny * w + cx)) continue;
-        }
-        if (_closed[n] === _mark) continue;
+        /* No squeezing between two headlands that meet at a corner. */
+        if (diag && isOceanIdx(cy * w + nx) && isOceanIdx(ny * w + cx)) continue;
         var g = _g[cur] + stepCost(cur, n, diag);
         if (_seen[n] !== _mark || g < _g[n]) {
-          _seen[n] = _mark;
-          _g[n] = g;
-          _from[n] = cur;
+          _seen[n] = _mark; _g[n] = g; _from[n] = cur;
           heap.push(n, g + distanceIdx(n, b) * BASE_TICKS_PER_TILE * minStepFactor);
         }
       }
@@ -805,18 +764,15 @@
 
   function finishPath(a, b) {
     var out = [], cur = b;
-    while (cur !== a && cur >= 0) {
-      out.push(cur);
-      cur = _from[cur];
-    }
+    while (cur !== a && cur >= 0) { out.push(cur); cur = _from[cur]; }
     out.reverse();
-    if (_pathCache.size > PATH_CACHE_MAX) clearPathCache();
+    if (_pathCache.size > PATH_CACHE_MAX) _pathCache.clear();
     _pathCache.set(cacheKey(a, b), { path: out, cost: _g[b] });
     return out;
   }
 
-  /* Callers get their own array: caravan.js walks a path by shifting
-     tiles off it, and that must not chew the cache. */
+  /* Callers get their own copy: caravan.js walks a path by shifting tiles
+     off the front of it, and that must not chew the cache. */
   World.pathBetween = function (a, b) {
     if (!grids) return null;
     if (a === b) return [];
@@ -831,29 +787,26 @@
     return entry ? entry.cost : Infinity;
   };
 
-  /* caravanSpeed is a multiplier where 1 is a colonist on foot. A trip to
-     the next tile over is about half a day; a quarter of the way around
-     the planet, over real terrain, is a fortnight. */
+  World.reachableByLand = function (a, b) {
+    if (!grids) return false;
+    return a === b || !!aStar(a, b);
+  };
+
+  /* caravanSpeed is a multiplier where 1 is a colonist on foot: the tile
+     next door is about half a day, and a quarter of the way around the
+     planet over real ground is a fortnight. */
   World.travelTicks = function (a, b, caravanSpeed) {
     if (!grids || a === b) return 0;
     var speed = caravanSpeed > 0 ? caravanSpeed : 1;
     var cost = World.pathCost(a, b);
-    if (!isFinite(cost)) {
-      /* No land route at all. Nothing should be walking this, but a
-         number is more use to a caller than a NaN. */
-      cost = distanceIdx(a, b) * BASE_TICKS_PER_TILE * 3;
-    }
+    /* No land route at all. Nothing should be walking this, but callers
+       deserve a number rather than an Infinity to divide by. */
+    if (!isFinite(cost)) cost = distanceIdx(a, b) * BASE_TICKS_PER_TILE * 3;
     return Math.max(1, Math.round(cost / speed));
   };
 
   World.travelDays = function (a, b, caravanSpeed) {
     return World.travelTicks(a, b, caravanSpeed) / 60000;
-  };
-
-  World.reachableByLand = function (a, b) {
-    if (!grids) return false;
-    if (a === b) return true;
-    return !!aStar(a, b);
   };
 
   /* ---------- settlements ---------- */
@@ -863,15 +816,31 @@
   var NAME_TAIL = ['ford', 'holm', 'stead', 'gate', 'reach', 'vale', 'mark', 'crest',
                    'wick', 'burn', 'fell', 'haven'];
 
-  World.generateName = function () {
+  function kindDef(kindId) {
+    try { return (Defs && Defs.maybe) ? Defs.maybe('settlementKind', kindId) : null; }
+    catch (e) { return null; }
+  }
+
+  /* factions.js normally names its own towns, but a settlement placed
+     without one still gets a name a player can say out loud. */
+  World.generateName = function (kindId) {
+    var def = kindDef(kindId);
+    if (def && def.namePatterns && def.namePatterns.length && def.nameWords) {
+      var words = def.nameWords;
+      var out = U.pick(def.namePatterns).replace(/\{(\w+)\}/g, function (all, key) {
+        var list = words[key];
+        return (list && list.length) ? U.pick(list) : '';
+      }).replace(/\s+/g, ' ').trim();
+      if (out) return out;
+    }
     return U.pick(NAME_HEAD) + U.pick(NAME_TAIL);
   };
 
   function freeLandTile(tile) {
     if (!(tile >= 0 && tile < size)) return -1;
     if (!isOceanIdx(tile) && !grids.settlement[tile]) return tile;
-    /* factions.js may ask for a tile the world has already spoken for;
-       rather than refuse, slide to the nearest square that works. */
+    /* factions.js may ask for a tile the world has already spoken for.
+       Rather than refuse, slide to the nearest square that works. */
     for (var r = 1; r <= 3; r++) {
       for (var dy = -r; dy <= r; dy++) {
         for (var dx = -r; dx <= r; dx++) {
@@ -886,23 +855,19 @@
     return -1;
   }
 
-  var KIND_WEALTH = {
-    village: [2500, 5000], town: [5000, 11000], tribalCamp: [1400, 3200],
-    pirateOutpost: [2000, 4800]
-  };
-
   World.placeSettlement = function (tile, factionId, kindId, name) {
     if (!grids) return null;
     var at = freeLandTile(tile);
     if (at < 0) return null;
-    var band = KIND_WEALTH[kindId] || [2000, 6000];
+    var def = kindDef(kindId);
+    var range = (def && def.wealthRange) || [800, 3000];
     var s = {
       id: U.nextId(),
       tile: at,
       factionId: factionId || null,
       kind: kindId || 'village',
-      name: name || World.generateName(),
-      wealth: U.randInt(band[0], band[1]),
+      name: name || World.generateName(kindId),
+      wealth: U.randInt(range[0], range[1]),
       stock: [],
       lastRestockTick: 0,
       destroyed: false
@@ -910,49 +875,47 @@
     settlements.push(s);
     settlementsById.set(s.id, s);
     grids.settlement[at] = s.id;
-    /* A new town on an unroaded tile gets hooked into the network if it has
-       a neighbour close enough to care. */
     linkToRoads(at);
     return s;
   };
 
+  /* A town founded off the road network gets hooked into it, if it has a
+     neighbour close enough to care about it. */
   function linkToRoads(tile) {
     if (grids.roads[tile]) return;
-    var best = -1, bestD = MAX_ROAD_DIST + 1;
-    for (var i = 0; i < settlements.length; i++) {
+    var best = -1, bestD = MAX_ROAD_DIST + 1, i, d;
+    for (i = 0; i < settlements.length; i++) {
       var s = settlements[i];
       if (s.destroyed || s.tile === tile) continue;
-      var d = distanceIdx(tile, s.tile);
+      d = distanceIdx(tile, s.tile);
       if (d < bestD) { bestD = d; best = s.tile; }
     }
-    for (var k = 0; k < sites.length; k++) {
-      var d2 = distanceIdx(tile, sites[k]);
-      if (sites[k] !== tile && grids.roads[sites[k]] && d2 < bestD) { bestD = d2; best = sites[k]; }
+    for (i = 0; i < sites.length; i++) {
+      if (sites[i] === tile || !grids.roads[sites[i]]) continue;
+      d = distanceIdx(tile, sites[i]);
+      if (d < bestD) { bestD = d; best = sites[i]; }
     }
     if (best >= 0) layRoad(tile, best);
   }
 
   World.settlementAt = function (i) {
     if (!grids) return null;
-    var id = grids.settlement[i];
-    if (!id) return null;
-    var s = settlementsById.get(id);
+    var s = settlementsById.get(grids.settlement[i]);
     return s && !s.destroyed ? s : null;
   };
   World.settlementById = function (id) { return settlementsById.get(id) || null; };
-  World.settlementsOf = function (factionId) {
-    return settlements.filter(function (s) { return !s.destroyed && s.factionId === factionId; });
-  };
   World.liveSettlements = function () {
     return settlements.filter(function (s) { return !s.destroyed; });
+  };
+  World.settlementsOf = function (factionId) {
+    return settlements.filter(function (s) { return !s.destroyed && s.factionId === factionId; });
   };
 
   World.nearestSettlement = function (tile, filter) {
     var best = null, bestD = Infinity;
     for (var i = 0; i < settlements.length; i++) {
       var s = settlements[i];
-      if (s.destroyed) continue;
-      if (filter && !filter(s)) continue;
+      if (s.destroyed || (filter && !filter(s))) continue;
       var d = distanceIdx(tile, s.tile);
       if (d < bestD) { bestD = d; best = s; }
     }
@@ -966,32 +929,34 @@
     return true;
   };
 
-  /* ---------- seasons and weather at a distance ---------- */
+  /* ---------- seasons at a distance ---------- */
 
   /* Game.season() is the season where the player is standing. Cross the
-     equator and it is the other one; sit on it and there is no winter to
-     speak of. */
+     equator and it is the other one; sit on the equator and there is no
+     winter worth the name. */
   World.season = function (i) {
-    var base = (typeof root.Game !== 'undefined' && root.Game.season) ? root.Game.season() : 'spring';
+    var base = (root.Game && root.Game.season) ? root.Game.season() : 'spring';
     if (!grids) return base;
-    var tropical = 0.13;
     var here = (yOf(i) + 0.5) / h - 0.5;
+    if (Math.abs(here) * 2 < 0.13) return 'summer';
     var colony = (yOf(colonyTile) + 0.5) / h - 0.5;
-    if (Math.abs(here) * 2 < tropical) return 'summer';
-    if ((here >= 0) === (colony >= 0)) return base;
-    return SEASON_OPPOSITE[base] || base;
+    return ((here >= 0) === (colony >= 0)) ? base : (SEASON_OPPOSITE[base] || base);
   };
 
-  /* The annual mean plus the swing that latitude gives it, so the world
-     screen can say what a tile is like right now rather than on average. */
+  /* The annual mean plus the swing latitude gives it, so the world screen
+     can say what a tile is like now rather than on average. */
   World.seasonalTemp = function (i) {
     if (!grids) return 0;
-    var mean = grids.temperature[i];
-    var swing = 4 + 20 * latOf(i);
-    var season = World.season(i);
-    var phase = { spring: 0, summer: 1, fall: 0, winter: -1 }[season];
-    if (phase === undefined) phase = 0;
-    return mean + swing * phase * 0.5;
+    var phase = { spring: 0, summer: 1, fall: 0, winter: -1 }[World.season(i)];
+    return grids.temperature[i] + (4 + 20 * latOf(i)) * (phase || 0) * 0.5;
+  };
+
+  World.describe = function (i) {
+    if (!grids) return 'no world';
+    return biomeDefs[grids.biome[i]].label + ', ' + U.fmt(World.seasonalTemp(i), 0) + 'C, ' +
+      Math.round(grids.rainfall[i] * RAIN_MM) + 'mm' +
+      (grids.roads[i] ? (grids.roads[i] > 1 ? ', highway' : ', road') : '') +
+      (grids.river[i] ? ', river' : '');
   };
 
   /* ---------- save and load ---------- */
@@ -1007,15 +972,17 @@
     for (var i = 0; i < size; i++) {
       elevation[i] = roundTo(grids.elevation[i], 4);
       temperature[i] = roundTo(grids.temperature[i], 2);
-      rainfall[i] = Math.round(grids.rainfall[i]);
+      rainfall[i] = roundTo(grids.rainfall[i], 4);
     }
     return {
-      v: 1,
-      w: w, h: h, seed: worldSeed, colonyTile: colonyTile,
+      v: 1, w: w, h: h, seed: worldSeed, colonyTile: colonyTile,
       noiseSeeds: {
         elevation: noiseSeeds.elevation, rainfall: noiseSeeds.rainfall,
         warp: noiseSeeds.warp, detail: noiseSeeds.detail
       },
+      /* The biome grid holds def indices, so the ids travel with it: a
+         save made before def_factions.js grew a biome still loads. */
+      biomeIds: biomeDefs.map(function (b) { return b.id; }),
       biome: Array.prototype.slice.call(grids.biome),
       roads: Array.prototype.slice.call(grids.roads),
       river: Array.prototype.slice.call(grids.river),
@@ -1034,11 +1001,16 @@
     };
   };
 
+  function copyInto(target, src) {
+    if (!src) return;
+    var n = Math.min(target.length, src.length);
+    for (var i = 0; i < n; i++) target[i] = src[i];
+  }
+
   World.load = function (obj) {
     if (!obj || !obj.w || !obj.h) return false;
     allocate(obj.w, obj.h);
-    biomeDefs = resolveBiomeDefs();
-    minStepFactor = computeMinStepFactor();
+    resolveBiomeDefs();
     worldSeed = (obj.seed || 0) >>> 0;
     if (obj.noiseSeeds) {
       noiseSeeds = {
@@ -1054,6 +1026,7 @@
     copyInto(grids.elevation, obj.elevation);
     copyInto(grids.temperature, obj.temperature);
     copyInto(grids.rainfall, obj.rainfall);
+    remapBiomes(obj.biomeIds);
 
     colonyTile = U.clamp(obj.colonyTile | 0, 0, size - 1);
     sites = (obj.sites || []).slice();
@@ -1066,8 +1039,7 @@
         stock: (raw.stock || []).map(function (it) {
           return { defId: it.defId, count: it.count, price: it.price };
         }),
-        lastRestockTick: raw.lastRestockTick || 0,
-        destroyed: !!raw.destroyed
+        lastRestockTick: raw.lastRestockTick || 0, destroyed: !!raw.destroyed
       };
       settlements.push(s);
       settlementsById.set(s.id, s);
@@ -1077,10 +1049,23 @@
     return true;
   };
 
-  function copyInto(target, src) {
-    if (!src) return;
-    var n = Math.min(target.length, src.length);
-    for (var i = 0; i < n; i++) target[i] = src[i];
+  function remapBiomes(savedIds) {
+    if (!savedIds || !savedIds.length) return;
+    var same = savedIds.length === biomeDefs.length;
+    var lookup = [];
+    for (var i = 0; i < savedIds.length; i++) {
+      var at = landIndex;
+      for (var j = 0; j < biomeDefs.length; j++) {
+        if (biomeDefs[j].id === savedIds[i]) { at = j; break; }
+      }
+      if (at !== i) same = false;
+      lookup.push(at);
+    }
+    if (same) return;
+    for (var k = 0; k < size; k++) {
+      var was = grids.biome[k];
+      grids.biome[k] = was < lookup.length ? lookup[was] : landIndex;
+    }
   }
 
   World.reset = function () {
@@ -1090,22 +1075,11 @@
     sites = [];
     siteInfo.clear();
     colonyTile = 0;
-    clearPathCache();
+    _pathCache.clear();
     World.tiles = null;
     World.generated = false;
   };
 
-  /* A compact line for the debug overlay and the world screen's header. */
-  World.describe = function (i) {
-    if (!grids) return 'no world';
-    var def = biomeDefs[grids.biome[i]];
-    return def.label + ', ' + U.fmt(World.seasonalTemp(i), 0) + 'C, ' +
-      Math.round(grids.rainfall[i]) + 'mm' +
-      (grids.roads[i] ? (grids.roads[i] > 1 ? ', highway' : ', road') : '') +
-      (grids.river[i] ? ', river' : '');
-  };
-
-  World.BIOME_IDS = BIOME_ORDER.slice();
   World.SEA_LEVEL = SEA_LEVEL;
   World.BASE_TICKS_PER_TILE = BASE_TICKS_PER_TILE;
   World.w = DEFAULT_W;

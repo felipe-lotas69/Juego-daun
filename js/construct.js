@@ -697,6 +697,14 @@
 
   /* ---------- deconstruction ---------- */
 
+  /* Half of five is two and a half, and a colony cannot carry half a
+     steel bar. Rounding the fraction into a chance is how RimWorld
+     keeps the refund honestly 50% across a whole wall of walls. */
+  function roundRandom(v) {
+    var floor = Math.floor(v);
+    return floor + (U.chance(v - floor) ? 1 : 0);
+  }
+
   Construct.deconstructWork = function (defId) {
     var def = buildDefOf(defId);
     if (!def) return 0;
@@ -730,7 +738,7 @@
 
     var dropped = {};
     for (var k in cost) {
-      var n = Math.floor(cost[k] * DECONSTRUCT_REFUND);
+      var n = roundRandom(cost[k] * DECONSTRUCT_REFUND);
       if (n > 0) { map.addItem(k, x, y, n); dropped[k] = n; }
     }
     markBuildDirty(map, def, x, y, rot, true);
