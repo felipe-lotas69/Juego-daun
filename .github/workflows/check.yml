@@ -5,7 +5,7 @@ on:
     branches:
       - main
       - master
-      - claude/getaway-shootout-game-x4v0bp
+      - claude/rimworld-web-clone-eiziry
   pull_request:
   workflow_dispatch:
 
@@ -21,9 +21,8 @@ jobs:
         with:
           node-version: '22'
       - name: Syntax-check every script
-        run: |
-          for f in js/*.js server/*.js; do
-            node --check "$f" || exit 1
-          done
-      - name: Levels are completable and nothing respawns inside a hazard
-        run: node tools/verify-levels.js
+        run: for f in js/*.js tools/*.js; do node --check "$f" || exit 1; done
+      - name: Defs are internally consistent
+        run: node tools/verify-defs.js
+      - name: A colony survives ten simulated days
+        run: node tools/verify-sim.js
