@@ -51,6 +51,9 @@
   var TEMP_LIVEABLE = [[-25, 0], [-10, 0.15], [0, 0.5], [10, 1], [22, 1], [32, 0.5], [42, 0.05]];
   var RAIN_LIVEABLE = [[0, 0.08], [0.1, 0.35], [0.3, 0.8], [0.6, 1], [1, 0.85]];
   var SEASON_OPPOSITE = { spring: 'fall', summer: 'winter', fall: 'spring', winter: 'summer' };
+  /* How often each kind of colony map should come up when the world picks
+     the landing site itself. */
+  var COLONY_VARIETY = { temperateForest: 1, aridShrubland: 0.7, borealForest: 0.6 };
 
   /* def_factions.js owns the worldBiome defs and its numbers always win.
      This is the same table in miniature, for the day something loads the
@@ -297,10 +300,12 @@
     normaliseElevation();
     buildClimate();
     carveRivers();
+    quantise();
     assignBiomes();
 
-    colonyTile = pickColonyTile();
-    sites = pickSites();
+    var land = landmasses();
+    colonyTile = pickColonyTile(land);
+    sites = pickSites(land);
     buildRoadNetwork(sites);
 
     publish();
@@ -487,6 +492,18 @@
     }
   }
 
+  /* A save writes these three grids to a few decimals, so the live world
+     is held at exactly that precision from the start. Otherwise a colony
+     reloaded from disk would be quoted travel times a tick or two away
+     from the ones it was quoted before, for no reason a player could see. */
+  function quantise() {
+    for (var i = 0; i < size; i++) {
+      grids.elevation[i] = roundTo(grids.elevation[i], 4);
+      grids.temperature[i] = roundTo(grids.temperature[i], 2);
+      grids.rainfall[i] = roundTo(grids.rainfall[i], 4);
+    }
+  }
+
   function assignBiomes() {
     var biome = grids.biome;
     for (var i = 0; i < size; i++) {
@@ -497,33 +514,76 @@
 
   /* ---------- where the pods come down ---------- */
 
-  function pickColonyTile() {
+  /* Which landmass each tile belongs to. A colony marooned on a nine-tile
+     island could never walk to a trade partner, and a planet whose
+     neighbours are all unreachable is not worth generating, so the pods
+     come down on the biggest continent and most towns are built on it. */
+  function landmasses() {
+    var comp = new Int32Array(size);
+    comp.fill(-1);
+    var sizes = [], stack = [], i;
+    for (i = 0; i < size; i++) {
+      if (comp[i] >= 0 || isOceanIdx(i)) continue;
+      var id = sizes.length, n = 0;
+      stack.length = 0;
+      stack.push(i);
+      comp[i] = id;
+      while (stack.length) {
+        var cur = stack.pop();
+        n++;
+        for (var d = 0; d < 8; d++) {
+          var nb = neighbourIdx(cur, d);
+          if (nb >= 0 && comp[nb] < 0 && !isOceanIdx(nb)) { comp[nb] = id; stack.push(nb); }
+        }
+      }
+      sizes.push(n);
+    }
+    var main = 0;
+    for (var k = 1; k < sizes.length; k++) if (sizes[k] > sizes[main]) main = k;
+    return { comp: comp, sizes: sizes, main: main };
+  }
+
+  function pickColonyTile(land) {
     var pool = [], i;
     for (i = 0; i < size; i++) {
-      if (isOceanIdx(i)) continue;
+      if (isOceanIdx(i) || land.comp[i] !== land.main) continue;
       var b = biomeDefs[grids.biome[i]];
       if (!b.habitable) continue;
       var lat = latOf(i);
-      if (lat < 0.14 || lat > 0.58) continue;
+      if (lat < 0.2 || lat > 0.68) continue;
       var t = grids.temperature[i];
-      if (t < 2 || t > 28) continue;
+      if (t < -6 || t > 30) continue;
       if (grids.elevation[i] > SEA_LEVEL + 0.42) continue;
-      pool.push({
-        i: i,
-        score: habitability(t, grids.rainfall[i]) +
-          (b.mapBiome === 'temperateForest' ? 0.4 : 0) + (grids.river[i] ? 0.15 : 0)
-      });
+      pool.push({ i: i, score: habitability(t, grids.rainfall[i]) + (grids.river[i] ? 0.15 : 0) });
     }
+    /* A world with no temperate band at all still has to seat a colony. */
     if (!pool.length) {
       for (i = 0; i < size; i++) {
         if (isOceanIdx(i) || !biomeDefs[grids.biome[i]].habitable) continue;
-        pool.push({ i: i, score: habitability(grids.temperature[i], grids.rainfall[i]) + 0.01 });
+        pool.push({
+          i: i,
+          score: habitability(grids.temperature[i], grids.rainfall[i]) +
+            (land.comp[i] === land.main ? 0.5 : 0) + 0.01
+        });
       }
     }
     if (!pool.length) return 0;
     pool.sort(function (a, b) { return b.score - a.score || a.i - b.i; });
-    var top = pool.slice(0, Math.min(60, pool.length));
-    var chosen = U.pickWeighted(top, function (c) { return c.score * c.score; });
+
+    /* Shortlist the best few of each kind of landing before rolling. A
+       temperate tile always scores highest, so weighting the whole pool
+       would open every new game on the same green field; this way the
+       scrub and the pine belt get their turn without ever being likely. */
+    var seen = {}, top = [];
+    for (i = 0; i < pool.length; i++) {
+      var mb = biomeDefs[grids.biome[pool[i].i]].mapBiome;
+      seen[mb] = (seen[mb] || 0) + 1;
+      if (seen[mb] <= 10) top.push(pool[i]);
+    }
+    var chosen = U.pickWeighted(top, function (c) {
+      var kind = biomeDefs[grids.biome[c.i]].mapBiome;
+      return c.score * c.score * (COLONY_VARIETY[kind] === undefined ? 0.5 : COLONY_VARIETY[kind]);
+    });
     return chosen ? chosen.i : pool[0].i;
   }
 
@@ -548,16 +608,19 @@
       Math.max(0, grids.elevation[i] - SEA_LEVEL - 0.25) * 0.8;
   }
 
-  function pickSites() {
+  function pickSites(land) {
     var target = U.clamp(Math.round(size / 90), 6, 40);
+    var home = land.comp[colonyTile];
     var scored = [], i;
     for (i = 0; i < size; i++) {
       if (isOceanIdx(i)) continue;
       var s = scoreSite(i);
       if (s < 0) continue;
       var info = siteInfo.get(i);
-      /* A little noise on the score, so two worlds with the same coast do
-         not put their towns on exactly the same headlands. */
+      /* A neighbour you can walk to is worth more to the game than an
+         overseas one, and a little noise on the score keeps two worlds
+         with the same coastline from using the same headlands. */
+      if (land.comp[i] === home) s += 0.45;
       scored.push({ i: i, score: s + U.rand() * 0.25, water: info.coastal || info.river });
     }
     scored.sort(function (a, b) { return b.score - a.score || a.i - b.i; });
@@ -786,6 +849,11 @@
     var entry = _pathCache.get(cacheKey(a, b));
     return entry ? entry.cost : Infinity;
   };
+
+  /* Anything that writes to the roads grid from outside has to say so:
+     every cached route was priced against the roads that existed when it
+     was found. */
+  World.invalidatePaths = function () { _pathCache.clear(); };
 
   World.reachableByLand = function (a, b) {
     if (!grids) return false;

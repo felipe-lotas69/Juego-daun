@@ -70,7 +70,7 @@
   var TURRET_ACCURACY = 0.72;
 
   /* Bare hands. A punch is not nothing, but a knife is much better. */
-  var UNARMED = { damage: 6, damageType: 'blunt', cooldownTicks: 90, armorPen: 0, label: 'fist' };
+  var UNARMED = { damage: 6, damageType: 'blunt', cooldownTicks: 90 };
 
   /* Buildings are not flesh: a rifle round punches a hole in a wall and
      keeps going, while a blast levels it. */
@@ -1196,6 +1196,7 @@
      whose owner has died, gone down or left the map is dropped: an aim is
      only worth keeping while there is somebody behind it. */
   function tickStance(st, id, all) {
+    /* `this` is the map Combat.tick was handed; Map.forEach passes it. */
     var e = st.owner;
     if (st.map !== this || !e || e.dead ||
         (isPawn(e) ? e.downed : e.spawned === false)) {
@@ -1233,15 +1234,16 @@
      movement, so ask it first and otherwise write the path fields the pawn
      model documents and its own mover consumes. */
   function chase(pawn, x, y) {
-    var walking = pawn.path && pawn.pathIdx < pawn.path.length;
+    var walking = pawn.moving ? pawn.moving() : !!(pawn.path && pawn.pathIdx < pawn.path.length);
     if (walking && pawn.destX === x && pawn.destY === y) return true;
-    if (typeof pawn.startPath === 'function') return pawn.startPath(x, y) !== false;
     var P = PathLib();
-    if (!P) return false;
-    /* TOUCH, so the path ends beside the quarry rather than trying to
+    /* TOUCH, so the route ends beside the quarry rather than trying to
        finish on the tile it is standing on. */
+    var pe = P && P.PE ? P.PE.TOUCH : 1;
+    if (typeof pawn.startPath === 'function') return pawn.startPath(x, y, pe) !== false;
+    if (!P) return false;
     var path = P.find(pawn.map, pawn.x, pawn.y, x, y,
-      { pawn: pawn, pe: P.PE.TOUCH, maxCells: 1600 });
+      { pawn: pawn, pe: pe, maxCells: 1600 });
     if (!path || !path.length) return false;
     pawn.path = path;
     pawn.pathIdx = 0;

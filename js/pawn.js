@@ -547,7 +547,7 @@
 
     this.destX = destX;
     this.destY = destY;
-    this.pathMode = opts.peMode | 0;
+    this.pathMode = (opts.peMode !== undefined ? opts.peMode : opts.pe) | 0;
     this.pathDest = map.idx(destX, destY);
     this.moveProgress = 0;
     this.pathIdx = 0;
@@ -915,6 +915,21 @@
     thing.spawned = false;
   }
 
+  /* def_things.js states which body slots a garment covers but not which
+     layer it sits on, and the six apparel ids in the registry are known,
+     so the layer lives here rather than being invented in the data. */
+  var APPAREL_LAYER = {
+    shirt: 'onSkin', pants: 'onSkin',
+    jacket: 'middle', parka: 'middle', armorVest: 'middle',
+    helmet: 'overhead'
+  };
+
+  function apparelLayer(def) {
+    if (!def) return 'middle';
+    var a = def.apparel;
+    return (a && a.layer) || APPAREL_LAYER[def.id] || 'middle';
+  }
+
   function putOnGround(thing, map, x, y) {
     if (!thing || !map) return false;
     var tx = x, ty = y;
@@ -948,15 +963,18 @@
   Pawn.prototype.wear = function (apparel) {
     if (!apparel || !apparel.def || !apparel.def.apparel) return false;
     var slots = apparel.def.apparel.slots || [];
-    /* One thing per slot: a new jacket pushes the old one onto the floor. */
+    var layer = apparelLayer(apparel.def);
+    /* Clothes stack by layer: a shirt under a jacket is fine, a parka over
+       a flak vest is not, and nobody wears two shirts. */
     for (var i = this.apparel.length - 1; i >= 0; i--) {
       var worn = this.apparel[i];
+      if (apparelLayer(worn.def) !== layer) continue;
       var wornSlots = (worn.def.apparel && worn.def.apparel.slots) || [];
       var clash = false;
       for (var k = 0; k < slots.length; k++) {
         if (wornSlots.indexOf(slots[k]) >= 0) { clash = true; break; }
       }
-      if (clash && worn.defId === apparel.defId) this.removeApparel(worn);
+      if (clash) this.removeApparel(worn);
     }
     unspawn(apparel, this.map);
     apparel.faction = this.faction;
@@ -1107,7 +1125,7 @@
     var H = sys('Health');
     /* Health owns the dying: it sets the flags, drops what was held and
        calls back into Pawn.onDeath for the world-facing half. */
-    if (H && H.kill && this.health && !this.health.dead) { H.kill(this, cause); return true; }
+    if (H && H.kill && !(this.health && this.health.dead)) { H.kill(this, cause); return true; }
     Pawn.onDeath(this, cause);
     return true;
   };
@@ -1290,6 +1308,11 @@
      PROPERTIES AND RELATIONS
      ============================================================ */
 
+  function massOf(thing) {
+    if (!thing || !thing.def) return 0;
+    return (thing.def.mass || 0) * (thing.stack || 1);
+  }
+
   Object.defineProperty(Pawn.prototype, 'bodySize', {
     get: function () {
       var k = this.kind;
@@ -1303,12 +1326,10 @@
   Object.defineProperty(Pawn.prototype, 'mass', {
     get: function () {
       var m = 0, i;
-      if (this.carried) m += (this.carried.def.mass || 0) * (this.carried.stack || 1);
-      if (this.equipment) m += this.equipment.def.mass || 0;
-      for (i = 0; i < this.apparel.length; i++) m += this.apparel[i].def.mass || 0;
-      for (i = 0; i < this.inventory.length; i++) {
-        m += (this.inventory[i].def.mass || 0) * (this.inventory[i].stack || 1);
-      }
+      m += massOf(this.carried);
+      m += massOf(this.equipment);
+      for (i = 0; i < this.apparel.length; i++) m += massOf(this.apparel[i]);
+      for (i = 0; i < this.inventory.length; i++) m += massOf(this.inventory[i]);
       return m;
     }
   });

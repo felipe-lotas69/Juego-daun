@@ -153,12 +153,20 @@
     }
   }
 
-  /* Work units per tick. Level 20 is exactly twice level 0 plus the
-     0.4 floor, and a hurt pawn works slower at whatever skill. */
+  /* Work units per tick. pawn.js owns the whole rate - skill, traits and
+     injuries together - so defer to it, and keep the contract's own
+     curve for anything that does not carry one. The floor is not
+     cosmetic: a rate of zero would leave a work toil returning 'stay'
+     for ever instead of finishing. */
   Construct.workRate = function (pawn, skillId) {
-    var rate = 0.4 + 0.08 * skillLevel(pawn, skillId);
-    var H = root.Health;
-    if (H && H.workSpeedFactor) rate *= H.workSpeedFactor(pawn);
+    var rate;
+    if (pawn && typeof pawn.workRate === 'function') {
+      rate = pawn.workRate(skillId);
+    } else {
+      rate = 0.4 + 0.08 * skillLevel(pawn, skillId);
+      var H = root.Health;
+      if (H && H.workSpeedFactor) rate *= H.workSpeedFactor(pawn);
+    }
     return Math.max(0.05, rate);
   };
 
@@ -231,9 +239,8 @@
   };
 
   /* ---------- finding ghosts ----------
-     Blueprints and frames are ordinary things, so map.byDef is the
-     index. There are tens of them, not thousands, and scanning avoids
-     keeping a second cell index in sync with every despawn. */
+     Blueprints and frames are ordinary things, so map.byDef lists them
+     and map's own ghost grid answers "what is planned on this cell". */
 
   function ghostList(map, defId) {
     var l = map.byDef ? map.byDef(defId) : null;
@@ -676,8 +683,12 @@
     return null;
   }
 
-  /* One place that tells every derived grid a cell changed. Power is
-     only rebuilt for things that are actually on a net, because a
+  /* One place that tells every derived grid a cell changed. map.js only
+     wakes Regions and Power when the move cost moved, and plenty of
+     things here change nothing a pathfinder cares about while changing
+     a great deal a room or a power net cares about - a floor, a
+     conduit, a sleeping spot - so both are told explicitly. Power is
+     still only rebuilt for things actually on a net, because that
      rebuild walks every conduit on the map. */
   function markBuildDirty(map, def, x, y, rot, includePower) {
     forEachCell(def, x, y, rot, function (cx, cy) {
@@ -780,9 +791,9 @@
     map.setTerrain(x, y, 'rockFloor');
 
     var dropped = {};
-    var yield_ = def.mineYield;
-    for (var k in yield_) {
-      if (yield_[k] > 0) { map.addItem(k, x, y, yield_[k]); dropped[k] = yield_[k]; }
+    var seam = def.mineYield;
+    for (var k in seam) {
+      if (seam[k] > 0) { map.addItem(k, x, y, seam[k]); dropped[k] = seam[k]; }
     }
 
     map.markPathDirty(x, y);
@@ -956,9 +967,17 @@
   }
 
   /* --- construct ---
-     Two shapes share one job def, exactly as RimWorld does. With a
-     targetB it is a delivery run: fetch that stack and put it in the
-     blueprint. Without one it is build work on a frame. */
+     Two shapes share one job def, exactly as RimWorld does:
+
+       Jobs.make('construct', T.thing(frame))
+         build work on a frame until it is a building
+
+       Jobs.make('construct', T.thing(ghost), T.thing(stack), {count: n})
+         a delivery run: fetch up to n from that stack and put it in
+         the blueprint or frame
+
+     workgivers.js decides which one a colonist needs by asking
+     Construct.materialsNeeded of the ghost it found. */
   Jobs.register('construct', {
     label: 'construct',
     reportString: function (job, pawn) {
@@ -986,20 +1005,29 @@
             name: 'deliverMaterials',
             tick: function (pawn, j) {
               var map = pawn.map;
-              var ghost = targetThing(j, 'A', map);
               var carried = pawn.carried;
-              if (!ghost || !carried) return 'fail';
-              var took = Construct.deliver(ghost, carried.defId, carried.stack || 1);
-              if (took <= 0) return 'fail';
+              if (!carried) return 'fail';
+
+              /* Delivering the last unit turns a blueprint into a frame,
+                 and that is a different thing with a different id. A
+                 second hauler walking the same load in would otherwise
+                 find its target gone, so ask the cell, not the id. */
+              var ghost = targetThing(j, 'A', map);
+              if (!ghost) {
+                var pos = targetPos(j, 'A', map) || j.targetA;
+                if (pos) ghost = Construct.ghostAt(map, pos.x, pos.y);
+              }
+
+              var took = ghost ? Construct.deliver(ghost, carried.defId, carried.stack || 1) : 0;
               carried.stack -= took;
+              /* Whatever is left over goes on the floor. A pawn who walks
+                 off to do something else still holding five steel is five
+                 steel the colony has quietly lost. */
               if (carried.stack > 0) {
-                /* Someone else topped the blueprint up while we walked.
-                   The surplus goes on the floor rather than into a
-                   pawn who is about to start something else. */
                 map.addItem(carried.defId, pawn.x, pawn.y, carried.stack);
               }
               pawn.carried = null;
-              return 'done';
+              return took > 0 ? 'done' : 'fail';
             }
           })
         ];
@@ -1013,8 +1041,9 @@
             var map = pawn.map;
             var frame = targetThing(j, 'A', map);
             if (!frame || !frame.spawned) return 'fail';
-            /* A blueprint that lost its materials to a botch is still a
-               legal target; it just is not work yet. */
+            /* A botch can drop a frame back to a blueprint mid-job.
+               That is not work any more, so hand it back: the work
+               giver will re-issue it as a delivery run. */
             if (!frame.isFrame) return 'fail';
             var def = buildDefOf(frame.buildDefId);
             var rate = Construct.workRate(pawn, (def && def.buildSkill) || 'construction');

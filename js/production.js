@@ -49,6 +49,21 @@
   }
   function hasTrait(pawn, id) { return !!(pawn && pawn.traits && pawn.traits.indexOf(id) >= 0); }
 
+  /* Work units to experience, at the rate the rest of the game uses. */
+  var XP_PER_WORK = 0.11;
+  var PASSION_LEARN = [0.35, 1.0, 1.5];
+
+  /* pawn.js owns the xp curve; the fallback is what keeps this file
+     honest in a harness that has not loaded it. */
+  function learn(pawn, skillId, xp) {
+    if (!pawn || !skillId || !(xp > 0)) return;
+    if (typeof pawn.learn === 'function') { pawn.learn(skillId, xp); return; }
+    var s = pawn.skills && pawn.skills[skillId];
+    if (!s) return;
+    s.xp = (s.xp || 0) + xp * (PASSION_LEARN[s.passion | 0] || 1);
+    while (s.level < 20 && s.xp >= 1000 * (s.level + 1)) { s.xp -= 1000 * (s.level + 1); s.level++; }
+  }
+
   function mapFor(building, pawn) {
     if (pawn && pawn.map) return pawn.map;
     if (building && building.map) return building.map;
@@ -338,16 +353,16 @@
     return !by || by === pawn;
   }
 
-  /* What goes in the pot first. Shelf life dominates, so the berries
-     picked yesterday are cooked before the rice that keeps for ten
-     days; market value breaks ties so a colony does not turn its
-     medicine into stew. Scaled by ten so distance, added below, can
-     only ever separate two stacks of the same thing. */
+  /* What goes in the pot first, lowest score winning. Days of shelf
+     life left dominates, so the berries picked yesterday are cooked
+     before the rice that keeps for ten days; market value separates
+     two equally perishable things so a colony does not turn its
+     medicine into stew. */
   function preference(thing) {
     var def = defOf(thing);
     var shelf = (!def || def.rotDays === null || def.rotDays === undefined) ? 60 : def.rotDays;
     var left = shelf * (1 - U.clamp01(thing.rotProgress || 0));
-    return (left * 4 + ((def && def.marketValue) || 0) * 3) * 10;
+    return left * 4 + ((def && def.marketValue) || 0) * 3;
   }
 
   function unitNutrition(thing) {
@@ -386,11 +401,16 @@
       usable.push(t);
     }
 
-    var from = ctx.from;
-    usable.sort(function (a, b) {
-      var d = preference(a) - preference(b);
-      return d !== 0 ? d : U.distSq(from.x, from.y, a.x, a.y) - U.distSq(from.x, from.y, b.x, b.y);
-    });
+    /* A tile of walking is worth a tenth of a preference point: enough
+       that a cook takes the nearer of two like stacks, nowhere near
+       enough to make it grab the rice because the berries are across
+       the courtyard. Scored once rather than inside the comparator. */
+    var from = ctx.from, score = {};
+    for (i = 0; i < usable.length; i++) {
+      t = usable[i];
+      score[t.id] = preference(t) + U.dist(from.x, from.y, t.x, t.y) * 0.1;
+    }
+    usable.sort(function (a, b) { return score[a.id] - score[b.id]; });
 
     var misses = 0;
     for (i = 0; i < usable.length && need > 1e-6; i++) {
@@ -745,10 +765,6 @@
     return !!(job.bill && !job.bill.suspended);
   }
 
-  function benchReached(pawn, job) {
-    return billStillValid(pawn, job) && Production.atBench(pawn, targetThing(job, 'A', pawn.map));
-  }
-
   /* Claim the bench and every stack the recipe needs, up front: two
      cooks must not walk to the same stove, and two bills must not both
      believe they own the last twenty berries. */
@@ -844,6 +860,32 @@
       ' ' + (t.def ? t.def.label : t.defId) + '.', { kind: 'good', x: t.x, y: t.y });
   }
 
+  /* The grind. Work is applied here rather than through Toils.work so
+     that the bench check, the xp and the "is it finished yet" answer
+     all live in one place - which is the same call construct.js makes,
+     for the same reason. Experience lands every tick the crafter
+     actually spends at the bench, not in a lump at the end. */
+  function workToil(recipe) {
+    return Toils.custom({
+      name: 'billWork',
+      init: function (pawn, job, s) {
+        s.total = Production.workAmount(job.bill, pawn);
+        s.done = 0;
+      },
+      tick: function (pawn, job, s) {
+        var bench = targetThing(job, 'A', pawn.map);
+        if (!bench || !Production.benchUsable(bench)) return 'fail';
+        if (!job.bill || job.bill.suspended) return 'fail';
+        if (!Production.atBench(pawn, bench)) return 'fail';
+        s.done++;
+        job.workLeft = s.total - s.done;
+        if (recipe && recipe.skill) learn(pawn, recipe.skill, XP_PER_WORK);
+        return s.done < s.total ? 'stay' : 'next';
+      },
+      end: function (pawn, job) { job.workLeft = 0; }
+    });
+  }
+
   function finishToil() {
     return Toils.custom({
       name: 'finishRecipe',
@@ -885,13 +927,7 @@
           toils.push(guarded(deliverToil()));
         }
         toils.push(guarded(Toils.goto('A', { pe: PE.INTERACTION, failIfGone: true }), billStillValid));
-        toils.push(guarded(Toils.work({
-          amount: function (p, j) { return Production.workAmount(j.bill, p); },
-          /* Skill and bench are already inside workAmount, so the grind
-             itself runs at a flat unit per tick. */
-          rate: function () { return 1; },
-          skill: (recipe && recipe.skill) || null
-        }), benchReached));
+        toils.push(guarded(workToil(recipe)));
         toils.push(guarded(finishToil()));
         return toils;
       }
