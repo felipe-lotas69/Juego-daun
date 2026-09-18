@@ -68,6 +68,7 @@
     Game.weather = { tempOffset: 0, tempOffsetTicksLeft: 0, eclipseTicksLeft: 0, flareTicksLeft: 0, wind: 0.6 };
 
     if (typeof Research !== 'undefined') Research.reset();
+    Game.resolveSystems();
 
     /* The planet comes first: the colony map is one tile of it, and which
        tile you landed on decides the biome you have to survive. */
@@ -99,6 +100,52 @@
     return Game;
   };
 
+  /* ---------- the systems registry ----------
+     Systems are optional: the game runs with any subset of them present,
+     which is how it stayed playable while twenty files were being written
+     at once. Resolve them once rather than asking typeof on every tick. */
+
+  var MAP_TICKERS = [
+    ['Fire', 'tick'],                 /* flames spread before anything reads the map */
+    ['Social', 'tick'],               /* who talked to whom */
+    ['Husbandry', 'tick'],            /* training decay, breeding, produce */
+    ['Ideology', 'tickRituals']
+  ];
+  var PAWN_TICKERS = [
+    ['Abilities', 'tickPawn'],
+    ['Royalty', 'tickPawn'],
+    ['Biotech', 'tickPawn'],
+    ['Social', 'tickPawn'],
+    ['Husbandry', 'tickPawn']
+  ];
+  var SLOW_TICKERS = [                /* every 500 ticks - things measured in hours */
+    ['Caravans', 'tick'],
+    ['Trade', 'tick'],
+    ['Policies', 'tick'],
+    ['Research', 'tickSlow']
+  ];
+
+  var mapTick = [], pawnTick = [], slowTick = [], systemsResolved = false;
+
+  function resolve(list, out) {
+    out.length = 0;
+    for (var i = 0; i < list.length; i++) {
+      var g = root[list[i][0]];
+      var fn = g && g[list[i][1]];
+      if (typeof fn === 'function') out.push([g, fn]);
+    }
+  }
+
+  Game.resolveSystems = function () {
+    resolve(MAP_TICKERS, mapTick);
+    resolve(PAWN_TICKERS, pawnTick);
+    resolve(SLOW_TICKERS, slowTick);
+    systemsResolved = true;
+    return { map: mapTick.length, pawn: pawnTick.length, slow: slowTick.length };
+  };
+
+  Game.systemPresent = function (name) { return !!root[name]; };
+
   /* ---------- the tick ---------- */
 
   Game.doTick = function () {
@@ -113,10 +160,16 @@
 
     map.tick();
 
-    if (typeof Plants !== 'undefined') {
+    if (!systemsResolved) Game.resolveSystems();
+
+    /* fire.js supersedes the fire loop plants.js shipped with; fall back to
+       the old one when it is not loaded. */
+    if (typeof Fire === 'undefined' && typeof Plants !== 'undefined' && Plants.tickFires) {
       Plants.tickFires(map);
-      Game.tickPlantSlice(map);
     }
+    if (typeof Plants !== 'undefined') Game.tickPlantSlice(map);
+
+    for (var mt = 0; mt < mapTick.length; mt++) mapTick[mt][1].call(mapTick[mt][0], map, Game);
 
     /* Pawns act on a copy of the list: a pawn can die, spawn a corpse and
        leave the array mid-loop, and raiders can arrive from an incident. */
@@ -129,6 +182,7 @@
       if (pawn.dead) continue;
       pawn.tick();
       if (hasPrisoners && pawn.prisoner) Prisoners.tick(pawn);
+      for (var pt = 0; pt < pawnTick.length; pt++) pawnTick[pt][1].call(pawnTick[pt][0], pawn);
     }
 
     if (typeof Combat !== 'undefined') Combat.tick(map);
@@ -137,8 +191,7 @@
     /* The world outside the map moves on a slower clock: caravans cross
        tiles in days, traders come and go, civilizations change their minds. */
     if (Game.tick % 500 === 0) {
-      if (typeof Caravans !== 'undefined') Caravans.tick(Game);
-      if (typeof Trade !== 'undefined') Trade.tick(Game);
+      for (var st = 0; st < slowTick.length; st++) slowTick[st][1].call(slowTick[st][0], Game);
     }
     if (Game.tick % 2500 === 0 && typeof Factions !== 'undefined' && Factions.tickDiplomacy) {
       Factions.tickDiplomacy(Game);
