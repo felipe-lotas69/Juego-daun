@@ -323,8 +323,23 @@
   function bedRestHoldJob(pawn) {
     if (!isHuman(pawn)) return null;
     var bed = bedUnder(pawn);
-    if (!bed || !needsTreatment(pawn)) return null;
+    if (!bed || !needsTreatment(pawn) || !canLieDown(pawn)) return null;
+    return lieDownJob(pawn, bed);
+  }
+
+  /* Lying in a bed you cannot gain rest from ends the instant it starts -
+     jobs.js closes the toil at a full rest need - so a patient who is
+     wide awake and fully rested is better off on their feet than in a
+     one-tick loop of getting into bed. */
+  function canLieDown(pawn) {
+    return need(pawn, 'rest') < 0.98;
+  }
+
+  function lieDownJob(pawn, bed) {
     var job = makeJob('layDown', target('thing', bed), null, { count: BED_REST_TICKS });
+    /* Awake unless they are tired enough to sleep it off: bed rest is
+       waiting for the doctor, and a waking patient keeps their rest need
+       falling, which is what keeps them in the bed. */
     if (job) job.state.asleep = need(pawn, 'rest') < 0.55;
     return job;
   }
@@ -508,13 +523,11 @@
   }
 
   function treatmentJob(pawn) {
-    if (!needsTreatment(pawn)) return null;
+    if (!needsTreatment(pawn) || !canLieDown(pawn)) return null;
     var J = sys('Jobs');
     var bed = (J && J.findBed) ? J.findBed(pawn.map, pawn, { realBedOnly: false }) : null;
     if (!bed) return null;
-    var job = makeJob('layDown', target('thing', bed), null, { count: BED_REST_TICKS });
-    if (job) job.state.asleep = need(pawn, 'rest') < 0.55;
-    return job;
+    return lieDownJob(pawn, bed);
   }
 
   /* 8. Bedtime. */

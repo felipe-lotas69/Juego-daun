@@ -91,8 +91,10 @@
   var FLOOR_BURN_CHANCE = 0.004;
   var EXTINGUISH_PER_TICK = 0.0045;
 
-  /* One letter per fire outbreak, not one per flame. */
+  /* One letter per fire outbreak, not one per flame; and a message at
+     most every ten seconds for the fires that never reach a room. */
   var FIRE_LETTER_COOLDOWN = 2500;
+  var FIRE_MSG_COOLDOWN = 600;
   var FIRE_ALERT_RADIUS = 14;
   var ROOM_SCAN_LIMIT = 600;
 
@@ -825,8 +827,11 @@
 
   /* A fire outside in the woods is a message; a fire in a room the
      colony lives in is a letter, because that is the difference between
-     something to watch and something to drop everything for. The
-     cooldown lives on the map rather than in this file: a new colony
+     something to watch and something to drop everything for. Both are
+     rate-limited, because a blaze spreads by starting more fires and
+     forty letters saying the same thing is not forty times the warning.
+
+     The stamps live on the map rather than in this file: a new colony
      starts its clock at zero, and a module-level stamp left over from
      the last one would silence its first fire. */
   function alertFire(map, fire) {
@@ -834,23 +839,33 @@
     if (!G) return;
     var now = clockOf(map);
     var room = roomAt(map, fire.x, fire.y);
-    var indoors = !!(room && !room.outdoor);
 
-    if (indoors && colonyRoom(map, room)) {
-      var last = map._fireLetterTick;
-      if (last !== undefined && now >= last && now - last < FIRE_LETTER_COOLDOWN) return;
-      map._fireLetterTick = now;
-      letter('Fire!',
-        'A fire has broken out inside your colony. Firefighting is the highest-priority work ' +
-        'there is - anyone who can beat it out will drop what they are doing - but a fire in a ' +
-        'wooden building spreads faster than three colonists can put it out.',
-        { kind: 'threat', x: fire.x, y: fire.y });
-      return;
+    if (room && !room.outdoor) {
+      /* Walking the room is the expensive half, so a blaze that has
+         already announced itself never pays for it. */
+      if (recently(map, '_fireLetterTick', now, FIRE_LETTER_COOLDOWN)) return;
+      if (colonyRoom(map, room)) {
+        map._fireLetterTick = now;
+        letter('Fire!',
+          'A fire has broken out inside your colony. Firefighting is the highest-priority work ' +
+          'there is - anyone who can beat it out will drop what they are doing - but a fire in a ' +
+          'wooden building spreads faster than three colonists can put it out.',
+          { kind: 'threat', x: fire.x, y: fire.y });
+        return;
+      }
     }
 
-    if (nearColonist(map, fire.x, fire.y, FIRE_ALERT_RADIUS)) {
-      msg('A fire has started.', { type: 'threat', x: fire.x, y: fire.y });
-    }
+    if (recently(map, '_fireMsgTick', now, FIRE_MSG_COOLDOWN)) return;
+    if (!nearColonist(map, fire.x, fire.y, FIRE_ALERT_RADIUS)) return;
+    map._fireMsgTick = now;
+    msg('A fire has started.', { type: 'threat', x: fire.x, y: fire.y });
+  }
+
+  /* A stamp from a map whose clock has not reached it yet belongs to a
+     different colony, so it is no reason to stay quiet. */
+  function recently(map, key, now, window) {
+    var last = map[key];
+    return last !== undefined && now >= last && now - last < window;
   }
 
   /* Somewhere the colony actually lives: a colonist in it, or something
@@ -977,9 +992,11 @@
     for (var i = pawns.length - 1; i >= 0; i--) {
       var pawn = pawns[i];
       if (pawn.dead) continue;
-      var amount = Math.max(1, Math.round(2 + 4 * size));
-      if (H && H.damage) H.damage(pawn, { amount: amount, type: 'burn', source: 'fire' });
-      else if (pawn.health) pawn.health.bloodLoss = U.clamp01(pawn.health.bloodLoss + 0.02);
+      if (!H || !H.damage) return;
+      H.damage(pawn, {
+        amount: Math.max(1, Math.round(2 + 4 * size)),
+        type: 'burn', source: 'fire'
+      });
     }
   }
 

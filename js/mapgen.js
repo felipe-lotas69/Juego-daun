@@ -1013,6 +1013,9 @@
     { id: 'sniperRifle', lo: 0.55, peak: 1.1, hi: 1.7 }
   ];
   var PRIMITIVE_WEAPONS = { club: 1, knife: 1, spear: 1, shortBow: 1 };
+  /* Apparel that pawn.js puts in the same layer over the torso: at most
+     one of these can be worn, and offering two drops the first. */
+  var MIDDLE_TORSO = { jacket: 1, parka: 1, armorVest: 1 };
 
   function weaponWeight(entry, tier) {
     if (tier <= entry.lo || tier >= entry.hi) return 0;
@@ -1087,8 +1090,6 @@
     }
     return true;
   };
-
-  var MIDDLE_TORSO = { jacket: 1, parka: 1, armorVest: 1 };
 
   /* Everyone who is not a raider still arrives dressed. Two pieces of
      cloth is not wealth worth counting, and a colonist with no jacket
