@@ -1018,7 +1018,9 @@
        starving colonist eat two meals and pour most of the second away.
        Capped so nobody swallows a whole stockpile in one sitting. */
     var missing = 1 - pawn.needs.food;
-    var units = Math.floor(missing / per);
+    /* The epsilon is not decoration: 0.6 / 0.05 comes out as 11.999...,
+       and without it a pawn walks away from the twelfth berry hungry. */
+    var units = Math.floor(missing / per + 1e-9);
     if (units < 1) units = 1;
     if (units > 30) units = 30;
     if (units > stack) units = stack;

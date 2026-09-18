@@ -154,8 +154,8 @@
     if (!fa || !fb || fa === fb) return false;
     if (fa === 'wild') {
       /* A manhunter pack attacks everything that is not also wildlife. */
-      if (a.manhunter) return !(b.isAnimal && fb === 'wild');
-      return preyIdOf(a) === b.id && b.id !== undefined;
+      if (isManhunter(a)) return !(b.isAnimal && fb === 'wild');
+      return b.id !== undefined && aggroTargetId(a) === b.id;
     }
     var enemies = FACTION_ENEMIES[fa];
     return !!(enemies && enemies[fb]);
@@ -164,6 +164,18 @@
   Combat.hostile = function (a, b) {
     if (!a || !b || a === b) return false;
     return startsFightWith(a, b) || startsFightWith(b, a);
+  };
+
+  /* Four factions stand on the map, and an unknown one is neutral until
+     told otherwise. A world-map civilization that arrives with an id of
+     its own declares its relations here rather than having this table
+     rewritten underneath it. */
+  Combat.setRelation = function (a, b, hostile) {
+    if (!a || !b || a === b) return;
+    if (!FACTION_ENEMIES[a]) FACTION_ENEMIES[a] = {};
+    if (!FACTION_ENEMIES[b]) FACTION_ENEMIES[b] = {};
+    FACTION_ENEMIES[a][b] = !!hostile;
+    FACTION_ENEMIES[b][a] = !!hostile;
   };
 
   /* ------------------------------------------------------------------
@@ -222,7 +234,7 @@
     return _line;
   }
 
-  function fillAt(map, x, y, ignoreId) {
+  function fillAt(map, x, y) {
     if (!map.inBounds(x, y)) return 0;
     var best = 0, i, list;
     var b = map.buildingAt(x, y);
@@ -238,7 +250,7 @@
       list = map.pawnsAt(x, y);
       for (i = 0; i < list.length; i++) {
         var p = list[i];
-        if (p.dead || p.downed || p.id === ignoreId) continue;
+        if (p.dead || p.downed) continue;
         best = PAWN_FILL;
         break;
       }
@@ -257,7 +269,7 @@
       var at = cells - 1 - k;
       /* The shooter's own cell protects the shooter, never the target. */
       if (at <= 0) break;
-      var fill = fillAt(map, line[at * 2], line[at * 2 + 1], 0);
+      var fill = fillAt(map, line[at * 2], line[at * 2 + 1]);
       var v = fill * (k === 1 ? COVER_NEAR : COVER_FAR);
       if (v > best) best = v;
     }
@@ -559,6 +571,12 @@
       if (tx === aimX && ty === aimY) { tx += U.chance(0.5) ? 1 : -1; }
       tx = U.clamp(tx, 0, map.w - 1);
       ty = U.clamp(ty, 0, map.h - 1);
+      /* Clamping at the map edge can fold the miss back onto the muzzle.
+         Send it one cell towards the target instead of nowhere at all. */
+      if (tx === shooter.x && ty === shooter.y) {
+        tx = U.clamp(shooter.x + (U.sign(aimX - shooter.x) || 1), 0, map.w - 1);
+        ty = U.clamp(shooter.y + U.sign(aimY - shooter.y), 0, map.h - 1);
+      }
     }
 
     var dist = U.dist(shooter.x, shooter.y, tx, ty);
@@ -706,9 +724,12 @@
       if (d > 1.5 && !Combat.lineOfSight(map, x, y, cx, cy)) continue;
       var amount = Math.max(1, Math.round(damage * (1 - 0.55 * (d / radius))));
 
+      /* Backwards: killing a pawn takes it straight out of the per-cell
+         index this list is, and a forward loop would step over its
+         neighbour on the way. */
       var pawns = map.pawnsAt ? map.pawnsAt(cx, cy) : null;
       if (pawns) {
-        for (var j = 0; j < pawns.length; j++) {
+        for (var j = pawns.length - 1; j >= 0; j--) {
           var q = pawns[j];
           if (q.dead || struck[q.id]) continue;
           struck[q.id] = true;
@@ -750,6 +771,10 @@
      and nothing is lost by rebuilding it after a save.
      ------------------------------------------------------------------ */
 
+  /* The stance is advanced by Combat.tick, once per tick, never by whoever
+     calls tryAttack. Callers differ - a job driver ticks its pawn every
+     tick, animals.js waits out stanceTicks before calling again - and a
+     burst that only moves when somebody remembers to ask is not a burst. */
   var _stances = new Map();
 
   Combat.stanceOf = function (e) { return (e && _stances.get(e.id)) || null; };
@@ -767,8 +792,6 @@
     return { k: isPawn(t) ? 'p' : 't', id: t.id, x: t.x, y: t.y };
   }
 
-  var DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
-
   function faceToward(e, x, y) {
     if (e.dir === undefined) return;
     var dx = x - e.x, dy = y - e.y;
@@ -780,7 +803,7 @@
     var warm = Math.max(1, Math.round((w.warmupTicks || 30) * traitFactor(shooter, 'warmup')));
     var cool = Math.max(1, Math.round((w.cooldownTicks || 60) * traitFactor(shooter, 'cooldown')));
     var st = {
-      id: shooter.id, ranged: true, mode: 'warmup',
+      id: shooter.id, owner: shooter, map: map, ranged: true, mode: 'warmup',
       ticksLeft: warm, total: warm,
       shotsLeft: Math.max(1, w.burstCount || 1),
       burstTicks: Math.max(1, w.burstTicks || 1),
@@ -829,7 +852,7 @@
     var level = skillLevel(attacker, 'melee');
     var cd = Math.max(12, Math.round(m.cooldown * U.clamp(1.3 - 0.03 * level, 0.6, 1.3)));
     _stances.set(attacker.id, {
-      id: attacker.id, ranged: false, mode: 'cooldown',
+      id: attacker.id, owner: attacker, map: map, ranged: false, mode: 'cooldown',
       ticksLeft: cd, total: cd, cooldown: cd, shotsLeft: 0,
       burstTicks: 1, w: null, source: m.source, target: target, lastTick: now()
     });
@@ -837,14 +860,22 @@
     return true;
   }
 
-  function advanceStance(map, e, st, wanted) {
+  function advanceStance(st) {
+    var e = st.owner, map = st.map;
     st.lastTick = now();
     if (st.mode !== 'cooldown') {
-      /* Re-aim while still winding up, so a pawn does not fire at a
-         corpse when a better target walked in front of it. */
-      if (wanted && wanted !== st.target) st.target = wanted;
       var t = liveTarget(st.target);
-      if (!t) { Combat.clearStance(e); return false; }
+      if (!t) {
+        /* Dropped while being aimed at: the shooter simply lowers the gun.
+           Dropped mid-burst: the recovery is already owed and gets paid. */
+        if (st.mode === 'warmup') { Combat.clearStance(e); return false; }
+        st.mode = 'cooldown';
+        st.ticksLeft = st.cooldown;
+        st.target = null;
+        if (e.aimTarget !== undefined) e.aimTarget = null;
+        if (e.stanceTicks !== undefined) e.stanceTicks = st.ticksLeft;
+        return true;
+      }
       if (e.aimTarget !== undefined) e.aimTarget = targetRecord(t);
       faceToward(e, t.x, t.y);
     }
@@ -893,7 +924,15 @@
     if (!pawn || pawn.dead || !pawn.map) return false;
     var map = pawn.map;
     var st = _stances.get(pawn.id);
-    if (st) return advanceStance(map, pawn, st, liveTarget(target));
+    if (st) {
+      /* Already aiming, firing or recovering. Re-aim while still winding
+         up, so a pawn does not shoot at a corpse when a better target
+         walked in front of it; once the burst has started it belongs to
+         the target it started on. */
+      var better = liveTarget(target);
+      if (st.mode === 'warmup' && better && better !== st.target) st.target = better;
+      return true;
+    }
     if (!Combat.canAttack(pawn, target)) return false;
 
     var d = U.dist(pawn.x, pawn.y, target.x, target.y);
@@ -924,8 +963,14 @@
   /* Wildlife that is minding its own business is not a target, whatever
      the faction table says: a raid does not stop to fight a hare. */
   function harmlessAnimal(q) {
-    return q.isAnimal && q.faction === 'wild' && !q.manhunter && !isBerserk(q) && !preyIdOf(q);
+    return q.isAnimal && q.faction === 'wild' && !isManhunter(q) && !isBerserk(q) && !aggroTargetId(q);
   }
+
+  /* Distance counts more than danger: a fighter takes the threat in front
+     of them rather than walking past it to reach a scarier one. The square
+     term is what makes that hold at range without ignoring a rifleman for
+     an unarmed colonist two tiles nearer. */
+  function distanceWeight(d) { return 6 + d + d * d * 0.25; }
 
   function defaultSearchRange(pawn) {
     var w = rangedWeapon(pawn);
@@ -952,7 +997,7 @@
       if (d > maxDist) continue;
       if (needLoS && !Combat.lineOfSight(map, pawn.x, pawn.y, q.x, q.y)) continue;
       if (opts.reachable && !reachable(map, pawn, q.x, q.y)) continue;
-      score = threatOf(q) / (d + 4);
+      score = threatOf(q) / distanceWeight(d);
       if (q.downed) score *= 0.12;
       if (opts.preferHumans && q.isHuman) score *= 1.5;
       if (score > bestScore) { bestScore = score; best = q; }
@@ -970,7 +1015,7 @@
           d = U.dist(pawn.x, pawn.y, b.x, b.y);
           if (d > maxDist) continue;
           if (needLoS && !Combat.lineOfSight(map, pawn.x, pawn.y, b.x, b.y)) continue;
-          score = 8 * (STRUCTURE_VALUE[defId] || 1) / (d + 4);
+          score = 8 * (STRUCTURE_VALUE[defId] || 1) / distanceWeight(d);
           /* A live pawn is always worth more than the wall behind it. */
           if (best) score *= 0.5;
           if (score > bestScore) { bestScore = score; best = b; }
@@ -1021,12 +1066,17 @@
      Turrets
      ------------------------------------------------------------------ */
 
+  /* map.js keeps a list of things that want a call every tick and invites
+     combat.js to hand a turret its firing routine. Installing it here means
+     the sweep in Combat.tick only ever has to discover a newly built one,
+     and the tick guard below makes the two paths safe together. */
+  function turretTickFn(thing, map) { Combat.tickTurret(map, thing); }
+
   Combat.tickTurret = function (map, thing) {
     if (!map || !thing || !thing.spawned || !thing.def) return;
     var b = thing.def.building;
     if (!b || !b.isTurret) return;
-    /* map.tick dispatches building ticks and Combat.tick sweeps turrets;
-       whichever gets here first is the one that counts this tick. */
+    if (thing.tickFn !== turretTickFn && map.setTickFn) map.setTickFn(thing, turretTickFn);
     var t = now();
     if (thing._turretTick === t) return;
     thing._turretTick = t;
@@ -1036,7 +1086,7 @@
       if (st) Combat.clearStance(thing);
       return;
     }
-    if (st) { advanceStance(map, thing, st, null); return; }
+    if (st) return;
 
     /* Re-acquiring every tick would be the most expensive thing in the
        game; twice a second is faster than anything can cross a tile. */
@@ -1048,6 +1098,62 @@
     });
     if (target) beginRanged(map, thing, target, w, Defs.maybe('thing', b.turretWeapon));
   };
+
+  /* ------------------------------------------------------------------
+     Traps
+
+     A trap is a weapon that fires once, at touch range, into whoever
+     stepped on it, and accuracy.touch is the spring chance. The roll
+     happens once per pawn who walks in, not once per tick they spend
+     crossing, or a raider would never survive a doorway.
+     ------------------------------------------------------------------ */
+
+  /* The colony knows where it put its own traps and steps around them.
+     Almost always. */
+  var TRAP_FRIENDLY_SPRING = 0.007;
+
+  function trapTickFn(thing, map) { Combat.tickTrap(map, thing); }
+
+  Combat.tickTrap = function (map, thing) {
+    if (!map || !thing || !thing.spawned || !thing.def) return;
+    var b = thing.def.building;
+    if (!b || !b.isTrap) return;
+    if (thing.tickFn !== trapTickFn && map.setTickFn) map.setTickFn(thing, trapTickFn);
+
+    var here = map.pawnsAt(thing.x, thing.y);
+    var victim = null;
+    for (var i = 0; i < here.length; i++) {
+      if (!here[i].dead && !here[i].downed) { victim = here[i]; break; }
+    }
+    if (!victim) { thing._steppedOn = 0; return; }
+    if (thing._steppedOn === victim.id) return;
+    thing._steppedOn = victim.id;
+
+    var w = weaponBlock(thing.def);
+    if (!w) return;
+    var chance = Combat.hostile(thing, victim)
+      ? (w.accuracy ? w.accuracy.touch : 0.8)
+      : TRAP_FRIENDLY_SPRING;
+    /* A heavier body puts more weight on the trigger; a hare crosses it. */
+    var size = (victim.kind && victim.kind.bodySize) || 1;
+    if (!U.chance(chance * U.clamp(size, 0.25, 1.6))) return;
+
+    Combat.damage(map, victim, {
+      amount: Math.max(1, Math.round(w.damage * U.randRange(0.8, 1.25))),
+      type: w.damageType, armorPen: w.armorPen, instigator: null, source: thing.def
+    });
+    var G = Game();
+    if (G && G.msg) {
+      G.msg(U.cap(nameOf(victim)) + ' sprang a ' + thing.def.label + '.',
+        { type: victim.faction === 'player' ? 'threat' : 'good', x: thing.x, y: thing.y });
+    }
+    map.destroyThing(thing, 'sprung');
+  };
+
+  function nameOf(pawn) {
+    if (pawn.name && (pawn.name.nick || pawn.name.first)) return pawn.name.nick || pawn.name.first;
+    return (pawn.kind && pawn.kind.label) || 'someone';
+  }
 
   /* ------------------------------------------------------------------
      The tick
@@ -1076,18 +1182,29 @@
     }
     ex.length = w;
 
+    /* Both sweeps run backwards: a turret cooking off can destroy the next
+       one along, and map.byDef is the live list it is removed from. */
     var turrets = map.byDef ? map.byDef('turret') : null;
-    if (turrets) for (i = 0; i < turrets.length; i++) Combat.tickTurret(map, turrets[i]);
+    if (turrets) for (i = turrets.length - 1; i >= 0; i--) Combat.tickTurret(map, turrets[i]);
+    var traps = map.byDef ? map.byDef('spikeTrap') : null;
+    if (traps) for (i = traps.length - 1; i >= 0; i--) Combat.tickTrap(map, traps[i]);
 
-    /* A pawn that walked away mid-aim leaves its stance behind; sweep the
-       abandoned ones rather than carry them for the rest of the colony. */
-    if (_tick % 250 === 0 && _stances.size) {
-      var cutoff = now() - 180;
-      _stances.forEach(function (st, id) {
-        if (st.lastTick < cutoff) _stances.delete(id);
-      });
-    }
+    if (_stances.size) _stances.forEach(tickStance, map);
   };
+
+  /* One tick of every warmup, burst and cooldown in the world. A stance
+     whose owner has died, gone down or left the map is dropped: an aim is
+     only worth keeping while there is somebody behind it. */
+  function tickStance(st, id, all) {
+    var e = st.owner;
+    if (st.map !== this || !e || e.dead ||
+        (isPawn(e) ? e.downed : e.spawned === false)) {
+      all.delete(id);
+      if (e && e.stanceTicks !== undefined) { e.stanceTicks = 0; e.aimTarget = null; }
+      return;
+    }
+    advanceStance(st);
+  }
 
   Combat.reset = function () {
     Combat.projectiles.length = 0;
@@ -1116,11 +1233,15 @@
      movement, so ask it first and otherwise write the path fields the pawn
      model documents and its own mover consumes. */
   function chase(pawn, x, y) {
-    if (pawn.path && pawn.destX === x && pawn.destY === y) return true;
+    var walking = pawn.path && pawn.pathIdx < pawn.path.length;
+    if (walking && pawn.destX === x && pawn.destY === y) return true;
     if (typeof pawn.startPath === 'function') return pawn.startPath(x, y) !== false;
     var P = PathLib();
     if (!P) return false;
-    var path = P.find(pawn.map, pawn.x, pawn.y, x, y, { pawn: pawn, maxCells: 1600 });
+    /* TOUCH, so the path ends beside the quarry rather than trying to
+       finish on the tile it is standing on. */
+    var path = P.find(pawn.map, pawn.x, pawn.y, x, y,
+      { pawn: pawn, pe: P.PE.TOUCH, maxCells: 1600 });
     if (!path || !path.length) return false;
     pawn.path = path;
     pawn.pathIdx = 0;
@@ -1132,8 +1253,25 @@
   }
 
   function stopChasing(pawn) {
+    if (!pawn.path) return;
     pawn.path = null;
     pawn.pathIdx = 0;
+  }
+
+  /* A downed enemy is out of the fight, and a colonist does not execute
+     one unasked. A predator standing over its dinner has no such scruple,
+     and neither has anyone in a berserk rage. */
+  function finishesTheDowned(pawn, job) {
+    return !!(job.playerForced || pawn.isAnimal || isBerserk(pawn));
+  }
+
+  function attackReport(verb) {
+    return function (job, pawn) {
+      var t = targetOf(job, 'A', pawn && pawn.map);
+      var name = t && t.name ? (t.name.nick || t.name.first)
+        : (t && t.def ? t.def.label : 'something');
+      return verb + ' ' + name;
+    };
   }
 
   if (Jobs && Jobs.register) {
@@ -1146,11 +1284,7 @@
       label: 'attack',
       suspendable: false,
       alwaysShow: true,
-      reportString: function (job, pawn) {
-        var t = targetOf(job, 'A', pawn && pawn.map);
-        var name = t && t.name ? (t.name.nick || t.name.first) : (t && t.def ? t.def.label : 'something');
-        return 'Attacking ' + name;
-      },
+      reportString: attackReport('Attacking'),
       toils: function () {
         return [
           Toils.goto('A', { pe: PE.TOUCH, failIfGone: true }),
@@ -1160,9 +1294,7 @@
               var map = pawn.map;
               var target = targetOf(job, 'A', map);
               if (!target || (isPawn(target) && target.dead) || target.spawned === false) return 'done';
-              /* A downed enemy is out of the fight; finishing them off is
-                 a separate order, not something a colonist does on its own. */
-              if (isPawn(target) && target.downed && !job.playerForced) return 'done';
+              if (isPawn(target) && target.downed && !finishesTheDowned(pawn, job)) return 'done';
               var d = U.dist(pawn.x, pawn.y, target.x, target.y);
               if (d > 1.45) {
                 if (!chase(pawn, target.x, target.y)) return 'fail';
@@ -1185,11 +1317,7 @@
       label: 'attack',
       suspendable: false,
       alwaysShow: true,
-      reportString: function (job, pawn) {
-        var t = targetOf(job, 'A', pawn && pawn.map);
-        var name = t && t.name ? (t.name.nick || t.name.first) : (t && t.def ? t.def.label : 'something');
-        return 'Shooting ' + name;
-      },
+      reportString: attackReport('Shooting'),
       toils: function () {
         return [
           Toils.custom({
@@ -1198,7 +1326,7 @@
               var map = pawn.map;
               var target = targetOf(job, 'A', map);
               if (!target || (isPawn(target) && target.dead) || target.spawned === false) return 'done';
-              if (isPawn(target) && target.downed && !job.playerForced) return 'done';
+              if (isPawn(target) && target.downed && !finishesTheDowned(pawn, job)) return 'done';
 
               /* Finish the burst that is already in the air before
                  admitting the shot has gone bad. */
@@ -1248,8 +1376,8 @@
     });
   }
 
+  /* The range bands the accuracy curve is quoted at, for the UI. */
   Combat.BANDS = { touch: BAND_TOUCH, short: BAND_SHORT, medium: BAND_MEDIUM, long: BAND_LONG };
-  Combat.DIRS = DIRS;
 
   root.Combat = Combat;
 })(this);

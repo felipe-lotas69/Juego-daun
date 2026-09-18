@@ -2,21 +2,21 @@
    construct.js - blueprints, frames, building, deconstruction,
    mining, and the roofs that mining brings down.
 
-   The build flow is RimWorld's, and it is worth stating plainly
-   because three files touch it:
+   The build flow is RimWorld's, and worth stating plainly because
+   three files touch it:
 
      blueprint --(haulers carry materials in)--> frame
                --(a constructor spends workToBuild)--> the building
 
-   A blueprint is a ghost. It owns nothing, blocks nothing and costs
-   nothing to cancel. A frame owns the materials that have been
-   carried into it and the work done so far, which is why cancelling
-   a frame refunds and cancelling a blueprint does not. Only
-   finishFrame ever spawns the real building.
+   A blueprint is a ghost: it owns nothing, blocks nothing and costs
+   nothing to cancel. A frame owns the materials carried into it and
+   the work done so far, which is why cancelling a frame refunds and
+   cancelling a blueprint does not. Only finishFrame spawns the real
+   building.
 
    Mining runs the other way: a designation on a natural wall, 800
    work, and the wall becomes rock floor plus whatever the seam held.
-   Then the roof that wall was holding up has to be asked whether
+   Then the roof that wall was holding has to be asked whether
    anything else is still holding it, and sometimes the answer is no.
    ============================================================ */
 (function (root) {
@@ -246,7 +246,10 @@
     return x >= g.x && x < g.x + f.w && y >= g.y && y < g.y + f.h;
   }
 
+  /* map.js keeps ghosts on their own cell grid, which answers this in
+     O(1); the scan is the fallback for a map that does not. */
   Construct.ghostAt = function (map, x, y) {
+    if (map.ghostAt) return map.ghostAt(x, y);
     var lists = [ghostList(map, 'blueprint'), ghostList(map, 'frame')];
     for (var l = 0; l < lists.length; l++) {
       var arr = lists[l];
@@ -266,10 +269,36 @@
     return ghostList(map, 'blueprint').concat(ghostList(map, 'frame'));
   };
 
+  /* A designation is a marked cell; what a work giver wants is the
+     thing standing on it, and whether that thing is still a legal
+     target. Knowing that is this file's business, not scanning's. */
+  function designatedThings(map, type, test) {
+    var marks = map.designationsOf(type), out = [];
+    for (var i = 0; i < marks.length; i++) {
+      var t = test(map, marks[i].x, marks[i].y);
+      if (t) out.push(t);
+    }
+    return out;
+  }
+
+  Construct.mineTargets = function (map) {
+    return designatedThings(map, 'mine', Construct.canMine);
+  };
+  Construct.deconstructTargets = function (map) {
+    return designatedThings(map, 'deconstruct', Construct.canDeconstruct);
+  };
+
   /* ---------- placement ---------- */
 
   function no(reason) { return { ok: false, reason: reason }; }
   var YES = { ok: true, reason: '' };
+
+  /* A floor slips under a conduit or a bed; everything else that is
+     already standing on the cell is genuinely in the way. */
+  function conflicts(newDef, standingDef) {
+    if (!isTerrainDef(newDef)) return true;
+    return standingDef.passable === false || standingDef.fillPercent >= 1;
+  }
 
   /* A jamb: something a door can hang in. The map edge counts, and so
      does a planned wall, so a whole room can be laid out at once. */
@@ -318,10 +347,7 @@
          overwrite is not the same obstacle as a building you cannot. */
       if (b && b.def && !b.isBlueprint && !b.isFrame) {
         if (b.def.mineable) { fail = no('Mine the rock out first.'); return false; }
-        /* A floor can go down under a conduit or a sleeping spot; it
-           cannot go down under something solid. */
-        var blocksFloor = b.def.passable === false || b.def.fillPercent >= 1;
-        if (!terrainBuild || blocksFloor) {
+        if (conflicts(def, b.def)) {
           fail = no('There is already a ' + labelOf(b.def) + ' here.');
           return false;
         }
@@ -336,10 +362,9 @@
     });
     if (fail) return fail;
 
-    /* A door has to sit in a wall line. Its rotation picks the axis it
-       expects to be walled, but a door the player turned the wrong way
-       is a rotation mistake, not a placement one, so the other axis is
-       accepted too. */
+    /* A door has to sit in a wall line, on either axis. Facing is not
+       part of the question: a door turned the wrong way is a rotation
+       mistake the player fixes with R, not a bad cell. */
     if (def.building && def.building.isDoor) {
       var acrossX = wallLike(map, x - 1, y) && wallLike(map, x + 1, y);
       var acrossY = wallLike(map, x, y - 1) && wallLike(map, x, y + 1);
@@ -380,7 +405,8 @@
        that already holds one of your buildings. */
     var standing = map.buildingAt(x, y);
     if (standing && standing.def && standing.faction === 'player' &&
-        !standing.isBlueprint && !standing.isFrame && !standing.def.mineable) {
+        !standing.isBlueprint && !standing.isFrame && !standing.def.mineable &&
+        conflicts(def, standing.def)) {
       Construct.designateDeconstruct(map, x, y);
       return null;
     }
@@ -402,7 +428,7 @@
     }
 
     var bp = map.spawnThing('blueprint', x, y, {
-      rot: rot, faction: 'player', blueprintOf: defId
+      rot: rot, faction: 'player', blueprintOf: defId, stuff: stuff
     });
     if (!bp) return null;
 
@@ -500,7 +526,7 @@
     var work = keepWork ? (ghost.workDone || 0) : 0;
     map.despawnThing(ghost);
     var next = map.spawnThing(asDefId, x, y, {
-      rot: rot, faction: 'player', blueprintOf: defId
+      rot: rot, faction: 'player', blueprintOf: defId, stuff: stuff
     });
     if (!next) return null;
     next.isFrame = asDefId === 'frame';
@@ -602,7 +628,8 @@
     } else {
       var hp = Construct.maxHpFor(defId, stuff);
       built = map.spawnThing(defId, x, y, {
-        rot: rot, faction: 'player', hp: hp, quality: rollQuality(pawn, def)
+        rot: rot, faction: 'player', hp: hp, stuff: stuff,
+        quality: rollQuality(pawn, def)
       });
       if (built) {
         built.stuff = stuff;
@@ -621,6 +648,7 @@
      aside so a wall cannot swallow a stack of steel. */
   function clearForBuilding(map, def, x, y, rot) {
     var solid = def.passable === false;
+    var f = footprint(def, rot);
     forEachCell(def, x, y, rot, function (cx, cy) {
       var plant = map.plantAt(cx, cy);
       if (plant) map.destroyThing(plant, 'built over');
@@ -628,17 +656,22 @@
       /* A copy, because moving an item mutates the cell's own list. */
       var items = map.items(cx, cy).slice();
       for (var i = items.length - 1; i >= 0; i--) {
-        var spot = freeNeighbour(map, cx, cy);
+        var spot = spotOutside(map, cx, cy, x, y, f);
         if (spot) map.moveThing(items[i], spot.x, spot.y);
       }
       return true;
     });
   }
 
-  function freeNeighbour(map, x, y) {
-    for (var i = 0; i < U.ADJ8.length; i++) {
-      var nx = x + U.ADJ8[i][0], ny = y + U.ADJ8[i][1];
-      if (map.inBounds(nx, ny) && map.passable(nx, ny)) return { x: nx, y: ny };
+  /* Somewhere to put what was lying on the cell: the nearest walkable
+     tile that the new building will not itself be standing on, which
+     matters the moment the building is more than one tile wide. */
+  function spotOutside(map, cx, cy, x, y, f) {
+    var ring = U.cellsInRadius(cx, cy, 4);
+    for (var i = 0; i < ring.length; i++) {
+      var nx = ring[i][0], ny = ring[i][1];
+      if (nx >= x && ny >= y && nx < x + f.w && ny < y + f.h) continue;
+      if (map.passable(nx, ny)) return { x: nx, y: ny };
     }
     return null;
   }
@@ -777,10 +810,8 @@
   };
 
   /* Only cells within the support radius of the change can have lost
-     their support, so that is the whole area worth re-testing. One pass:
-     a wall crushed by the falling roof does not set off a second
-     collapse, which keeps a single mining tick bounded. */
-  Construct.checkRoofCollapse = function (map, cx, cy) {
+     their support, so that is the whole area worth re-testing. */
+  function collapsePass(map, cx, cy) {
     var r = ROOF_SUPPORT_RADIUS, r2 = r * r;
     var fallen = [];
     for (var dy = -r; dy <= r; dy++) {
@@ -794,15 +825,49 @@
         fallen.push(i);
       }
     }
-    if (!fallen.length) return 0;
-    for (var f = 0; f < fallen.length; f++) Construct.collapseRoofAt(map, fallen[f]);
-    msg('A section of roof collapsed.', { type: 'threat', x: cx, y: cy });
+    /* Buildings are collected and hit afterwards: one wider than a tile
+       stands under several of the cells that just fell, and it should be
+       hit once rather than once per tile. Doing it after the scan also
+       means destroying one cannot change what buildingAt reports
+       half way through. */
+    var hit = [];
+    for (var f = 0; f < fallen.length; f++) Construct.collapseRoofAt(map, fallen[f], hit);
+    for (var h = 0; h < hit.length; h++) {
+      if (hit[h].spawned) hit[h].damage(ROOF_BUILDING_DAMAGE);
+    }
     return fallen.length;
+  }
+
+  /* map.destroyThing calls back in here whenever something that was
+     holding a roof dies, so a collapse that crushes a wall re-enters
+     this function. Queueing the follow-up cells and draining them in
+     the outermost call keeps a spreading cave-in iterative - and it
+     terminates, because every pass strictly removes roof. */
+  var collapseQueue = null;
+
+  Construct.checkRoofCollapse = function (map, cx, cy) {
+    if (collapseQueue) { collapseQueue.push(cx, cy); return 0; }
+    collapseQueue = [];
+    var total = 0;
+    try {
+      total = collapsePass(map, cx, cy);
+      while (collapseQueue.length) {
+        var qy = collapseQueue.pop(), qx = collapseQueue.pop();
+        total += collapsePass(map, qx, qy);
+      }
+    } finally {
+      collapseQueue = null;
+    }
+    if (total) msg('A section of roof collapsed.', { type: 'threat', x: cx, y: cy });
+    return total;
   };
 
-  Construct.collapseRoofAt = function (map, i) {
+  /* hitList, when given, collects the buildings to damage instead of
+     damaging them here; collapsePass passes one so a multi-tile
+     building is only crushed once. */
+  Construct.collapseRoofAt = function (map, i, hitList) {
     var x = map.xOf(i), y = map.yOf(i);
-    map.roof[i] = 0;
+    if (map.setRoof) map.setRoof(x, y, 0); else map.roof[i] = 0;
 
     var H = root.Health;
     var pawns = map.pawnsAt(x, y);
@@ -812,10 +877,13 @@
       }
     }
 
+    /* Thing.damage owns what a hit does to a building, including the
+       rubble it leaves, so a falling roof goes through the same door as
+       a bullet rather than keeping its own arithmetic. */
     var b = map.buildingAt(x, y);
     if (b && b.def && !b.def.mineable) {
-      b.hp = (b.hp || Construct.maxHp(b)) - ROOF_BUILDING_DAMAGE;
-      if (b.hp <= 0) map.destroyThing(b, 'roof collapse');
+      if (hitList) { if (hitList.indexOf(b) < 0) hitList.push(b); }
+      else b.damage(ROOF_BUILDING_DAMAGE);
     }
     var plant = map.plantAt(x, y);
     if (plant) map.destroyThing(plant, 'roof collapse');
@@ -833,8 +901,11 @@
   Construct.repair = function (pawn, thing, amount) {
     if (!Construct.needsRepair(thing) || !(amount > 0)) return true;
     var max = Construct.maxHp(thing);
-    thing.hp = Math.min(max, (thing.hp || 0) + amount * REPAIR_HP_PER_WORK);
-    gainSkill(pawn, 'construction', amount * XP_PER_WORK);
+    /* Only the work that went into hp is taught, so handing this a big
+       amount to finish a nearly-whole wall is not a free lesson. */
+    var healed = Math.min(max - (thing.hp || 0), amount * REPAIR_HP_PER_WORK);
+    thing.hp = (thing.hp || 0) + healed;
+    gainSkill(pawn, 'construction', (healed / REPAIR_HP_PER_WORK) * XP_PER_WORK);
     return thing.hp >= max;
   };
 
@@ -947,81 +1018,70 @@
     }
   });
 
-  /* --- deconstruct --- */
-  Jobs.register('deconstruct', {
-    label: 'deconstruct',
-    reportString: function (job, pawn) {
-      var b = targetThing(job, 'A', pawn && pawn.map);
-      return 'Deconstructing ' + (b && b.def ? labelOf(b.def) : 'building');
+  /* --- deconstruct and mine ---
+     The same job with different verbs: claim it, walk to it, then pour
+     work into it a tick at a time. The running total is written onto
+     the thing rather than kept in the toil, so the renderer can draw a
+     half-mined tile and a colonist who breaks off to eat does not hand
+     the next one a fresh wall. */
+  function grindJob(id, spec) {
+    Jobs.register(id, {
+      label: spec.label,
+      reportString: function (job, pawn) {
+        var t = targetThing(job, 'A', pawn && pawn.map);
+        return spec.verb + ' ' + (t && t.def ? labelOf(t.def) : spec.noun);
+      },
+      toils: function () {
+        return [
+          reserveToil('A'),
+          Toils.goto('A', { pe: PE.TOUCH, failIfGone: true }),
+          Toils.custom({
+            name: id + 'Work',
+            init: function (pawn, job, s) {
+              var t = spec.find(job, pawn.map);
+              s.total = spec.work(t);
+              s.done = (t && t.workDone) || 0;
+            },
+            tick: function (pawn, job, s) {
+              var map = pawn.map;
+              var t = spec.find(job, map);
+              if (!t) return 'fail';
+              var rate = Construct.workRate(pawn, spec.skill);
+              s.done += rate;
+              t.workDone = s.done;
+              gainSkill(pawn, spec.skill, rate * XP_PER_WORK);
+              if (s.done < s.total) return 'stay';
+              spec.finish(map, t, pawn);
+              return 'done';
+            }
+          })
+        ];
+      }
+    });
+  }
+
+  grindJob('deconstruct', {
+    label: 'deconstruct', verb: 'Deconstructing', noun: 'building',
+    skill: 'construction',
+    find: function (job, map) {
+      var t = targetThing(job, 'A', map);
+      return t && t.spawned ? t : null;
     },
-    toils: function () {
-      return [
-        reserveToil('A'),
-        Toils.goto('A', { pe: PE.TOUCH, failIfGone: true }),
-        Toils.custom({
-          name: 'deconstructWork',
-          init: function (pawn, job, s) {
-            var b = targetThing(job, 'A', pawn.map);
-            s.total = b ? Construct.deconstructWork(b.defId) : 0;
-            /* Progress lives on the building, so a colonist who walks
-               off to eat does not hand the next one a fresh wall. */
-            s.done = b ? (b.workDone || 0) : 0;
-          },
-          tick: function (pawn, job, s) {
-            var map = pawn.map;
-            var b = targetThing(job, 'A', map);
-            if (!b || !b.spawned) return 'fail';
-            var rate = Construct.workRate(pawn, 'construction');
-            s.done += rate;
-            b.workDone = s.done;
-            gainSkill(pawn, 'construction', rate * XP_PER_WORK);
-            if (s.done < s.total) return 'stay';
-            Construct.completeDeconstruct(map, b, pawn);
-            return 'done';
-          }
-        })
-      ];
-    }
+    work: function (t) { return t ? Construct.deconstructWork(t.defId) : 0; },
+    finish: function (map, t, pawn) { Construct.completeDeconstruct(map, t, pawn); }
   });
 
-  /* --- mine --- */
-  Jobs.register('mine', {
-    label: 'mine',
-    reportString: function (job, pawn) {
-      var w = targetThing(job, 'A', pawn && pawn.map);
-      return 'Mining ' + (w && w.def ? labelOf(w.def) : 'rock');
+  grindJob('mine', {
+    label: 'mine', verb: 'Mining', noun: 'rock',
+    skill: 'mining',
+    /* Mining resolves through the cell, so a job aimed at a cell works
+       exactly like one aimed at the wall standing in it. */
+    find: function (job, map) {
+      var pos = targetPos(job, 'A', map);
+      return pos ? Construct.canMine(map, pos.x, pos.y) : null;
     },
-    toils: function () {
-      return [
-        reserveToil('A'),
-        Toils.goto('A', { pe: PE.TOUCH, failIfGone: true }),
-        Toils.custom({
-          name: 'mineWork',
-          init: function (pawn, job, s) {
-            var w = targetThing(job, 'A', pawn.map);
-            s.total = Construct.mineWork(w ? w.defId : null);
-            s.done = w ? (w.workDone || 0) : 0;
-          },
-          tick: function (pawn, job, s) {
-            var map = pawn.map;
-            var pos = targetPos(job, 'A', map);
-            if (!pos) return 'fail';
-            var wall = Construct.canMine(map, pos.x, pos.y);
-            if (!wall) return 'fail';
-            var rate = Construct.workRate(pawn, 'mining');
-            s.done += rate;
-            gainSkill(pawn, 'mining', rate * XP_PER_WORK);
-            /* Progress is written onto the wall so the renderer can
-               show a half-mined tile and a second miner can pick up
-               where the first one left off. */
-            wall.workDone = s.done;
-            if (s.done < s.total) return 'stay';
-            Construct.completeMine(map, pos.x, pos.y, pawn);
-            return 'done';
-          }
-        })
-      ];
-    }
+    work: function (t) { return Construct.mineWork(t ? t.defId : null); },
+    finish: function (map, t, pawn) { Construct.completeMine(map, t.x, t.y, pawn); }
   });
 
   /* --- repair --- */

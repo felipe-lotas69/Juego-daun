@@ -40,6 +40,7 @@
   var PREY_RADIUS = 30;
   var GRAZE_RADIUS = 9;
   var SCAN_TICKS = 40;                /* between threat scans for one animal */
+  var FLEE_STAMINA = 900;             /* how long anything can keep running */
   var PREY_SCAN_TICKS = 300;
   var HUNT_GIVE_UP = 9000;            /* 2.5 minutes of real chasing */
   var MANHUNTER_MIN = 18000, MANHUNTER_MAX = 52000;
@@ -55,12 +56,12 @@
   var KIND_INFO = {
     hare:    { bodySize: 0.3, wildness: 0.35, trainability: 'none',         packSize: [1, 3], revengeChance: 0.00, manhunterOnTameFail: 0.00, breeds: true },
     deer:    { bodySize: 0.75, wildness: 0.70, trainability: 'none',         packSize: [2, 5], revengeChance: 0.02, manhunterOnTameFail: 0.01, breeds: true },
-    muffalo: { bodySize: 2.1, wildness: 0.75, trainability: 'intermediate', packSize: [3, 6], revengeChance: 0.06, manhunterOnTameFail: 0.02, breeds: true },
-    boomrat: { bodySize: 0.4, wildness: 0.50, trainability: 'intermediate', packSize: [1, 4], revengeChance: 0.10, manhunterOnTameFail: 0.03, breeds: true,
+    muffalo: { bodySize: 2.1, wildness: 0.75, trainability: 'intermediate', packSize: [3, 6], revengeChance: 0.04, manhunterOnTameFail: 0.02, breeds: true },
+    boomrat: { bodySize: 0.4, wildness: 0.50, trainability: 'intermediate', packSize: [1, 4], revengeChance: 0.06, manhunterOnTameFail: 0.03, breeds: true,
                nocturnal: true, explodes: true },
-    wolf:    { bodySize: 0.75, wildness: 0.90, trainability: 'advanced',     packSize: [1, 3], revengeChance: 0.15, manhunterOnTameFail: 0.08,
+    wolf:    { bodySize: 0.75, wildness: 0.90, trainability: 'advanced',     packSize: [1, 3], revengeChance: 0.07, manhunterOnTameFail: 0.08,
                predator: true, grazer: false, nocturnal: true },
-    bear:    { bodySize: 1.9, wildness: 0.97, trainability: 'advanced',     packSize: [1, 2], revengeChance: 0.25, manhunterOnTameFail: 0.12,
+    bear:    { bodySize: 1.9, wildness: 0.97, trainability: 'advanced',     packSize: [1, 2], revengeChance: 0.10, manhunterOnTameFail: 0.12,
                predator: true, grazer: false }
   };
 
@@ -103,7 +104,6 @@
   /* ---------- engine modules ----------
      Read at call time rather than captured at load: mapgen.js and game.js
      come after this file, and nothing here runs before the first tick. */
-  function Game() { return root.Game; }
   function now() { var G = root.Game; return (G && typeof G.tick === 'number') ? G.tick : 0; }
 
   function msg(text, type, at) {
@@ -123,6 +123,7 @@
     if (m) return m;
     m = pawn.animalMind = {
       manhunterTicks: 0, revengeId: 0, threatId: 0, fleeUntil: 0, nextScan: 0,
+      fleeSince: 0, windedUntil: 0,
       preyId: 0, nextPrey: 0, grazeIdx: 0, nextGraze: 0, releaseTargetId: 0,
       tameWork: 0, trainWork: 0, slaughterWork: 0, releaseWork: 0,
       desType: '', desX: -1, desY: -1,
@@ -329,17 +330,34 @@
     }
 
     var threat = null;
-    if (mind.fleeUntil > tick) {
-      threat = pawnById(map, mind.threatId);
-      if (threat && (threat.dead || U.dist(pawn.x, pawn.y, threat.x, threat.y) > 22)) threat = null;
-    }
-    if (!threat && tick >= mind.nextScan) {
-      mind.nextScan = tick + SCAN_TICKS;
-      threat = findThreat(pawn, k, map);
-      if (threat) {
-        mind.threatId = threat.id;
-        mind.fleeUntil = tick + U.randInt(240, 600);
+    if (mind.windedUntil <= tick) {
+      if (mind.fleeUntil > tick) {
+        threat = pawnById(map, mind.threatId);
+        if (threat && (threat.dead || U.dist(pawn.x, pawn.y, threat.x, threat.y) > 22)) threat = null;
       }
+      if (!threat && tick >= mind.nextScan) {
+        mind.nextScan = tick + SCAN_TICKS;
+        threat = findThreat(pawn, k, map);
+        if (threat) {
+          mind.threatId = threat.id;
+          mind.fleeUntil = tick + U.randInt(240, 600);
+        }
+      }
+    }
+    if (!threat) {
+      mind.fleeSince = 0;
+    } else if (!mind.fleeSince) {
+      mind.fleeSince = tick;
+    }
+    /* Nothing runs for ever. An animal that has been fleeing for a quarter
+       of a minute straight is blown and stands whatever it wants to do,
+       which is the only reason a predator ever catches anything and the
+       only reason a hunter with a knife ever comes home with meat. */
+    if (threat && tick - mind.fleeSince > FLEE_STAMINA) {
+      mind.windedUntil = tick + 700;
+      mind.fleeSince = 0;
+      mind.fleeUntil = 0;
+      threat = null;
     }
     if (threat) {
       var run = fleeJob(pawn, threat, map);
@@ -463,10 +481,14 @@
       }
     }
 
-    if (food > PREDATOR_HUNT_AT) return null;
+    /* combat.js reads mind.preyId to decide that this animal is hostile to
+       that one pawn, so a predator that has stopped hunting must be seen
+       to have stopped: a fed wolf is not stalking anybody. */
+    if (food > PREDATOR_HUNT_AT) { mind.preyId = 0; return null; }
 
     var prey = mind.preyId ? pawnById(map, mind.preyId) : null;
     if (prey && (prey.dead || U.dist(pawn.x, pawn.y, prey.x, prey.y) > 40)) prey = null;
+    if (!prey) mind.preyId = 0;
     if (!prey && tick >= mind.nextPrey) {
       mind.nextPrey = tick + PREY_SCAN_TICKS;
       prey = pickPrey(pawn, k, map, food < PREDATOR_MAN_EATER_AT);
@@ -478,6 +500,16 @@
       }
     }
     if (!prey) return null;
+
+    /* Combat stops at downed, because a colonist who drops an enemy wants
+       a prisoner, not a corpse. A predator wants the corpse: it finishes
+       what it has pulled down before it eats. */
+    if (prey.downed) {
+      if (U.cheb(pawn.x, pawn.y, prey.x, prey.y) > 1) return Jobs.make('goto', T.cell(prey.x, prey.y));
+      killAnimal(prey, pawn, 'killed by a ' + info(pawn.kindId).label);
+      mind.preyId = 0;
+      return waitJob(pawn, 60);
+    }
 
     /* Stalk in from a distance, then commit. */
     if (U.dist(pawn.x, pawn.y, prey.x, prey.y) > 12) return Jobs.make('goto', T.cell(prey.x, prey.y));
@@ -631,12 +663,32 @@
   }
   Animals.huntRange = weaponRange;
 
+  /* combat.js keeps its own aim/burst/cooldown stance and expects
+     tryAttack every tick to advance it, so a hunter holds the trigger
+     down rather than pulling it once. Breaking off has to drop the aim
+     or the shooter stays locked on something it is walking away from. */
+  function clearStance(pawn) {
+    var Combat = root.Combat;
+    if (Combat && Combat.clearStance) Combat.clearStance(pawn);
+    else { pawn.stanceTicks = 0; pawn.aimTarget = null; }
+  }
+
   function killAnimal(animal, killer, cause) {
     var H = root.Health;
     if (H && H.kill) H.kill(animal, cause || 'killed');
     else if (H && H.damage) H.damage(animal, { amount: 9999, type: 'cut', instigator: killer });
     else { animal.dead = true; animal.downed = false; }
     Animals.notifyDeath(animal, killer);
+  }
+
+  /* combat.js pays the xp for each shot taken; this is the lump the hunt
+     itself is worth, paid once when the quarry goes down, so a hunt still
+     teaches a colonist something even when the kill came from one lucky
+     shot at the treeline. */
+  function creditKill(pawn, job, s) {
+    if (s.credited) return;
+    s.credited = 1;
+    gainSkill(pawn, weaponRange(pawn) ? 'shooting' : 'melee', 40);
   }
 
   function corpseOf(map, pawnId) {
@@ -681,7 +733,7 @@
     return Toils.custom({
       name: 'huntKill',
       init: function (pawn, job, s) {
-        s.ticks = 0; s.injuries = -1;
+        s.ticks = 0; s.injuries = -1; s.engaged = 0;
         var prey = T.resolve(job.targetA, pawn.map);
         if (prey) {
           job.state.preyId = prey.id;
@@ -695,9 +747,23 @@
       },
       tick: function (pawn, job, s) {
         var map = pawn.map, prey = T.resolve(job.targetA, map);
-        if (!prey) return 'next';
+        /* A quarry that stops resolving mid-hunt died and was cleared off
+           the map; the corpse is still ours to fetch. */
+        if (!prey) {
+          if (!s.engaged) return 'next';
+          job.state.killed = 1;
+          if (map.undesignate) map.undesignate(job.state.x, job.state.y, 'hunt');
+          creditKill(pawn, job, s);
+          return 'next';
+        }
+        s.engaged = 1;
         job.state.x = prey.x; job.state.y = prey.y;
-        if (prey.dead) { job.state.killed = 1; undesignate(prey); return 'next'; }
+        if (prey.dead) {
+          job.state.killed = 1;
+          Animals.notifyDeath(prey, pawn);
+          creditKill(pawn, job, s);
+          return 'next';
+        }
         if (++s.ticks > HUNT_GIVE_UP) return 'fail';
 
         var range = weaponRange(pawn);
@@ -706,12 +772,13 @@
 
         /* A downed animal is finished by hand wherever it fell. */
         if (prey.downed) {
+          clearStance(pawn);
           if (d > 1.45) return walkTo(pawn, prey.x, prey.y) ? 'stay' : 'fail';
           stopMoving(pawn);
           faceToward(pawn, prey);
           killAnimal(prey, pawn, 'hunted');
           job.state.killed = 1;
-          gainSkill(pawn, melee ? 'melee' : 'shooting', 40);
+          creditKill(pawn, job, s);
           return 'next';
         }
 
@@ -719,7 +786,10 @@
         var want = melee ? 1.4 : Math.max(3, range - 1);
         var los = melee || !Combat || !Combat.lineOfSight ||
           Combat.lineOfSight(map, pawn.x, pawn.y, prey.x, prey.y);
-        if (d > want || !los) return walkTo(pawn, prey.x, prey.y) ? 'stay' : 'fail';
+        if (d > want || !los) {
+          clearStance(pawn);
+          return walkTo(pawn, prey.x, prey.y) ? 'stay' : 'fail';
+        }
         stopMoving(pawn);
         faceToward(pawn, prey);
 
@@ -731,6 +801,7 @@
           s.injuries = wounds;
           var chance = info(prey.kindId).revengeChance * (melee ? 2.2 : 1);
           if (U.chance(chance)) {
+            clearStance(pawn);
             makeManhunter(prey, { target: pawn });
             letter('Wounded animal revenge',
               U.cap(labelOf(prey)) + ' turned on ' + nameOf(pawn) + '.', 'threat', prey);
@@ -738,10 +809,10 @@
           }
         }
 
-        if ((pawn.stanceTicks || 0) > 0) return 'stay';
         if (Combat && Combat.tryAttack) Combat.tryAttack(pawn, prey);
         return 'stay';
-      }
+      },
+      end: function (pawn) { clearStance(pawn); }
     });
   }
 
@@ -842,6 +913,7 @@
     done: function (a, pawn) {
       var which = Animals.trainingNeeded(a);
       if (!which) return;
+      if (!a.trainedLevels) a.trainedLevels = { obedience: 0, release: 0 };
       var k = info(a.kindId);
       var odds = U.clamp01(0.25 + 0.06 * skillLevel(pawn, 'animals') - k.wildness * 0.25);
       if (!U.chance(odds)) { msg(labelOf(a) + ' would not take the lesson.', 'info', a); return; }
@@ -1002,6 +1074,25 @@
   }
   Animals.undesignate = undesignate;
 
+  /* The cell mirror can outlive its animal: anything at all can kill a
+     designated beast and nothing is obliged to tell this file. Once in a
+     while the animal designations are walked and the orphans dropped.
+     Only entries written here carry a pawnId, so a mining or chopping
+     designation is never touched. */
+  var _sweepTick = -99999;
+  function sweepDesignations(map) {
+    if (!map || !map.designations || !map.designations.forEach) return;
+    var stale = [];
+    map.designations.forEach(function (d, i) {
+      if (!d || !d.pawnId) return;
+      var p = pawnById(map, d.pawnId);
+      if (!p || p.dead || p.designated !== d.type) stale.push([i, d.type]);
+    });
+    for (var i = 0; i < stale.length; i++) {
+      map.undesignate(map.xOf(stale[i][0]), map.yOf(stale[i][0]), stale[i][1]);
+    }
+  }
+
   function syncDesignation(animal, mind) {
     var map = animal.map;
     if (!map || !map.designate || !mind.desType) return;
@@ -1072,24 +1163,14 @@
     return n;
   }
 
-  /* map.js decides how a pawn joins a map; try whatever it named the door
-     before pushing one through the wall. */
+  /* map.js owns the pawn-per-cell index, so a new animal joins through
+     addPawn; pushing one onto map.pawns by hand would leave pawnsAt blind
+     to it. The float position is ours to set: nothing has drawn it yet. */
   function place(map, pawn, x, y) {
-    if (map.pawns.indexOf(pawn) >= 0) { pawn.map = map; return true; }
-    var P = root.Pawn, i, fn;
-    var mapFns = ['addPawn', 'spawnPawn', 'placePawn'];
-    for (i = 0; i < mapFns.length; i++) {
-      fn = map[mapFns[i]];
-      if (typeof fn === 'function') { fn.call(map, pawn, x, y); return map.pawns.indexOf(pawn) >= 0; }
-    }
-    var pawnFns = ['spawn', 'place', 'addTo'];
-    for (i = 0; P && i < pawnFns.length; i++) {
-      fn = P[pawnFns[i]];
-      if (typeof fn === 'function') { fn(pawn, map, x, y); return map.pawns.indexOf(pawn) >= 0; }
-    }
-    pawn.map = map; pawn.x = x; pawn.y = y; pawn.fx = x; pawn.fy = y;
-    map.pawns.push(pawn);
-    return true;
+    if (!map.addPawn) return false;
+    map.addPawn(pawn, x, y);
+    pawn.fx = pawn.x; pawn.fy = pawn.y;
+    return map.pawns.indexOf(pawn) >= 0;
   }
 
   function spawnCellNear(map, x, y, radius) {
@@ -1224,11 +1305,10 @@
       pawn.needs.food = U.clamp01(pawn.needs.food - (1.0 * RARE_TICKS) / 60000);
     }
 
-    /* Starving animals waste away like anything else does. */
-    if (pawn.needs.food <= 0) {
-      var H = root.Health;
-      if (H && H.addHediff) H.addHediff(pawn, 'malnutrition', 0.02);
-    }
+    /* Starvation is not handled here on purpose: health.js reads
+       needs.food for every pawn it ticks and applies malnutrition itself,
+       so an animal that runs out of grass wastes away exactly the way a
+       colonist who runs out of meals does. */
 
     /* Grazing while standing still: think() walks an animal to its food,
        this is the mouthful it takes when the food is already underfoot. */
@@ -1248,6 +1328,8 @@
     }
 
     if (mind.desType) syncDesignation(pawn, mind);
+    var t = now();
+    if (t - _sweepTick >= 2000) { _sweepTick = t; sweepDesignations(pawn.map); }
 
     tryBreed(pawn, mind, k);
   };
@@ -1292,7 +1374,6 @@
   /* ---------- odds and ends the rest of the game asks for ---------- */
 
   Animals.info = info;
-  Animals.kindLabel = function (kindId) { return info(kindId).label; };
   Animals.canTame = function (animal) {
     return !!(animal && animal.isAnimal === true && !animal.dead && !animal.tame && !isManhunter(animal));
   };
