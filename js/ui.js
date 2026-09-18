@@ -145,6 +145,9 @@
     return c;
   }
 
+  /* The fill is handed back on the wrapper as well as inside it, so a
+     bar that is written to between rebuilds - the research one - can
+     reach it without a selector that would break if this changed. */
   function barEl(cls, value, label) {
     var wrap = el('div', 'nbar' + (cls ? ' ' + cls : ''));
     if (label !== undefined) wrap.appendChild(el('span', 'nbar-label', label));
@@ -153,6 +156,7 @@
     fill.style.width = Math.round(U.clamp01(value) * 100) + '%';
     track.appendChild(fill);
     wrap.appendChild(track);
+    wrap.fillEl = fill;
     return wrap;
   }
 
@@ -262,7 +266,7 @@
   function researchProgress() {
     var R = root.Research;
     var cur = R && R.current ? R.current() : null;
-    return cur ? (R.progressOf(cur.id) || 0) : 0;
+    return (cur && R.progressOf) ? (R.progressOf(cur.id) || 0) : 0;
   }
   function researchDone(id) {
     var R = root.Research;
@@ -655,14 +659,23 @@
     ['character', 'Character', characterRows]
   ];
 
+  /* An animal has needs and a body but no gear, no ties and no career,
+     so it gets the first two tabs and the pane never lands on one of
+     the three that would print a muffalo's artistic skill. */
+  function tabsFor(p) {
+    return p.isAnimal ? PAWN_TABS.slice(0, 2) : PAWN_TABS;
+  }
+
   function pawnData(p) {
-    var tabFn = needRows;
-    for (var i = 0; i < PAWN_TABS.length; i++) {
-      if (PAWN_TABS[i][0] === inspectTab) tabFn = PAWN_TABS[i][2];
+    var tabs = tabsFor(p), tab = tabs[0][0], tabFn = tabs[0][2];
+    for (var i = 0; i < tabs.length; i++) {
+      if (tabs[i][0] !== inspectTab) continue;
+      tab = tabs[i][0];
+      tabFn = tabs[i][2];
     }
     var d = {
       kind: 'pawn', pawn: p, title: fullName(p), sub: backstoryLine(p),
-      job: jobReport(p), rows: tabFn(p), tab: inspectTab
+      job: jobReport(p), rows: tabFn(p), tab: tab
     };
     d.sig = 'p' + p.id + '|' + d.tab + '|' + d.title + '|' + d.sub + '|' + d.job + '|' +
       (p.drafted ? 'D' : '') + rowsSig(d.rows);
@@ -814,13 +827,12 @@
 
     var tabs = pane.childNodes[1];
     clear(tabs);
-    if (data.kind === 'pawn' && !data.pawn.isAnimal) {
-      PAWN_TABS.forEach(function (t) {
-        var b = btn(t[1], 'ins-tab' + (inspectTab === t[0] ? ' on' : ''), function () {
+    if (data.kind === 'pawn') {
+      tabsFor(data.pawn).forEach(function (t) {
+        tabs.appendChild(btn(t[1], 'ins-tab' + (data.tab === t[0] ? ' on' : ''), function () {
           inspectTab = t[0];
           sig.inspect = '';
-        });
-        tabs.appendChild(b);
+        }));
       });
     }
 
@@ -1034,14 +1046,22 @@
     }
   }
 
+  /* A locked item is greyed and refuses the click, but it is not a
+     disabled control: browsers suppress mouse events on those, and the
+     reason it is locked is the one thing the player came to hover for. */
   function archButton(iconNode, label, sub, active, onClick, disabledReason) {
     var b = el('button', 'arch-item' + (active ? ' on' : '') + (disabledReason ? ' off' : ''));
     b.type = 'button';
     b.appendChild(iconNode);
     b.appendChild(el('span', 'arch-label', label));
     if (sub) b.appendChild(el('span', 'arch-cost', sub));
-    if (disabledReason) { b.disabled = true; tip(b, disabledReason); }
-    else b.addEventListener('click', onClick);
+    if (disabledReason) {
+      b.setAttribute('aria-disabled', 'true');
+      tip(b, disabledReason);
+      b.addEventListener('click', function () { UI.toast(disabledReason); });
+    } else {
+      b.addEventListener('click', onClick);
+    }
     return b;
   }
 
@@ -1161,10 +1181,11 @@
         s += colonists[i].id + ':' + JSON.stringify(colonists[i].workPriority || {}) + ';';
       }
     } else if (openTabName === 'research') {
-      /* The banked points climb every tick. They drive one line of text
-         and one bar, which are written in place below; rebuilding the
-         whole tree for them would re-measure every card three times a
-         second and throw away the mouse wherever it was. */
+      /* The banked points climb every tick, and they drive one line of
+         text and one bar, so syncResearchProgress writes those two in
+         place and they stay out of the signature. Rebuilding the whole
+         tree for them would re-measure every card three times a second
+         and take the mouse off whatever it was over. */
       var cur = root.Research && Research.current ? Research.current() : null;
       s += (cur ? cur.id : '-') + ':' +
         (root.Research && Research.done ? Research.done.size : 0);
@@ -1301,7 +1322,9 @@
     var prog = researchProgress(), cost = cur.cost || 1;
     resProgress.head.textContent = 'Researching ' + (cur.label || cur.id) + ' - ' +
       Math.round(prog) + ' / ' + Math.round(cost) + ' work';
-    resProgress.fill.style.width = Math.round(U.clamp01(prog / cost) * 100) + '%';
+    if (resProgress.fill) {
+      resProgress.fill.style.width = Math.round(U.clamp01(prog / cost) * 100) + '%';
+    }
   }
 
   function renderResearch() {
@@ -1314,9 +1337,9 @@
       head.textContent = 'Researching ' + (cur.label || cur.id) + ' - ' +
         Math.round(prog) + ' / ' + Math.round(cost) + ' work';
       body.appendChild(head);
-      var bar = barEl('wide', prog / cost, null);
+      var bar = barEl('wide', prog / cost);
       body.appendChild(bar);
-      resProgress = { id: cur.id, head: head, fill: bar.querySelector('.nbar-fill') };
+      resProgress = { id: cur.id, head: head, fill: bar.fillEl };
     } else {
       head.textContent = 'Nothing is being researched. Pick a project and put someone on the research bench.';
       body.appendChild(head);
@@ -1579,10 +1602,15 @@
      Alerts
      ------------------------------------------------------------------ */
 
+  /* Only what a colonist will eat before they are desperate. Kibble is
+     for the animals and a corpse is what you resort to, so counting
+     either as food in store would hide the alert that matters. */
   var foodDefCache = null;
   function foodDefs() {
     if (!foodDefCache) {
-      foodDefCache = Defs.items().filter(function (d) { return (d.nutrition || 0) > 0; });
+      foodDefCache = Defs.items().filter(function (d) {
+        return (d.nutrition || 0) > 0 && (d.foodType === 'meal' || d.foodType === 'raw');
+      });
     }
     return foodDefCache;
   }
@@ -1963,8 +1991,8 @@
       }));
     }
     actions.appendChild(btn('New colony', 'big-btn' + (running ? '' : ' primary'), function () {
-      var parts = menuFields.diff.value.split('|');
       var start = function () {
+        var parts = menuFields.diff.value.split('|');
         UI.startGame({
           biome: menuFields.biome.value,
           size: parseInt(menuFields.size.value, 10),
@@ -2048,8 +2076,18 @@
       ['F', 'draft or undraft the selection'],
       ['H', 'jump home to the colony'],
       ['Tab', 'cycle through colonists'],
-      ['Delete', 'cancel the designation under the cursor'],
-      ['Escape', 'drop the tool, then the selection, then open the menu']
+      ['Delete', 'cancel the selected plans, or pick up the cancel tool'],
+      ['M', 'mine tool'],
+      ['C', 'cancel tool'],
+      ['K', 'paint a stockpile'],
+      ['G', 'paint a growing zone'],
+      ['B', 'architect: structure'],
+      ['U', 'architect: furniture'],
+      ['P', 'architect: production'],
+      ['E', 'architect: power'],
+      ['Y', 'architect: security'],
+      ['L', 'architect: floors'],
+      ['Escape', 'close what is open, then drop the tool, then the selection, then the menu']
     ];
     var dl = el('div', 'keys');
     keys.forEach(function (k) {

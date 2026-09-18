@@ -74,8 +74,11 @@
     return n.nick || n.first || 'someone';
   }
 
+  /* A pawn carries a kindId and a Thing carries a defId; nothing in the
+     game carries both. Asking about needs instead would call a pawn a
+     Thing whenever needs.js had not filled them in yet. */
   function isPawnLike(x) {
-    return !!x && x.needs !== undefined && x.isAnimal !== undefined;
+    return !!x && x.kindId !== undefined && x.defId === undefined;
   }
 
   function skillLevel(pawn, id) {
@@ -137,14 +140,26 @@
     pawn.destY = gy;
     pawn.pathMode = mode === undefined ? PE.ON_CELL : mode;
     pawn.pathDest = map.idx(gx, gy);
+    /* A fresh route gets a fresh repath budget, the same one pawn.js
+       hands out in startPath; without this a walk that already spent its
+       retry earlier in the job dies on the first door that closes. */
+    pawn._pathFails = 0;
   }
 
+  /* Clearing moveProgress and the float position matters: a pawn stopped
+     halfway between two tiles keeps that fraction otherwise, and the
+     first step of its next path completes almost instantly while the
+     renderer draws it standing off-tile. pawn.js's own stopPath resets
+     both for the same reason. */
   function stopMoving(pawn) {
     pawn.path = null;
     pawn.pathIdx = 0;
+    pawn.moveProgress = 0;
     pawn.pathDest = -1;
     pawn.destX = pawn.x;
     pawn.destY = pawn.y;
+    pawn.fx = pawn.x;
+    pawn.fy = pawn.y;
   }
 
   function isMoving(pawn) {
@@ -259,9 +274,10 @@
     if (!map) return { x: target.x, y: target.y };
     var found = T.resolve(target, map);
     if (!found) return null;
-    /* A carried stack keeps the coordinates it had on the floor, so ask
-       the carrier where it actually is. */
-    if (target.k === 't' && _holder && _holder.carried === found) {
+    /* Anything a pawn is holding - in hand, worn, slung or in a pack -
+       keeps the coordinates it had when it left the floor, so ask the
+       holder where it actually is. */
+    if (target.k === 't' && _holder) {
       return { x: _holder.x, y: _holder.y };
     }
     return { x: found.x, y: found.y };
@@ -335,7 +351,10 @@
     var e = entryFor(map, target, false);
     if (!e || !e.ids.length) return true;
     if (e.ids.indexOf(pawn.id) >= 0) return true;
-    var limit = max > 0 ? max : (e.max || 1);
+    /* The strictest claim on a target wins. Reading the newcomer's max
+       instead would let a giver that asks for room for three walk past
+       the exclusive claim the first pawn made. */
+    var limit = Math.min(max > 0 ? max : 1, e.max || 1);
     return e.ids.length < limit;
   };
 
@@ -344,7 +363,8 @@
     if (!Res.canReserve(pawn, target, max)) return false;
     var e = entryFor(pawn.map, target, true);
     if (!e) return false;
-    e.max = max > 0 ? max : 1;
+    var want = max > 0 ? max : 1;
+    e.max = e.ids.length ? Math.min(e.max || want, want) : want;
     if (e.ids.indexOf(pawn.id) < 0) e.ids.push(pawn.id);
     return true;
   };
@@ -478,16 +498,26 @@
      exists, it produces a toil list, and the thing the job is about
      still exists. Everything after this point is allowed to assume the
      plan was sane once. */
+  /* A work giver claims its target before it hands the job over, so a
+     job that never starts has to give those claims back or the target is
+     locked out of the colony until the pawn happens to end another job.
+     Only safe while the pawn is idle: a pawn still running an older job
+     is holding claims that job is using. */
+  function startFailed(pawn) {
+    if (!pawn.job) Res.releaseAll(pawn);
+    return false;
+  }
+
   Jobs.start = function (pawn, job) {
     if (!pawn || !job) return false;
     var def = job.def || Jobs.defs[job.defId];
     if (!def || typeof def.toils !== 'function') {
       if (root.Game && root.Game.debug) console.log('[jobs] no def for ' + job.defId);
-      return false;
+      return startFailed(pawn);
     }
     job.def = def;
 
-    if (!def.allowGoneTarget && job.targetA && !T.valid(job.targetA, pawn.map)) return false;
+    if (!def.allowGoneTarget && job.targetA && !T.valid(job.targetA, pawn.map)) return startFailed(pawn);
 
     if (pawn.job) Jobs.end(pawn, 'interrupted');
 
@@ -496,9 +526,9 @@
       toils = def.toils(job, pawn);
     } catch (e) {
       if (root.Game && root.Game.debug) console.log('[jobs] toils threw for ' + job.defId + ': ' + e);
-      return false;
+      return startFailed(pawn);
     }
-    if (!toils || !toils.length) return false;
+    if (!toils || !toils.length) return startFailed(pawn);
 
     job.toilIdx = 0;
     job.toilState = {};
@@ -535,6 +565,7 @@
         if (toil.init) {
           try { toil.init(pawn, job, d.s); }
           catch (e) { reportToilError(pawn, job, toil, e); Jobs.end(pawn, 'failed'); return; }
+          if (pawn.job !== job) return;
         }
       }
 
@@ -546,6 +577,11 @@
         Jobs.end(pawn, 'failed');
         return;
       }
+      /* A toil is allowed to hurt somebody, and hurting somebody can down
+         or kill this pawn, and health.js ends the job of a pawn it downs.
+         Stepping the driver after that would run the rest of a plan that
+         no longer belongs to anyone. */
+      if (pawn.job !== job) return;
 
       if (result === 'stay' || result === undefined || result === null) return;
       if (result === 'done') { finishToil(pawn, job, d); Jobs.end(pawn, 'done'); return; }
@@ -586,29 +622,40 @@
     pawn.__endingJob = true;
     reason = reason || 'done';
 
-    var d = pawn.driver;
-    if (d) finishToil(pawn, job, d);
-    if (job.def && job.def.onEnd) {
-      try { job.def.onEnd(pawn, job, reason); }
-      catch (e) { reportToilError(pawn, job, { name: 'onEnd' }, e); }
+    try {
+      var d = pawn.driver;
+      if (d) finishToil(pawn, job, d);
+      if (job.def && job.def.onEnd) {
+        try { job.def.onEnd(pawn, job, reason); }
+        catch (e) { reportToilError(pawn, job, { name: 'onEnd' }, e); }
+      }
+
+      pawn.job = null;
+      pawn.driver = null;
+      pawn.lastJobEndTick = now();
+      pawn.lastJobDefId = job.defId;
+      pawn.lastJobEndReason = reason;
+      pawn.asleep = false;
+      stopMoving(pawn);
+
+      /* Releasing is mandatory: a claim that outlives its job locks a
+         stack out of the colony until a reload. */
+      Res.releaseAll(pawn);
+
+      if (pawn.carried && !(job.def && job.def.keepCarried)) {
+        placeCarried(pawn, pawn.x, pawn.y);
+      }
+      /* A rescue that dies between lifting a patient and tucking them in
+         would otherwise leave both pawns flagged as carrying forever,
+         which work givers read as "that one is busy being moved". */
+      if (pawn.carriedPawn && !(job.def && job.def.keepCarried)) {
+        var passenger = pawn.carriedPawn;
+        pawn.carriedPawn = null;
+        if (passenger.carriedBy === pawn.id) passenger.carriedBy = null;
+      }
+    } finally {
+      pawn.__endingJob = false;
     }
-
-    pawn.job = null;
-    pawn.driver = null;
-    pawn.lastJobEndTick = now();
-    pawn.lastJobDefId = job.defId;
-    pawn.lastJobEndReason = reason;
-    pawn.asleep = false;
-    stopMoving(pawn);
-
-    /* Releasing is mandatory: a claim that outlives its job locks a
-       stack out of the colony until a reload. */
-    Res.releaseAll(pawn);
-
-    if (pawn.carried && !(job.def && job.def.keepCarried)) {
-      placeCarried(pawn, pawn.x, pawn.y);
-    }
-    pawn.__endingJob = false;
   };
 
   Jobs.report = function (pawn) {
@@ -660,7 +707,11 @@
     var pos = T.pos(target, map);
     if (!pos) return false;
     var thing = T.resolve(target, map);
-    var solid = thing && thing.def && typeof thing.covers === 'function' && !isPawnLike(thing);
+    /* A thing somebody is holding has the coordinates of the floor it was
+       picked up from, so only a spawned thing may be measured by its own
+       footprint; for the rest, T.pos already said where it really is. */
+    var solid = thing && thing.def && thing.spawned !== false &&
+                typeof thing.covers === 'function' && !isPawnLike(thing);
 
     if (mode === PE.INTERACTION) {
       var spot = (solid && typeof thing.interactionCell === 'function') ? thing.interactionCell() : null;
@@ -1019,6 +1070,9 @@
     });
   }
 
+  /* The jobs that mean "I am in this bed", as opposed to standing on it. */
+  var RESTING_JOBS = { sleep: 1, layDown: 1 };
+
   function isBed(thing) {
     return !!(thing && thing.def && thing.def.building && thing.def.building.isBed);
   }
@@ -1026,11 +1080,24 @@
   function bedIsFree(map, bed, pawn) {
     if (!bed || !bed.spawned) return false;
     if (!Res.canReserve(pawn, T.thing(bed), 1)) return false;
-    /* Somebody else's assigned bed is theirs even while they are up. */
-    if (bed.ownerId && pawn && bed.ownerId !== pawn.id) return false;
+    /* Somebody else's assigned bed is theirs even while they are up - but
+       only while they are alive and on this map. An owner who died or
+       left would otherwise lock the bed for the rest of the game. */
+    if (bed.ownerId && pawn && bed.ownerId !== pawn.id) {
+      var owner = pawnIndex(map).get(bed.ownerId);
+      if (owner && !owner.dead) return false;
+      bed.ownerId = null;
+    }
+    /* Occupied means somebody is in it, not somebody is walking over it:
+       a doctor standing on the tile to tuck a patient in, or a hauler
+       cutting through a bedroom, would otherwise make the only bed in
+       the colony read as taken for as long as they stand there. */
     var occupants = map.pawnsAt(bed.x, bed.y);
     for (var i = 0; i < occupants.length; i++) {
-      if (occupants[i] !== pawn && !occupants[i].dead) return false;
+      var other = occupants[i];
+      if (other === pawn || other.dead) continue;
+      if (other.asleep || other.downed) return false;
+      if (other.job && RESTING_JOBS[other.job.defId]) return false;
     }
     return true;
   }
@@ -1164,9 +1231,13 @@
         tick: function (pawn, job2, s) {
           var C = sys('Combat');
           if (C) {
+            /* pawn.aimTarget is a Target record, not the thing itself:
+               combat.js writes it through T.pawn/T.thing. Handing that
+               record back to tryAttack would put a dead snapshot into the
+               shooter's stance and fire at coordinates nobody stands on. */
             var stance = C.stanceOf ? C.stanceOf(pawn) : null;
-            var foe = stance ? pawn.aimTarget : null;
-            if (!foe && C.findTarget) foe = C.findTarget(pawn, { maxRange: 0 });
+            var foe = (stance && pawn.aimTarget) ? T.resolve(pawn.aimTarget, pawn.map) : null;
+            if (!foe && C.findTarget) foe = C.findTarget(pawn);
             if (foe) {
               faceToward(pawn, foe.x, foe.y);
               if (C.tryAttack) C.tryAttack(pawn, foe);
@@ -1781,8 +1852,12 @@
 
   /* --- burial --- */
 
+  /* buriedName is the scalar half of the record. save.js packs a thing's
+     scalar fields and drops its objects, so a grave that only carried the
+     `buried` object came back empty after a reload and the colony buried
+     its next corpse on top of the last one. */
   function graveIsFree(grave) {
-    return !!grave && grave.spawned && !grave.buried;
+    return !!grave && grave.spawned && !grave.buried && !grave.buriedName;
   }
   Jobs.graveIsFree = graveIsFree;
 
@@ -1829,6 +1904,8 @@
               pawnId: (corpse.corpse && corpse.corpse.pawnId) || null,
               tick: now()
             };
+            grave.buriedName = grave.buried.name;
+            grave.buriedTick = grave.buried.tick;
             pawn.carried = null;
             map.despawnThing(corpse);
             msg(nameOf(pawn) + ' buried ' + grave.buried.name + '.', pawn);
@@ -1964,8 +2041,11 @@
             faceToward(pawn, bench.x, bench.y);
 
             var rate = workRate(pawn, 'intellectual');
-            R.addProgress(rate, pawn);
-            learn(pawn, 'intellectual', rate * XP_PER_WORK);
+            /* No learn() call here: Research.addProgress pays the
+               intellectual xp for the points it banks, and it needs the
+               pawn anyway to scale the project by their skill. Paying it
+               here as well would train researchers at double speed. */
+            if (R.addProgress) R.addProgress(rate, pawn);
             /* Come up for air every few hours so the think tree gets a
                chance to notice hunger, a raid or a finished project. */
             return (++s.ticks > 5000) ? 'done' : 'stay';
@@ -2172,8 +2252,13 @@
         dragCarriedPawn(pawn);
         patient.carriedBy = null;
         pawn.carriedPawn = null;
-        if (bed && !patient.ownedBedId && bed.def.id !== 'sleepingSpot') {
+        /* Both halves of the claim, or neither: bedIsFree asks the bed who
+           owns it and findBed asks the pawn which bed is theirs, so a bed
+           that only knew one of those would be handed to the next pawn
+           who walked past it. */
+        if (bed && !patient.ownedBedId && !bed.ownerId && bed.def.id !== 'sleepingSpot') {
           patient.ownedBedId = bed.id;
+          bed.ownerId = patient.id;
         }
         var N = sys('Needs');
         if (rescued && N && N.addThought) N.addThought(patient, 'rescued');

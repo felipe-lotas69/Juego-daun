@@ -51,9 +51,11 @@
   var FOOD_FALL_PER_DAY = 1.6;        /* only used when needs.js is absent */
 
   /* ---------- species data ----------
-     def_pawns.js owns the pawnKind defs and its numbers always win. This
-     table only fills gaps, so the day a kind def grows a `wildness` field
-     it silently takes over from the number here and nothing else moves. */
+     def_pawns.js owns the pawnKind defs and its numbers win. This table
+     only fills gaps, so the day a kind def grows a `wildness` field it
+     silently takes over from the number here and nothing else moves.
+     The one field not taken at face value is `grazer`, for the reason
+     given in info(). */
   var KIND_INFO = {
     hare:    { bodySize: 0.3, wildness: 0.35, trainability: 'none',         packSize: [1, 3], revengeChance: 0.00, manhunterOnTameFail: 0.00, breeds: true },
     deer:    { bodySize: 0.75, wildness: 0.70, trainability: 'none',         packSize: [2, 5], revengeChance: 0.02, manhunterOnTameFail: 0.01, breeds: true },
@@ -805,6 +807,12 @@
           job.state.preyKind = prey.kindId;
           job.state.preyName = labelOf(prey);
           job.state.x = prey.x; job.state.y = prey.y;
+          /* A job that is thrown away rather than ended - which is what a
+             load does to every job on the map - never reaches the end
+             handler, so the table is bounded here as well. Nothing like
+             sixty-four hunts run at once, so the entry dropped is always
+             one whose job stopped existing. */
+          if (_quarry.size > 64) _quarry.delete(_quarry.keys().next().value);
           _quarry.set(job.id, prey);
         }
         if (!weaponRange(pawn) && prey) {
@@ -896,13 +904,22 @@
           corpse = makeCorpse(map, job.state);
           if (!corpse) return 'done';
         }
+        /* Claim the body before walking back for it. A hauler who got
+           there first has every right to it, and a refused claim means
+           the hunt is over rather than that it failed: walking to a
+           carcass somebody else is already carrying ends in nothing. */
+        var body = T.thing(corpse);
+        var Res = root.Res;
+        if (Res && Res.reserve && !Res.reserve(pawn, body, 1)) return 'done';
+
         var Z = root.Zones;
         var spot = Z && Z.bestStorageFor ? Z.bestStorageFor(map, corpse, pawn) : null;
-        if (!spot) return 'done';
-        job.targetB = T.thing(corpse);
+        if (!spot) {
+          if (Res && Res.release) Res.release(pawn, body);
+          return 'done';
+        }
+        job.targetB = body;
         job.targetC = T.cell(spot.x, spot.y);
-        var Res = root.Res;
-        if (Res && Res.reserve) Res.reserve(pawn, job.targetB, 1);
         return 'next';
       }
     });

@@ -43,6 +43,7 @@
   var RARE = 250;
   var IMPASSABLE = 65535;
   var MAX_LEVEL = 20;
+  var STEP_EPS = 1e-6;                       /* rounding slack on moveProgress */
 
   /* ---------- learning ---------- */
   var PASSION_LEARN = [0.35, 1.0, 1.5];
@@ -56,15 +57,21 @@
   var DECAY_EVERY = RARE * 12;               /* every 3000 ticks, 20 times a day */
 
   /* ---------- what a trait does to the things pawn.js owns ----------
-     Mood traits live in needs.js and combat traits in combat.js; these
-     are the three numbers this file is responsible for. */
+     Mood traits live in needs.js and combat traits in combat.js; move,
+     work, learn and decay are the four this file is responsible for.
+
+     def_pawns.js states all four on the trait def itself, and the def
+     always wins. This table is only what a trait falls back to when its
+     def is not registered, which is the case in the exercise harnesses
+     that load pawn.js without the data files. */
   var TRAIT_FX = {
-    jogger:      { move: 1.15 },
-    slowpoke:    { move: 0.85 },
+    jogger:      { move: 1.087 },
+    slowpoke:    { move: 0.90 },
     nimble:      { move: 1.05 },
-    industrious: { work: 1.25 },
-    lazy:        { work: 0.85 },
-    slothful:    { work: 0.75 },
+    neurotic:    { work: 1.08 },
+    industrious: { work: 1.35 },
+    lazy:        { work: 0.80 },
+    slothful:    { work: 0.50 },
     toosmart:    { learn: 1.40 },
     greatMemory: { learn: 1.15, decay: 0 }
   };
@@ -84,13 +91,16 @@
   };
 
   /* Jobs that already are the urgent thing, so the rare-tick review
-     leaves them alone, and jobs that are only a way of passing time. */
+     leaves them alone. */
   var SETTLED_JOBS = {
     eat: 1, sleep: 1, layDown: 1, attackMelee: 1, attackStatic: 1, flee: 1,
     tendPatient: 1, rescue: 1, carryToBed: 1, extinguishFire: 1,
     mentalWander: 1, mentalTantrum: 1, mentalBerserk: 1, mentalBinge: 1, mentalDaze: 1
   };
-  var IDLE_JOBS = { wander: 1, joyIdle: 1, wait: 1, goto: 1 };
+  /* Jobs that are only a way of passing time. A goto is not one of them:
+     something asked for that walk, and cancelling it halfway across the
+     map every rare tick strands the pawn where the walk was going. */
+  var IDLE_JOBS = { wander: 1, joyIdle: 1, wait: 1 };
   var RESTING_JOBS = { sleep: 1, layDown: 1, wait: 1 };
 
   /* The pawnKind ids the contract freezes as animals. Only used when a
@@ -186,6 +196,17 @@
     var n = (animalCounts[kindId] || 0) + 1;
     animalCounts[kindId] = n;
     return { first: '', nick: U.cap(label) + ' #' + n, last: '' };
+  }
+
+  /* The counter is a module variable, so a loaded save would start it at
+     zero and name the next muffalo after one already grazing outside.
+     Every restored animal pushes it past its own number instead. */
+  function noteAnimalNumber(pawn) {
+    if (!pawn || !pawn.isAnimal || !pawn.name) return;
+    var m = /#(\d+)\s*$/.exec(pawn.name.nick || '');
+    if (!m) return;
+    var n = parseInt(m[1], 10);
+    if (n > (animalCounts[pawn.kindId] || 0)) animalCounts[pawn.kindId] = n;
   }
 
   /* ============================================================
@@ -291,6 +312,34 @@
     return chosen.map(function (t) { return t.id; });
   }
 
+  /* The four multipliers a pawn's traits hand this file, folded into one
+     object. Traits never change after generation, so this is computed
+     once per pawn rather than three times a tick through a def lookup
+     per trait. */
+  function traitFactors(pawn) {
+    if (pawn._fx) return pawn._fx;
+    var fx = { move: 1, work: 1, learn: 1, decay: 1 };
+    var traits = pawn.traits || [];
+    for (var i = 0; i < traits.length; i++) {
+      var def = defMaybe('trait', traits[i]);
+      if (def) {
+        if (typeof def.moveSpeedFactor === 'number') fx.move *= def.moveSpeedFactor;
+        if (typeof def.workSpeedFactor === 'number') fx.work *= def.workSpeedFactor;
+        if (typeof def.learnFactor === 'number') fx.learn *= def.learnFactor;
+        if (def.noSkillDecay) fx.decay = 0;
+        continue;
+      }
+      var local = TRAIT_FX[traits[i]];
+      if (!local) continue;
+      if (local.move) fx.move *= local.move;
+      if (local.work) fx.work *= local.work;
+      if (local.learn) fx.learn *= local.learn;
+      if (local.decay === 0) fx.decay = 0;
+    }
+    pawn._fx = fx;
+    return fx;
+  }
+
   function addGains(into, def) {
     var gains = def && (def.skillGains || def.skillGain);
     if (!gains) return;
@@ -298,6 +347,39 @@
   }
 
   function xpToNext(level) { return 1000 * (level + 1); }
+
+  function skillEntry(level) {
+    return {
+      level: level,
+      xp: level >= MAX_LEVEL ? 0 : U.randInt(0, xpToNext(level) - 1),
+      passion: 0,
+      lastGainTick: 0
+    };
+  }
+
+  /* A caller who states a skill table - mapgen rolls its own, and save.js
+     hands back one that was rolled a hundred days ago - gets exactly that
+     table, with any skill it did not mention filled in at zero. Rolling
+     first and overwriting afterwards would draw a dozen numbers out of
+     the seeded stream and throw them away, which moves every roll made
+     after it in the same game. */
+  function adoptSkills(pawn, given) {
+    var skills = defList('skill');
+    var out = {};
+    for (var i = 0; i < skills.length; i++) out[skills[i].id] = adoptSkill(given[skills[i].id]);
+    /* A skill the registry does not know about still belongs to the pawn
+       who arrived carrying it. */
+    for (var k in given) if (!out[k]) out[k] = adoptSkill(given[k]);
+    pawn.skills = out;
+    return out;
+  }
+
+  /* A caller may hand over a whole entry or just the level it wants. */
+  function adoptSkill(s) {
+    if (s && typeof s === 'object') return s;
+    var level = typeof s === 'number' ? U.clamp(Math.round(s), 0, MAX_LEVEL) : 0;
+    return { level: level, xp: 0, passion: 0, lastGainTick: 0 };
+  }
 
   function rollSkills(pawn) {
     var skills = defList('skill');
@@ -324,12 +406,7 @@
       /* A trade nobody trained you in is usually a trade you do not have. */
       if (base <= 0 && U.chance(0.35)) level -= 3;
       level = U.clamp(level, 0, MAX_LEVEL);
-      out[def.id] = {
-        level: level,
-        xp: level >= MAX_LEVEL ? 0 : U.randInt(0, xpToNext(level) - 1),
-        passion: 0,
-        lastGainTick: 0
-      };
+      out[def.id] = skillEntry(level);
     }
 
     assignPassions(out, skills);
@@ -424,7 +501,6 @@
     this.fy = this.y;
     this.dir = 2;
 
-    /* Movement */
     this.path = null;
     this.pathIdx = 0;
     this.moveProgress = 0;
@@ -434,7 +510,6 @@
     this.pathMode = 0;
     this._pathFails = 0;
 
-    /* Work */
     this.job = null;
     this.driver = null;
     this.jobQueue = [];
@@ -446,31 +521,26 @@
       ? { childhood: null, adulthood: null }
       : (opts.backstories || pickBackstories(this));
     this.traits = this.isAnimal ? [] : (opts.traits || pickTraits(U.chance(0.4) ? 3 : 2));
-    rollSkills(this);
-    if (opts.skills) {
-      for (var sid in opts.skills) if (this.skills[sid]) this.skills[sid] = opts.skills[sid];
-    }
+    this._fx = null;
+    if (opts.skills && !this.isAnimal) adoptSkills(this, opts.skills);
+    else rollSkills(this);
     buildWorkPriorities(this);
 
-    /* Stuff */
     this.equipment = null;
     this.apparel = [];
     this.inventory = [];
     this.carried = null;
     this.ownedBedId = null;
 
-    /* Player control */
     this.drafted = false;
     this.draftTarget = null;
 
-    /* Animals */
     this.tame = opts.tame !== undefined ? !!opts.tame : (this.isAnimal && this.faction === 'player');
     this.trainedLevels = this.isAnimal ? { obedience: 0, release: 0 } : null;
     this.master = null;
     this.manhunter = false;
     this.designated = null;
 
-    /* Combat and condition */
     this.stanceTicks = 0;
     this.aimTarget = null;
     this.lastAttackTick = 0;
@@ -574,12 +644,7 @@
       f *= ks > 2.5 ? ks / 4.6 : ks;
     }
 
-    for (var i = 0; i < this.traits.length; i++) {
-      var fx = TRAIT_FX[this.traits[i]];
-      if (fx && fx.move) f *= fx.move;
-      var def = defMaybe('trait', this.traits[i]);
-      if (def && typeof def.moveSpeedFactor === 'number') f *= def.moveSpeedFactor;
-    }
+    f *= traitFactors(this).move;
 
     var H = sys('Health');
     if (H && H.moveSpeedFactor) f *= H.moveSpeedFactor(this);
@@ -616,7 +681,11 @@
     if (ticks < 1) ticks = 1;                  /* never more than one tile per tick */
     this.moveProgress += 1 / ticks;
 
-    if (this.moveProgress < 1) {
+    /* Thirteen additions of 1/13 land a hair under 1 in binary, and
+       without the tolerance every orthogonal step would quietly cost a
+       fourteenth tick - a seven per cent tax on every walk in the game,
+       and an arrival the pathfinder's estimate no longer matches. */
+    if (this.moveProgress < 1 - STEP_EPS) {
       this.fx = this.x + (nx - this.x) * this.moveProgress;
       this.fy = this.y + (ny - this.y) * this.moveProgress;
       return true;
@@ -671,10 +740,7 @@
     if (this.downed) { this.tickDowned(); return; }
 
     this.tickStance();
-
-    var Think = sys('Think');
-    if (Think && Think.tickMental) Think.tickMental(this);
-    else this.tickMentalFallback();
+    this.tickMental();
 
     if (!this.job) this.tickThink();
 
@@ -695,9 +761,22 @@
     if (this.moving()) this.stopPath();
     var J = sys('Jobs');
     if (this.job && !RESTING_JOBS[this.job.defId] && J && J.end) J.end(this, 'interrupted');
+    /* think.js ends a mental state the moment its owner goes down, and
+       this hook is the only way it hears about the tick, so a pawn who
+       broke and then collapsed would otherwise wake up still berserk. */
+    this.tickMental();
     if (!this.job) this.tickThink();
     if (this.job && J && J.tick) J.tick(this);
     this.tickCondition();
+  };
+
+  /* think.js hangs its rare-tick break check and its abandon-the-job
+     review off this hook, so it has to reach think.js every tick for
+     every live pawn, downed ones included. */
+  Pawn.prototype.tickMental = function () {
+    var Think = sys('Think');
+    if (Think && Think.tickMental) Think.tickMental(this);
+    else this.tickMentalFallback();
   };
 
   /* combat.js runs its own stance machine and decrements stanceTicks from
@@ -714,7 +793,8 @@
     }
   };
 
-  /* think.js owns mental states. Without it, a state still has to end. */
+  /* Without think.js a state still has to end, or the first breakdown
+     of the game is the last thing that pawn ever does. */
   Pawn.prototype.tickMentalFallback = function () {
     var ms = this.mentalState;
     if (!ms) return;
@@ -756,6 +836,23 @@
 
     if (this.isHuman && (this._rareCount % 12) === 0) this.decaySkills(DECAY_EVERY);
 
+    /* An animal's own rare work - manhunter cooldown, designations,
+       breeding - hangs off Animals.tickRare, which animals.js otherwise
+       only reaches through Animals.think. An animal with a job in hand
+       is never asked to think, so without this call a manhunter muffalo
+       stays a manhunter for the rest of the game. Both callers share one
+       250-tick stamp, so whichever arrives first does the work. */
+    if (this.isAnimal) {
+      var A = sys('Animals');
+      if (A && A.tickRare) A.tickRare(this);
+    }
+
+    /* think.js runs the abandon check itself, from tickMental, with the
+       tier rules that decide what actually outranks what. Doing it again
+       here would cancel jobs it had just decided to keep. */
+    var Think = sys('Think');
+    if (Think && Think.tickMental) return;
+
     if (this.shouldRethink()) {
       var J = sys('Jobs');
       if (J && J.end) J.end(this, 'interrupted');
@@ -763,10 +860,15 @@
     }
   };
 
-  /* Is the pawn busy with the wrong thing? A player order stands, a fight
-     stands, and eating stands; loitering does not survive contact with a
-     colonist who is about to starve. */
+  /* Is the pawn busy with the wrong thing? think.js owns this question
+     and answers it by comparing job tiers; what is left here is the
+     answer for a build without it - a player order stands, a fight
+     stands, and eating stands, but loitering does not survive contact
+     with a colonist who is about to starve. */
   Pawn.prototype.shouldRethink = function () {
+    var Think = sys('Think');
+    if (Think && Think.shouldAbandonJob) return !!Think.shouldAbandonJob(this);
+
     var job = this.job;
     if (!job || job.playerForced || this.drafted || this.mentalState) return false;
     if (SETTLED_JOBS[job.defId]) return false;
@@ -802,12 +904,7 @@
   };
 
   Pawn.prototype.learnFactor = function () {
-    var f = 1;
-    for (var i = 0; i < this.traits.length; i++) {
-      var fx = TRAIT_FX[this.traits[i]];
-      if (fx && fx.learn) f *= fx.learn;
-    }
-    return f;
+    return traitFactors(this).learn;
   };
 
   /* Grant experience. The passion multiplier, the above-ten grind and the
@@ -841,12 +938,7 @@
      for skills the pawn has not used in a while, and slowly enough that
      it reads as a reason to keep a cook cooking rather than a punishment. */
   Pawn.prototype.decaySkills = function (ticks) {
-    var noDecay = false;
-    for (var i = 0; i < this.traits.length; i++) {
-      var fx = TRAIT_FX[this.traits[i]];
-      if (fx && fx.decay === 0) noDecay = true;
-    }
-    if (noDecay) return;
+    if (traitFactors(this).decay === 0) return;
 
     var now = gameTick();
     for (var id in this.skills) {
@@ -854,10 +946,9 @@
       if (s.level <= 10) continue;
       if (now - (s.lastGainTick || 0) < TICKS_PER_DAY) continue;
       s.xp -= DECAY_XP_PER_DAY_PER_LEVEL * (s.level - 10) * (ticks / TICKS_PER_DAY);
-      if (s.xp < 0) {
-        if (s.level > 10) { s.level--; s.xp += xpToNext(s.level); }
-        else s.xp = 0;
-      }
+      /* Falling below zero xp costs the level, and the guard above means
+         the level being spent is always one above ten. */
+      if (s.xp < 0) { s.level--; s.xp += xpToNext(s.level); }
     }
   };
 
@@ -870,12 +961,7 @@
   };
 
   Pawn.prototype.workFactor = function () {
-    var f = 1;
-    for (var i = 0; i < this.traits.length; i++) {
-      var fx = TRAIT_FX[this.traits[i]];
-      if (fx && fx.work) f *= fx.work;
-    }
-    return f;
+    return traitFactors(this).work;
   };
 
   Pawn.prototype.workRate = function (skillId) {
@@ -917,10 +1003,18 @@
 
   /* def_things.js states which body slots a garment covers but not which
      layer it sits on, and the six apparel ids in the registry are known,
-     so the layer lives here rather than being invented in the data. */
+     so the layer lives here rather than being invented in the data.
+
+     Every torso garment on one layer would be the simpler table and the
+     wrong one: jacket, parka and vest all cover the torso, so a vest and
+     a coat could never be worn together and dressing a raider for the
+     cold would silently take their armour off. art.js already draws the
+     vest in a slot of its own, over the shirt and under the coat, which
+     is the layering this matches. */
   var APPAREL_LAYER = {
     shirt: 'onSkin', pants: 'onSkin',
-    jacket: 'middle', parka: 'middle', armorVest: 'middle',
+    armorVest: 'middle',
+    jacket: 'shell', parka: 'shell',
     helmet: 'overhead'
   };
 
@@ -938,7 +1032,9 @@
       if (free) { tx = free.x; ty = free.y; }
     }
     if (!map.inBounds(tx, ty)) return false;
-    thing.spawned = true;
+    /* moveThing registers and places it, and placing is what sets
+       spawned; setting it first only makes moveThing unplace a thing
+       that is not on the grids. */
     return map.moveThing(thing, tx, ty) !== false;
   }
 
@@ -964,8 +1060,8 @@
     if (!apparel || !apparel.def || !apparel.def.apparel) return false;
     var slots = apparel.def.apparel.slots || [];
     var layer = apparelLayer(apparel.def);
-    /* Clothes stack by layer: a shirt under a jacket is fine, a parka over
-       a flak vest is not, and nobody wears two shirts. */
+    /* Clothes stack by layer: a shirt under a vest under a parka is
+       fine, a parka over a jacket is not, and nobody wears two shirts. */
     for (var i = this.apparel.length - 1; i >= 0; i--) {
       var worn = this.apparel[i];
       if (apparelLayer(worn.def) !== layer) continue;
@@ -1026,12 +1122,15 @@
     if (!map) return t;
 
     /* Merge into what is already lying there rather than leaving two
-       stacks of steel on one tile. */
+       stacks of steel on one tile. mergeInto takes what it can and
+       subtracts it from the carried stack, so only an emptied stack is
+       finished with: a partial pour still has a remainder to put down,
+       and returning early here would delete it. */
     if (map.itemOfDefAt && map.mergeInto) {
       var existing = map.itemOfDefAt(tx, ty, t.defId);
       if (existing && existing !== t) {
-        var moved = map.mergeInto(t, existing);
-        if (moved >= t.stack || t.stack <= 0) return existing;
+        map.mergeInto(t, existing);
+        if (t.stack <= 0) return existing;
       }
     }
     putOnGround(t, map, tx, ty);
@@ -1169,10 +1268,18 @@
           rotTicks: 0, pawnId: pawn.id
         }
       }) : null;
-      /* Apparel stays on the body, so a raid leaves clothes worth taking. */
-      if (corpse && pawn.apparel.length) {
-        corpse.apparel = pawn.apparel.slice();
-        pawn.apparel.length = 0;
+      /* Apparel moves onto the corpse rather than onto the floor -
+         health.js leaves it here for exactly that, and save.js packs
+         corpse.apparel back out again - so stripping the dead stays a
+         job somebody has to do. With no corpse to carry them the clothes
+         go on the ground, because the alternative is losing them. */
+      if (pawn.apparel.length) {
+        if (corpse) {
+          corpse.apparel = pawn.apparel.slice();
+          pawn.apparel.length = 0;
+        } else {
+          while (pawn.apparel.length) pawn.removeApparel(pawn.apparel[0], pawn.x, pawn.y);
+        }
       }
       if (map.addBlood) map.addBlood(pawn.x, pawn.y, 120);
       if (map.removePawn) map.removePawn(pawn);
@@ -1210,10 +1317,10 @@
       if (near && (wasColonist || pawn.faction === 'player')) {
         N.addThought(other, 'witnessedDeathAlly', { otherPawnId: pawn.id });
       }
-      /* Somebody who enjoys this got what they came for. */
-      if (near && !wasColonist && pawn.isHuman && other.traits.indexOf('bloodlust') >= 0) {
-        N.addThought(other, 'killedHumanBloodlust');
-      }
+      /* killedHumanBloodlust belongs to whoever swung, and combat.js
+         knows who that was; a death has no instigator by the time it
+         reaches here, so handing it to every bloodlust colonist in
+         sight would be the wrong pawn and a second copy of the thought. */
     }
   }
 
@@ -1433,6 +1540,10 @@
     data.kind = kindOf(data.kindId);
     if (map) data.map = map;
     if (!data.traits) data.traits = [];
+    /* Trait defs may have been reloaded under this pawn, so the cached
+       multipliers are rebuilt from whatever is registered now. */
+    data._fx = null;
+    noteAnimalNumber(data);
     if (!data.apparel) data.apparel = [];
     if (!data.inventory) data.inventory = [];
     if (!data.jobQueue) data.jobQueue = [];

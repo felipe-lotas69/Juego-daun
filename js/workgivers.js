@@ -42,8 +42,6 @@
     return (G && typeof G.tick === 'number') ? G.tick : 0;
   }
 
-  var PE = (Path && Path.PE) || { ON_CELL: 0, TOUCH: 1, ADJACENT: 2, INTERACTION: 3 };
-
   /* ---------- tuning ----------
      Radii are in tiles, spans in ticks (60 = one second, 60000 = a day). */
 
@@ -272,6 +270,10 @@
 
   WorkGivers.register = function (spec) {
     if (!spec || !spec.id || !spec.workType) throw new Error('work giver needs an id and a workType');
+    if (typeof spec.tryGiveJob !== 'function') throw new Error('work giver ' + spec.id + ' has no tryGiveJob');
+    /* prisoners.js registers the warden column against this same
+       registry, so a clash is a real possibility and worth saying out
+       loud at load rather than silently shadowing somebody's scan. */
     if (byId[spec.id]) throw new Error('duplicate work giver ' + spec.id);
     var giver = {
       id: spec.id,
@@ -706,7 +708,9 @@
   function needsFeeding(pawn, patient) {
     if (patient === pawn || patient.dead) return false;
     if (patient.faction !== 'player') return false;
-    if (!patient.needs || patient.needs.food >= 0.30) return false;
+    var N = sys('Needs');
+    var hungry = (N && N.thresholds && N.thresholds.hungry) || 0.30;
+    if (!patient.needs || patient.needs.food >= hungry) return false;
     if (patient.downed) return true;
     var H = sys('Health');
     if (H && H.capacity && H.capacity(patient, 'moving') < 0.2) return true;
@@ -1232,16 +1236,16 @@
       if (!P || !P.harvestable) return [];
       var out = [], seen = Object.create(null), i, plant;
 
+      function takeCell(x, y, idx) {
+        var id = map.plantId[idx];
+        if (!id || seen[id]) return;
+        var p = map.things.get(id);
+        if (p && P.harvestable(map, p)) { seen[id] = 1; out.push(p); }
+      }
+
       /* Crops standing ripe in a field the player laid out. */
       var zones = Zones.growingZones ? Zones.growingZones(map) : [];
-      for (i = 0; i < zones.length; i++) {
-        Zones.forEachCell(zones[i], function (x, y, idx) {
-          var id = map.plantId[idx];
-          if (!id || seen[id]) return;
-          var p = map.things.get(id);
-          if (p && P.harvestable(map, p)) { seen[id] = 1; out.push(p); }
-        }, map);
-      }
+      for (i = 0; i < zones.length; i++) Zones.forEachCell(zones[i], takeCell, map);
 
       /* Wild plants the player marked by hand. */
       var marks = map.designationsOf('harvest');
@@ -1292,8 +1296,8 @@
         var plantId = Zones.plantOfZoneAt(map, x, y);
         var def = plantId ? Defs.maybe('thing', plantId) : null;
         if (!def) continue;
-        /* A novice cannot be told to plant devilstrand; the field waits
-           for somebody who can. */
+        /* Healroot needs a grower who knows what they are doing; the
+           field waits for somebody who does rather than being ruined. */
         if (level < ((def.plant && def.plant.sowMinSkill) || 0)) continue;
         if (!freeFor(pawn, T.cell(x, y))) continue;
         if (!inReach(map, pawn, x, y)) continue;
@@ -1546,13 +1550,9 @@
      `warden` has no giver here. Section 10.5 of the contract hands the
      warden column to prisoners.js, which registers its own givers
      against this same registry, so writing them here would mean two
-     files fighting over one work type.
-
-     The path-end mode constant is exported because the givers above
-     choose targets the jobs then walk to, and a reader comparing the
-     two should be able to see they agree.
+     files fighting over one work type. Registering a duplicate id
+     throws, which is how that collision would announce itself.
      ------------------------------------------------------------------ */
-  WorkGivers.PE = PE;
   WorkGivers.inReach = inReach;
   WorkGivers.nearest = nearest;
   WorkGivers.bestDoctorFor = bestDoctorFor;

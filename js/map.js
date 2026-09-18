@@ -13,11 +13,11 @@
       nothing else.
 
    2. Things live in exactly one registry, map.things, and every index
-      beside it (byDef, the cell grids, the rot scan, the tick list) is
-      maintained by spawnThing/despawnThing/moveThing. No other file may
-      write a grid cell or push to an index; if they did, the first
-      raid would be fighting ghosts. That is also why `new Thing` is
-      private to this file.
+      beside it - byDef, the cell grids, the tick list - is maintained by
+      spawnThing/despawnThing/moveThing. No other file may write a grid
+      cell or push to an index; if they did, the first raid would be
+      fighting ghosts. That is also why `new Thing` is private to this
+      file.
 
    3. Derived state is invalidated, never recomputed on the spot.
       markPathDirty recomputes one cell and only tells Regions and
@@ -343,6 +343,7 @@
     this._rotScan = [];
     this._rotCursor = 0;
     this._bloodCursor = 0;
+    this._tickBatch = [];
 
     /* The map's own clock. Game.tick is the game's; this one exists so
        rot and blood keep their cadence in a headless test that ticks
@@ -684,15 +685,20 @@
     var wasSpawned = thing.spawned;
     var holdsRoof = wasSpawned && !thing.isGhost() && def.holdsRoof;
 
-    /* A frame is holding real materials; they come back out. */
-    if (thing.isFrame && thing.materials) {
-      for (var m in thing.materials) {
-        if (thing.materials[m] > 0) this.addItem(m, x, y, thing.materials[m]);
-      }
-      thing.materials = {};
-    }
+    /* A frame is holding real materials; they come back out. Taken off
+       the thing before it dies and dropped after, so they land on the
+       cell it has just freed rather than spilling around a frame that
+       is still standing there. */
+    var mats = (thing.isFrame && thing.materials) ? thing.materials : null;
+    if (mats) thing.materials = {};
 
     this.despawnThing(thing);
+
+    if (mats) {
+      for (var m in mats) {
+        if (mats[m] > 0) this.addItem(m, x, y, mats[m]);
+      }
+    }
 
     if (wasSpawned && def.leavings) {
       for (var k in def.leavings) {
@@ -711,7 +717,13 @@
 
   GameMap.prototype.moveThing = function (thing, x, y) {
     if (!thing || !this.inBounds(x, y)) return false;
-    if (thing.spawned && thing.map === this) this._unplace(thing);
+    /* Whichever map it is standing on has to let go of it first, or the
+       grid it left keeps pointing at a thing that is somewhere else. */
+    if (thing.spawned) {
+      if (thing.map === this) this._unplace(thing);
+      else if (thing.map) thing.map.despawnThing(thing);
+      else thing.spawned = false;
+    }
     thing.x = x | 0;
     thing.y = y | 0;
     this._register(thing);
@@ -730,7 +742,8 @@
     if (!def || !(count > 0)) return [];
     if (!this.inBounds(x, y)) return [];
 
-    /* Non-items have no stacks to merge into; one spawn each. */
+    /* Non-items have no stacks to merge into, so the count is beside the
+       point: one spawn, and the caller's opts reach it untouched. */
     if (def.category !== 'item') {
       var single = this.spawnThing(defId, x, y, opts);
       return single ? [single] : [];
@@ -740,6 +753,14 @@
     var remaining = count | 0;
     var touched = [];
     var radius = 0;
+
+    /* Whatever the caller asked for - trade.js hands over silver that
+       belongs to the player, production.js hands over what a bill made -
+       has to reach every stack the drop creates, not just the first.
+       spawnThing reads `stack` off this same object, so it is rewritten
+       per stack rather than rebuilt. */
+    var stackOpts = {};
+    if (opts) for (var o in opts) stackOpts[o] = opts[o];
 
     /* Rings of growing radius, each pass looking only at the cells the
        previous pass could not reach: U.cellsInRadius returns a filled
@@ -784,7 +805,8 @@
            of towering on the tile the miner happened to stand on. */
         if (remaining > 0 && this.cellTakesNewStack(i)) {
           var n = remaining < limit ? remaining : limit;
-          var made = this.spawnThing(defId, cx, cy, { stack: n });
+          stackOpts.stack = n;
+          var made = this.spawnThing(defId, cx, cy, stackOpts);
           if (made) {
             remaining -= n;
             touched.push(made);
@@ -797,10 +819,10 @@
     /* Last resort: the map is full of walls and water in every
        direction. Pile the rest where it was dropped. */
     while (remaining > 0) {
-      var chunk = remaining < limit ? remaining : limit;
-      var pile = this.spawnThing(defId, x, y, { stack: chunk });
+      stackOpts.stack = remaining < limit ? remaining : limit;
+      var pile = this.spawnThing(defId, x, y, stackOpts);
       if (!pile) break;
-      remaining -= chunk;
+      remaining -= stackOpts.stack;
       touched.push(pile);
     }
 
@@ -1103,20 +1125,23 @@
 
   /* ---------- the tick ---------- */
 
-  /* Which things want a call every tick. Doors and traps react to
-     whoever is standing on them, a generator burns fuel, and fire
-     spreads - everything else is woken by a job or a rare tick. */
+  /* Which things map.js itself has to visit every tick. Doors are the
+     only ones it owns outright - they react to whoever is standing in
+     them. Everything else on the list is there because another system
+     asked for it by name through setTickFn, which is how combat.js
+     drives turrets and traps. Fire, fuel and heaters are ticked by the
+     systems that own them (plants.js, power.js) off their own byDef
+     index, so putting them here would only cost an empty call. */
   function wantsTick(t) {
     if (typeof t.tickFn === 'function') return true;
-    if (t.defId === 'fire') return true;
     var b = t.def.building;
-    if (!b) return false;
-    return !!(b.isDoor || b.isTrap || b.isTurret || b.fuelCapacity > 0 || b.tempPushRate);
+    return !!(b && b.isDoor);
   }
 
-  /* Attach behaviour to a thing after it has spawned - combat.js giving
-     a turret its firing routine, plants.js giving fire its spread - and
-     make sure it is on the tick list. */
+  /* Attach behaviour to a thing after it has spawned - combat.js gives a
+     turret its firing routine this way - and put it on the tick list.
+     Passing null takes the behaviour back off, and the thing with it
+     unless map.js has its own reason to keep ticking it. */
   GameMap.prototype.setTickFn = function (thing, fn) {
     if (!thing) return;
     thing.tickFn = fn;
@@ -1136,12 +1161,35 @@
 
   GameMap.prototype._tickThings = function () {
     var list = this.tickList;
-    for (var i = list.length - 1; i >= 0; i--) {
-      var t = list[i];
-      if (!t.spawned) { list.splice(i, 1); continue; }
+    var n = list.length;
+    if (!n) return;
+
+    /* Ticked off a copy of the list. A tick that destroys something else
+       on it - a turret shooting a trap apart - reaches _forget, which
+       splices the list out from under a live cursor and makes its
+       neighbour tick twice. Working from a copy also means anything
+       spawned during the pass waits for the next one, which is the
+       answer a half-built tick list wants anyway. */
+    var batch = this._tickBatch;
+    batch.length = 0;
+    for (var i = 0; i < n; i++) batch.push(list[i]);
+
+    var stale = false;
+    for (var k = 0; k < n; k++) {
+      var t = batch[k];
+      if (!t.spawned) { stale = true; continue; }
       if (t.tickFn) t.tickFn(t, this);
+      if (!t.spawned) continue;
       var b = t.def.building;
       if (b && b.isDoor) this._tickDoor(t, b);
+    }
+    batch.length = 0;
+
+    /* Anything that left the map without going through _forget - a file
+       that set spawned = false by hand - is dropped here rather than
+       tested again every tick for the rest of the game. */
+    if (stale) {
+      for (var j = list.length - 1; j >= 0; j--) if (!list[j].spawned) list.splice(j, 1);
     }
   };
 
@@ -1230,8 +1278,10 @@
     return this.temperatureAtIdx(this.idx(x, y));
   };
 
-  /* Blood dries out. Under a roof it just sits there going brown and
-     someone has to clean it; out in the open the weather takes it. */
+  /* Blood dries out on a rolling sweep of the whole grid, three times
+     slower under a roof than out in the weather. Indoors that is slow
+     enough that somebody has to get a mop; the cleaner is what the
+     stain is really waiting for. */
   GameMap.prototype._fadeBlood = function () {
     var per = Math.ceil(this.size / BLOOD_PERIOD);
     for (var n = 0; n < per; n++) {

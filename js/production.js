@@ -119,11 +119,17 @@
 
   /* ---------- benches ---------- */
 
+  /* A bench offers a recipe when either side names the other: the
+     recipe's own `workbenches` list, or the building's `recipes`. The
+     two tables disagree in places - the smithy is not on its own
+     medicine recipe, the crafting spot lists bows that name the smithy
+     - and a recipe no bench in the game will run is a worse answer than
+     one that can be run in two rooms. */
   Production.benchAccepts = function (building, recipeId) {
     var recipe = Defs.maybe('recipe', recipeId);
     if (!building || !recipe) return false;
     var list = recipe.workbenches;
-    if (list && list.length) return list.indexOf(building.defId) >= 0;
+    if (list && list.indexOf(building.defId) >= 0) return true;
     var own = building.def && building.def.recipes;
     return !!(own && own.indexOf(recipeId) >= 0);
   };
@@ -136,10 +142,12 @@
 
   /* What the bill menu on this building should offer right now. */
   Production.availableRecipes = function (building) {
-    var out = [], ids = (building && building.def && building.def.recipes) || [];
-    for (var i = 0; i < ids.length; i++) {
-      var recipe = Defs.maybe('recipe', ids[i]);
-      if (recipe && Production.recipeUnlocked(recipe) && Production.benchAccepts(building, ids[i])) out.push(recipe);
+    var out = [], all = building ? (Defs.all('recipe') || []) : [];
+    for (var i = 0; i < all.length; i++) {
+      var recipe = all[i];
+      if (!Production.benchAccepts(building, recipe.id)) continue;
+      if (!Production.recipeUnlocked(recipe)) continue;
+      out.push(recipe);
     }
     return out;
   };
@@ -179,18 +187,25 @@
     if (!Production.benchAccepts(building, recipeId)) return null;
     if (!Production.recipeUnlocked(recipe)) return null;
 
-    var mode = opts.repeatMode || 'forever';
+    /* The recipe states how it is usually wanted - thirty meals in the
+       larder, one jacket - and ui.js adds bills with no options at all,
+       so ignoring those defaults would make every bill "forever". */
+    var mode = opts.repeatMode || recipe.defaultRepeat || 'forever';
     if (mode !== 'count' && mode !== 'untilHave') mode = 'forever';
+    var target = opts.targetCount > 0 ? opts.targetCount
+      : (recipe.defaultTargetCount > 0 ? recipe.defaultTargetCount : (mode === 'untilHave' ? 20 : 10));
+    var radius = opts.ingredientRadius > 0 ? opts.ingredientRadius
+      : (recipe.defaultIngredientRadius > 0 ? recipe.defaultIngredientRadius : DEFAULT_RADIUS);
 
     var bill = {
       id: U.nextId(),
       recipeId: recipeId,
       buildingId: building.id,
       repeatMode: mode,
-      targetCount: Math.max(1, opts.targetCount || (mode === 'untilHave' ? 20 : 10)),
+      targetCount: Math.max(1, target),
       done: 0,
       suspended: !!opts.suspended,
-      ingredientRadius: opts.ingredientRadius > 0 ? opts.ingredientRadius : DEFAULT_RADIUS,
+      ingredientRadius: radius,
       qualityRange: {
         min: opts.qualityMin === undefined ? 0 : U.clamp(opts.qualityMin | 0, 0, 6),
         max: opts.qualityMax === undefined ? 6 : U.clamp(opts.qualityMax | 0, 0, 6)
@@ -274,10 +289,11 @@
     if (!building || !building.bills || !building.bills.length) return out;
     if (!Production.benchUsable(building)) return out;
     var map = mapFor(building, pawn);
+    if (!map) return out;
     for (var i = 0; i < building.bills.length; i++) {
       var bill = building.bills[i];
       if (!Production.billShouldDo(map, bill)) continue;
-      if (map && !Production.findIngredients(map, pawn || null, bill)) continue;
+      if (!Production.findIngredients(map, pawn || null, bill)) continue;
       out.push(bill);
     }
     return out;
@@ -285,56 +301,55 @@
 
   /* ---------- ingredients ---------- */
 
-  /* Ingredient categories, written against fields the thing defs really
-     carry. A def that names its own categories overrides all of this. */
+  /* def_recipes.js resolves every ingredient at load into either
+     {thing: id} or an `anyOf` list of ids, and hangs a matches(def) on
+     it, so those are what an ingredient search reads. The table below
+     is only reached by a spec written by hand against the contract's
+     bare {anyOfCategory} form; it names ids because the id registry is
+     frozen while the fields def_things.js marks food with are not. */
   var CATEGORY_IDS = {
-    meat: ['meatRaw'], stone: ['stoneChunk'], stoneChunks: ['stoneChunk'],
-    blocks: ['stoneBlocks'], fabric: ['cloth', 'leather'], textiles: ['cloth', 'leather'],
-    leathery: ['leather'], woody: ['wood'], metallic: ['steel', 'silver', 'components']
-  };
-  var CATEGORY_TESTS = {
-    rawFood: function (d) { return d.foodType === 'raw'; },
-    meal: function (d) { return d.foodType === 'meal'; },
-    meals: function (d) { return d.foodType === 'meal'; },
-    food: function (d) { return d.nutrition > 0 && d.foodType !== 'animal'; },
-    plantMatter: function (d) { return d.foodType === 'raw' && d.id !== 'meatRaw'; },
-    vegetarian: function (d) { return d.foodType === 'raw' && d.id !== 'meatRaw'; },
-    corpse: function (d) { return d.foodType === 'animal'; },
-    corpses: function (d) { return d.foodType === 'animal'; },
-    medicine: function (d) { return d.isMedicine === true; },
-    weapons: function (d) { return !!d.weapon; },
-    meleeWeapons: function (d) { return !!d.weapon && !d.weapon.ranged; },
-    rangedWeapons: function (d) { return !!d.weapon && !!d.weapon.ranged; },
-    apparel: function (d) { return !!d.apparel; }
+    rawFood: ['riceRaw', 'potatoRaw', 'cornRaw', 'berries', 'meatRaw'],
+    rawPlantFood: ['riceRaw', 'potatoRaw', 'cornRaw', 'berries'],
+    meat: ['meatRaw'],
+    meals: ['mealSimple', 'mealFine'],
+    medicine: ['herbalMedicine', 'medicine'],
+    stone: ['stoneChunk'], blocks: ['stoneBlocks'],
+    fabric: ['cloth', 'leather'], woody: ['wood'],
+    metallic: ['steel', 'silver', 'components'],
+    smeltableWeapon: ['knife', 'spear', 'pistol', 'boltRifle', 'autoRifle', 'shotgun', 'sniperRifle']
   };
 
-  function defInCategory(def, category) {
-    if (!def || !category) return false;
-    var own = def.ingredientCategories || def.thingCategories;
-    if (own && own.indexOf && own.indexOf(category) >= 0) return true;
-    if (CATEGORY_IDS[category]) return CATEGORY_IDS[category].indexOf(def.id) >= 0;
-    var test = CATEGORY_TESTS[category];
-    return test ? test(def) : def.foodType === category;
-  }
+  /* An ingredient spec lives on a def and defs are frozen after load,
+     so the id list it resolves to is worked out once per spec. */
+  var specCache = new Map();
 
-  /* Defs never change at runtime, so membership is worked out once. */
-  var categoryCache = {};
-  function categoryDefs(category) {
-    if (!categoryCache[category]) {
-      categoryCache[category] = Defs.all('thing').filter(function (d) {
-        return d.category === 'item' && defInCategory(d, category);
-      });
+  function specDefIds(spec) {
+    var ids = specCache.get(spec);
+    if (ids) return ids;
+    if (spec.thing) {
+      ids = [spec.thing];
+    } else if (spec.anyOf && spec.anyOf.length) {
+      ids = spec.anyOf.slice();
+    } else {
+      var cat = spec.anyOfCategory || spec.category;
+      ids = (cat && CATEGORY_IDS[cat]) ? CATEGORY_IDS[cat].slice() : [];
+      if (!ids.length && typeof spec.matches === 'function') {
+        ids = (Defs.all('thing') || []).filter(function (d) {
+          return d.category === 'item' && spec.matches(d);
+        }).map(function (d) { return d.id; });
+      }
     }
-    return categoryCache[category];
+    ids = ids.filter(function (id) { return Defs.has('thing', id); });
+    specCache.set(spec, ids);
+    return ids;
   }
 
   function candidateThings(map, spec) {
-    if (spec.thing) return map.byDef(spec.thing) || [];
-    var cat = spec.anyOfCategory || spec.category;
-    if (!cat) return [];
-    var defs = categoryDefs(cat), out = [];
-    for (var i = 0; i < defs.length; i++) {
-      var list = map.byDef(defs[i].id) || [];
+    var ids = specDefIds(spec);
+    if (ids.length === 1) return map.byDef(ids[0]) || [];
+    var out = [];
+    for (var i = 0; i < ids.length; i++) {
+      var list = map.byDef(ids[i]) || [];
       for (var k = 0; k < list.length; k++) out.push(list[k]);
     }
     return out;
@@ -471,7 +486,9 @@
     var recipe = Production.billRecipe(bill), f = 1;
     if (recipe && recipe.skill) f *= 0.4 + 0.08 * skillLevel(pawn, recipe.skill);
     f *= Production.benchSpeed(bench);
-    if (Health && Health.workSpeedFactor) f *= Health.workSpeedFactor(pawn);
+    /* The UI asks what a bill costs before anyone is assigned to it, and
+       Health.workSpeedFactor dereferences the pawn it is handed. */
+    if (pawn && Health && Health.workSpeedFactor) f *= Health.workSpeedFactor(pawn);
     /* Clamped away from zero: Health hands back 0 for a downed pawn and
        workAmount divides by this. */
     return U.clamp(f, 0.08, 8);
@@ -480,8 +497,8 @@
   /* What the driver actually has to grind through: the recipe's nominal
      work divided by how fast this pawn at this bench gets through it.
      The work toil then runs at a flat unit per tick, which keeps the
-     skill and bench factors in one place and turns the xp Toils.work
-     grants per work unit into xp per tick, as it should be. */
+     skill and bench factors in one place and makes total experience
+     track time spent at the bench rather than work nominally done. */
   Production.workAmount = function (bill, pawn) {
     var recipe = Production.billRecipe(bill);
     var base = (recipe && recipe.workAmount > 0) ? recipe.workAmount : 200;
@@ -506,11 +523,16 @@
   /* Stamped onto the meal at cook time; needs.js rolls against it when
      somebody eats. A clumsy cook in a filthy kitchen is the whole story
      of every food poisoning outbreak a colony ever has. */
+  var POISON_BY_SKILL = [[0, 1], [4, 0.6], [8, 0.35], [12, 0.2], [20, 0.06]];
+
   Production.foodPoisonChance = function (pawn, recipe, map, bench) {
-    var base = (recipe && recipe.foodPoisonChance > 0) ? recipe.foodPoisonChance : 0;
-    if (base <= 0) return 0;
-    var lvl = skillLevel(pawn, recipe.skill || 'cooking');
-    var chance = base * U.curve([[0, 1], [4, 0.6], [8, 0.35], [12, 0.2], [20, 0.06]], lvl);
+    if (!recipe || !(recipe.foodPoisonChance > 0)) return 0;
+    /* The recipe brings its own skill curve; the kitchen is this file's
+       half of the answer. */
+    var chance = (typeof recipe.foodPoisonChanceFor === 'function')
+      ? recipe.foodPoisonChanceFor(pawn)
+      : recipe.foodPoisonChance * U.curve(POISON_BY_SKILL, skillLevel(pawn, recipe.skill || 'cooking'));
+    if (!(chance > 0)) return 0;
     if (Regions && Regions.roomAt && map && bench) {
       var room = Regions.roomAt(map, bench.x, bench.y);
       if (room && room.cleanliness < 0) chance *= 1 + Math.min(2, -room.cleanliness * 0.6);
@@ -518,35 +540,38 @@
     return U.clamp01(chance);
   };
 
-  /* A carcass is worth what its species is worth, scaled by how good
-     the butcher is and how long the thing has been lying there. */
+  function isEmpty(obj) {
+    for (var k in obj) if (obj[k] > 0) return false;
+    return true;
+  }
+
+  /* A carcass is worth what its species is worth, scaled by how good the
+     butcher is and how long the thing has been lying there. The skill
+     curve is the one def_recipes.js states, so a butcher's yield does
+     not depend on which of the two was asked. */
   Production.butcherYield = function (pawn, corpseThing) {
     var out = {};
     var info = corpseThing && corpseThing.corpse;
     var kind = info ? Defs.maybe('pawnKind', info.kindId) : null;
     if (!kind) return out;
 
-    var base = kind.butcherProducts || null;
     var Animals = sys('Animals');
-    if (!base && Animals && Animals.butcherProducts) {
-      base = Animals.butcherProducts(kind) || Animals.butcherProducts(kind.id);
+    var base = (Animals && Animals.butcherProducts) ? Animals.butcherProducts(kind) : null;
+    if (isEmpty(base) && kind.butcherProducts) base = kind.butcherProducts;
+    if (isEmpty(base)) {
+      base = { meatRaw: 30 };
+      if (kind.leatherAmount > 0) base[kind.leatherDef || 'leather'] = kind.leatherAmount;
     }
-    var eff = U.clamp(0.55 + 0.03 * skillLevel(pawn, 'cooking'), 0.3, 1.1);
+
+    var eff = U.clamp(0.6 + 0.02 * skillLevel(pawn, 'cooking'), 0.6, 1);
     /* Rot takes the meat first; a hide is still a hide. */
     var fresh = 1 - 0.5 * U.clamp01(corpseThing.rotProgress || 0);
 
-    Object.keys(base || {}).forEach(function (id) {
+    Object.keys(base).forEach(function (id) {
       if (!Defs.has('thing', id)) return;
       var n = Math.floor(base[id] * eff * fresh);
-      if (n > 0) out[id] = (out[id] || 0) + n;
+      if (n > 0) out[id] = n;
     });
-
-    var leatherId = kind.leatherDef || 'leather';
-    var leather = kind.leatherAmount || 0;
-    if (leather > 0 && !out[leatherId] && Defs.has('thing', leatherId)) {
-      var l = Math.floor(leather * eff);
-      if (l > 0) out[leatherId] = l;
-    }
     return out;
   };
 
@@ -613,13 +638,16 @@
     return !!(entry && entry.count > 0 && entry.thing && (entry.thing.stack || 0) >= entry.count);
   }
 
+  /* An emptied stack goes through despawnThing whether or not it was on
+     the grid: that is the only call that also drops it out of
+     map.byDef, and a stale entry there would keep turning up as an
+     ingredient for the next bill. */
   function consumeEntry(map, entry) {
     var t = entry.thing;
     t.stack -= entry.count;
     if (t.stack > 0) return;
     t.stack = 0;
-    if (t.spawned) map.despawnThing(t);
-    else if (map.things && map.things.delete) map.things.delete(t.id);
+    map.despawnThing(t);
   }
 
   /* Spawns the products and eats the ingredients. Returns what it made,
@@ -639,11 +667,19 @@
     var plan = [], carcasses = [];
     for (i = 0; i < ingredients.length; i++) {
       var src = ingredients[i].thing;
-      if (!src.corpse) continue;
-      carcasses.push(src);
-      var yields = Production.butcherYield(pawn, src);
-      Object.keys(yields).forEach(function (id) {
-        plan.push({ defId: id, count: yields[id], quality: null, poison: 0 });
+      if (src && src.corpse) carcasses.push(src);
+    }
+
+    /* A recipe whose output is not knowable from the def carries its own
+       table and says so; butcherCorpse is the only one in the game. */
+    if (recipe.dynamicProducts || carcasses.length) {
+      var dyn = (typeof recipe.productsFor === 'function')
+        ? recipe.productsFor(ingredients, pawn)
+        : null;
+      if (isEmpty(dyn) && carcasses.length) dyn = Production.butcherYield(pawn, carcasses[0]);
+      Object.keys(dyn || {}).forEach(function (id) {
+        if (!(dyn[id] > 0) || !Defs.has('thing', id)) return;
+        plan.push({ defId: id, count: dyn[id], quality: null, poison: 0 });
       });
     }
 
@@ -677,11 +713,11 @@
       }
     }
 
-    if (bill.repeatMode === 'count') {
-      bill.done++;
-      /* A finished "do X times" bill drops off the list rather than
-         sitting there greyed out forever. */
-      if (bill.done >= bill.targetCount) Production.removeBill(building, bill);
+    bill.done = (bill.done | 0) + 1;
+    /* A finished "do X times" bill drops off the list rather than
+       sitting there greyed out forever. */
+    if (bill.repeatMode === 'count' && bill.done >= bill.targetCount) {
+      Production.removeBill(building, bill);
     }
     bill.lastDoneTick = tickNow();
     return made;
@@ -725,17 +761,13 @@
 
   /* The job is ending before the recipe ran. What was already hauled to
      the bench is lying on the bench's own tile, so there is nothing to
-     put back - only the claims to drop and whatever is still in the
-     crafter's arms to set down. */
+     put back - only the claims to drop. Whatever is still in the
+     crafter's arms is left alone for Jobs.end, which merges it into the
+     stack under the pawn and copes with an impassable cell. */
   function abortBill(pawn, job) {
     var st = job.state;
     if (!st || st.aborted) return;
     st.aborted = true;
-    if (pawn.carried && pawn.map) {
-      var t = pawn.carried;
-      pawn.carried = null;
-      pawn.map.moveThing(t, pawn.x, pawn.y);
-    }
     releaseClaims(pawn, job);
   }
 
@@ -781,21 +813,23 @@
     if (!plan) return null;
 
     var i;
-    if (Res && Res.canReserve) {
-      if (!Res.canReserve(pawn, job.targetA, 1)) return null;
-      for (i = 0; i < plan.length; i++) {
-        if (!Res.canReserve(pawn, T.thing(plan[i].thing), 1)) return null;
-      }
-    }
     if (Res && Res.reserve) {
-      Res.reserve(pawn, job.targetA, 1);
-      for (i = 0; i < plan.length; i++) Res.reserve(pawn, T.thing(plan[i].thing), 1);
+      /* All of it or none of it. A half-claimed plan would leave a cook
+         sitting on two of the three stacks it needs while the third
+         walks off in somebody else's arms. */
+      var taken = [job.targetA];
+      if (!Res.reserve(pawn, job.targetA, 1)) return null;
+      for (i = 0; i < plan.length; i++) {
+        var t = T.thing(plan[i].thing);
+        if (t && Res.reserve(pawn, t, 1)) { taken.push(t); continue; }
+        for (var k = 0; k < taken.length; k++) Res.release(pawn, taken[k]);
+        return null;
+      }
     }
 
     job.state.plan = plan;
     job.state.delivered = [];
     job.state.aborted = false;
-    job.state.dropCell = Production.interactionCell(map, bench, pawn);
     return plan;
   }
 
@@ -818,11 +852,11 @@
     return entry ? entry.count : 0;
   }
 
-  /* The ingredient is set down on the bench's own tile and claimed
-     there, exactly as it works in RimWorld. Putting it on the floor
-     rather than into limbo on the job is what makes an interrupted
-     bill harmless: the food is already back in the world, and the
-     claim that stops a hauler taking it dies with the job. */
+  /* The ingredient is set down at the bench and claimed there, exactly
+     as it works in RimWorld. Putting it on the floor rather than into
+     limbo on the job is what makes an interrupted bill harmless: the
+     food is already back in the world, and the claim that stops a
+     hauler taking it dies with the job. */
   function deliverToil() {
     return Toils.custom({
       name: 'deliverIngredient',
@@ -837,15 +871,24 @@
           map.addItem(carried.defId, pawn.x, pawn.y, carried.stack - entry.count);
           carried.stack = entry.count;
         }
-        var cell = job.state.dropCell;
-        pawn.carried = null;
-        if (!map.moveThing(carried, cell.x, cell.y)) return 'fail';
-        job.state.delivered.push({ thing: carried, count: carried.stack });
-        if (Res && Res.reserve) Res.reserve(pawn, T.thing(carried), 1);
 
-        /* The source stack is free the moment its share is in hand, so
-           a second crafter can start on what is left of it. */
-        if (Res && Res.release && entry.thing) Res.release(pawn, T.thing(entry.thing));
+        /* Down on the tile the pawn is standing on, which the goto
+           before this one already proved is a working spot for this
+           bench. Aiming instead at a cell worked out when the job was
+           planned would teleport the food through whatever wall has
+           gone up since. */
+        if (!map.moveThing(carried, pawn.x, pawn.y)) return 'fail';
+        pawn.carried = null;
+        job.state.delivered.push({ thing: carried, count: carried.stack });
+
+        /* The source stack is free the moment its share is in hand, so a
+           second crafter can start on what is left of it - but taking
+           the whole stack hands back the very same Thing, and releasing
+           that would un-claim the pile now sitting on the bench. */
+        if (Res && Res.release && entry.thing && entry.thing !== carried) {
+          Res.release(pawn, T.thing(entry.thing));
+        }
+        if (Res && Res.reserve) Res.reserve(pawn, T.thing(carried), 1);
         return 'next';
       }
     });
@@ -894,8 +937,9 @@
         if (!bench || !bill) return 'fail';
         var made = Production.doRecipe(pawn, bench, bill, job.state.delivered || []);
         if (!made.length) return 'fail';
-        job.state.delivered = [];
         releaseClaims(pawn, job);
+        job.state.delivered = [];
+        job.state.plan = [];
         announce(pawn, made);
         return 'done';
       }
@@ -914,7 +958,6 @@
         return U.cap(what) + ' at ' + where;
       },
       toils: function (job, pawn) {
-        pawn = pawn || job.pawn;
         var plan = pawn ? planBill(pawn, job) : null;
         if (!plan) return [failToil('nothing to work with')];
         var recipe = Production.billRecipe(job.bill);

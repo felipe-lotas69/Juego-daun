@@ -19,9 +19,10 @@
    3. The storage search is the hottest query in the colony: every idle
       hauler runs it against every loose item. So it walks priority
       tiers from urgent down, rejects a whole zone by its bounding box
-      before touching a cell, keeps only the 24 nearest candidates in a
-      fixed buffer, and only then pays for the expensive checks - stack
-      room, reservations, reachability - in nearest-first order.
+      before touching a cell, keeps only the 24 nearest cells that
+      physically have room in a fixed buffer, and only then pays for the
+      expensive checks - reservations, reachability - in nearest-first
+      order.
    ============================================================ */
 (function (root) {
   'use strict';
@@ -97,7 +98,6 @@
     return CATEGORY_LABELS[category] || category;
   };
 
-  /* Can this def be put in a stockpile at all? */
   Zones.storable = function (thingDef) {
     return Zones.categoryOf(thingDef) !== null;
   };
@@ -272,10 +272,20 @@
 
   function normalizeCells(map, cells, out) {
     out.length = 0;
-    if (!cells) return out;
+    if (cells === null || cells === undefined) return out;
     var arr = cells;
-    if (cells instanceof Set) { arr = []; cells.forEach(function (c) { arr.push(c); }); }
-    if (typeof arr.length !== 'number') arr = [arr];
+    if (typeof arr.length !== 'number') {
+      /* `instanceof Set` is a lie across realms - the harness evaluates
+         this file in a vm sandbox with its own Set - so anything that
+         can iterate itself is drained rather than type-tested, and only
+         a lone cell falls through to being wrapped. */
+      if (typeof arr.forEach === 'function') {
+        arr = [];
+        cells.forEach(function (c) { arr.push(c); });
+      } else {
+        arr = [cells];
+      }
+    }
     for (var k = 0; k < arr.length; k++) {
       var c = arr[k], i = -1;
       if (typeof c === 'number') i = c | 0;
@@ -415,10 +425,10 @@
     if (!zone || !fn) return;
     var m = map || zone._map || (root.Game && root.Game.map);
     if (!m) return;
-    var list = cellList(zone), w = m ? m.w : 0;
+    var list = cellList(zone), w = m.w;
     for (var k = 0; k < list.length; k++) {
-      var i = list[k], x = w ? i % w : 0;
-      fn(x, w ? (i - x) / w : 0, i);
+      var i = list[k], x = i % w;
+      fn(x, (i - x) / w, i);
     }
   };
 
@@ -460,7 +470,7 @@
     var def = resolveDef(thingDef);
     if (!def || !Zones.storable(def)) return false;
     var f = zone.filter;
-    if (f.defs.size && f.defs.has(def.id)) return true;
+    if (f.defs.has(def.id)) return true;
     if (f.deny.has(def.id)) return false;
     if (f.categories.size) {
       var cat = Zones.categoryOf(def);
@@ -471,17 +481,23 @@
 
   Zones.setFilterCategory = function (zone, category, on) {
     if (!zone || CATEGORIES.indexOf(category) < 0) return;
-    var f = zone.filter;
+    var f = zone.filter, defs = Zones.defsInCategory(category), k;
     if (on) {
+      var wasDenied = false;
+      for (k = 0; k < defs.length; k++) if (f.deny.delete(defs[k].id)) wasDenied = true;
+      /* Inside an allow-all pile a category is only ever off because its
+         defs were denied, so switching it back on fills that hole in and
+         stops - narrowing here would silently throw away every other
+         category the player never touched. */
+      if (f.allowAll && wasDenied) return;
       f.categories.add(category);
-      /* Turning a category on while "allow all" is set would be a no-op
-         the player cannot see, so the first explicit choice narrows the
-         filter to exactly what has been chosen. */
+      /* Otherwise the category was on merely by virtue of allow-all, and
+         ticking it would be a no-op the player cannot see. The first
+         explicit choice narrows the filter to what has been chosen. */
       f.allowAll = false;
-      Zones.defsInCategory(category).forEach(function (d) { f.deny.delete(d.id); });
     } else {
       f.categories.delete(category);
-      if (f.allowAll) Zones.defsInCategory(category).forEach(function (d) { f.deny.add(d.id); });
+      if (f.allowAll) for (k = 0; k < defs.length; k++) f.deny.add(defs[k].id);
     }
   };
 
@@ -500,20 +516,48 @@
     zone.filter.deny.clear();
   };
 
+  function shorten(parts) {
+    if (parts.length > 4) return parts.slice(0, 4).join(', ') + ' +' + (parts.length - 4);
+    return parts.join(', ');
+  }
+
   Zones.filterSummary = function (zone) {
     if (!zone || zone.kind !== 'stockpile') return '';
     var f = zone.filter;
     if (f.allowAll && !f.deny.size && !f.categories.size) return 'everything';
+
     var parts = [];
     CATEGORIES.forEach(function (c) { if (f.categories.has(c)) parts.push(CATEGORY_LABELS[c]); });
-    if (f.allowAll) parts.push('everything else');
     f.defs.forEach(function (id) {
       var d = Defs.maybe('thing', id);
       if (d) parts.push(d.label || id);
     });
-    if (!parts.length) return 'nothing';
-    if (parts.length > 4) return parts.slice(0, 4).join(', ') + ' +' + (parts.length - 4);
-    return parts.join(', ');
+
+    if (f.allowAll) {
+      /* An allow-all pile with holes in it reads as what it excludes;
+         "everything else" on its own says nothing, since there is no
+         "else" for it to be other than. */
+      if (parts.length) { parts.push('everything else'); return shorten(parts); }
+      /* A category switched off denies every def in it, so the holes are
+         named back as the category the player actually clicked rather
+         than as the eleven defs that clicking it happened to list. */
+      var out = [], covered = new Set();
+      CATEGORIES.forEach(function (c) {
+        var defs = Zones.defsInCategory(c);
+        if (!defs.length) return;
+        for (var k = 0; k < defs.length; k++) if (!f.deny.has(defs[k].id)) return;
+        out.push(CATEGORY_LABELS[c]);
+        for (var j = 0; j < defs.length; j++) covered.add(defs[j].id);
+      });
+      f.deny.forEach(function (id) {
+        if (covered.has(id)) return;
+        var d = Defs.maybe('thing', id);
+        out.push((d && d.label) || id);
+      });
+      return out.length ? 'everything except ' + shorten(out) : 'everything';
+    }
+
+    return parts.length ? shorten(parts) : 'nothing';
   };
 
   /* ============================================================
@@ -587,11 +631,20 @@
 
   /* The nearest-candidate buffer: a bounded insertion sort, so the
      common case (a cell further away than the current worst) costs one
-     comparison and the buffer never allocates. */
+     comparison and the buffer never allocates.
+
+     The buffer holds only cells that already have room, because a pile
+     fills from the edge the haulers walk in from: shortlisting purely
+     on distance and testing room afterwards made a stockpile whose near
+     two dozen cells were full read as a stockpile with no room at all,
+     and the colony would stop hauling to it with half of it empty. */
   var bufI = new Int32Array(NEAREST), bufD = new Float64Array(NEAREST), bufN = 0;
 
-  function consider(i, d) {
+  function consider(map, i, d, def, w) {
     if (bufN === NEAREST && d >= bufD[NEAREST - 1]) return;
+    var x = i % w, y = (i - x) / w;
+    if (!cellUsable(map, x, y)) return;
+    if (!cellRoomFor(map, i, def)) return;
     var pos = bufN < NEAREST ? bufN++ : NEAREST - 1;
     while (pos > 0 && bufD[pos - 1] > d) {
       bufD[pos] = bufD[pos - 1]; bufI[pos] = bufI[pos - 1];
@@ -622,15 +675,13 @@
         i = list[k];
         x = i % w; y = (i - x) / w;
         dx = x - ox; dy = y - oy;
-        consider(i, dx * dx + dy * dy);
+        consider(map, i, dx * dx + dy * dy, def, w);
       }
     }
 
     for (k = 0; k < bufN; k++) {
       i = bufI[k];
       x = i % w; y = (i - x) / w;
-      if (!cellUsable(map, x, y)) continue;
-      if (!cellRoomFor(map, i, def)) continue;
       if (reservedByOther(map, x, y, pawn)) continue;
       if (!reachable(map, ox, oy, x, y, pawn)) continue;
       return { x: x, y: y, priority: tier };
@@ -741,13 +792,12 @@
 
   function canSow(map, x, y, plantDefId, occupied) {
     var Plants = root.Plants;
-    var def = Defs.maybe('thing', plantDefId);
     /* Plants.canSowAt also refuses a cell that already holds a plant,
        which is the wrong answer for "this cell wants sowing once the
        weed on it is cut" - so an occupied cell is judged on its terrain
        alone and the cut job is what unblocks it. */
     if (Plants && Plants.canSowAt && !occupied) return !!Plants.canSowAt(map, x, y, plantDefId);
-    return sowableTerrain(map, x, y, def);
+    return sowableTerrain(map, x, y, Defs.maybe('thing', plantDefId));
   }
 
   /* Deliberately uncached. A plant appearing does not touch the zone
@@ -835,7 +885,15 @@
     if (!map || !data) return [];
     var rows = data.length === undefined ? [data] : data;
 
-    /* A load replaces the board rather than merging into it. */
+    /* A load replaces the board rather than merging into it. The zones
+       it throws out are marked deleted on the way, because the UI or a
+       job may still be holding one and a zone that is off the map but
+       still answers size() and accepts() is a ghost nobody can see. */
+    for (var old = 0; old < map.zones.length; old++) {
+      map.zones[old].cells.clear();
+      invalidate(map.zones[old]);
+      map.zones[old].deleted = true;
+    }
     map.zoneId.fill(0);
     map.zones.length = 0;
     touch(map);

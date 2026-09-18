@@ -54,7 +54,10 @@
     U.setIdCounter(1);
 
     Game.seed = seed;
-    Game.tick = 0;
+    /* Start the clock at eight in the morning. Landing at 00:18 in the
+       pitch dark, which is where tick 0 falls, gives a new player a black
+       screen and colonists who go straight to bed. */
+    Game.tick = Math.round(8 * TICKS_PER_HOUR);
     Game.speed = 1;
     Game.gameOver = null;
     Game.messages = [];

@@ -31,7 +31,9 @@
        things: [ THING ],
        pawns:  [ PAWN ],
        zones:  Zones.serialize(map),
-       desig:  [ [cellIdx, type, defId|null] ]
+       desig:  [ [cellIdx, type, defId|null] ],
+       temps:  [ [cellIdx, celsius] ]          one per indoor room, keyed
+                                               by a cell inside it
      },
 
      research: Research.save(),     { done, currentId, progress, banked }
@@ -44,33 +46,43 @@
    }
 
    GRID = { r: 0|1, d: [...] }      r:1 is run-length encoded as
-                                    [value, runLength, value, runLength...];
-                                    r:0 is the raw cell values. Terrain and
-                                    roof are mostly long runs and shrink by
-                                    one to two orders of magnitude; the
-                                    encoder falls back to raw when they do
-                                    not.
+            [value, runLength, ...]; r:0 is the raw cell values. Terrain
+            and roof are long bands and shrink by orders of magnitude; the
+            encoder measures and falls back to raw when they do not.
 
-   THING = { id, defId, x, y, ...any field that differs from what the
-             Thing constructor would give it, plus the four object-valued
-             fields: materials, bills, corpse, apparel }.
-             `def`, `map`, `_cells` and `_defIdx` are never written: they
-             are references, and spawnThing rebuilds them.
+   THING = one record per thing, with short keys because there are tens of
+           thousands of them. Always present: i (id), d (defId), x, y.
+           Present only when the field differs from what `new Thing(defId)`
+           would have produced:
 
-   PAWN  = { id, kindId, x, y, health: HEALTH,
-             blob: { every plain field of the pawn },
-             equipment, carried, apparel[], inventory[]  as THING records }
-             The blob deliberately does NOT carry map, kind, job, driver,
-             jobQueue, path or any target: those are references or
-             work-in-progress, and a loaded pawn re-thinks from scratch.
+               s stack     h hp        H maxHp     r rot      f faction
+               q quality   u stuff     k spawnTick S spawned
+               P powered   N netId     F fuel      o open     E storedEnergy
+               B isBlueprint  R isFrame  b buildDefId  w workDone
+               g growth    n sown      l blighted  a plantAgeTicks
+               p rotProgress  O ownerId
+               m materials L bills     c corpse    A apparel[]
+
+           Any other field a system hung on the thing keeps its own name
+           (`_growTick`), except that an underscore field worth 0/false/''
+           is dropped: every one of those treats absent and zero alike, and
+           it is a fifth of the file. A field whose real name is a single
+           letter is written with a '+' in front so it can never be read as
+           a code. `def`, `map`, `_cells` and `_defIdx` are never written -
+           they are references, and spawnThing rebuilds them.
+
+   PAWN  = { id, kindId, x, y, health: HEALTH, blob: {every plain field},
+             equipment, carried, apparel[], inventory[] as THING records }
+           The blob deliberately carries no map, kind, job, driver,
+           jobQueue, path or target: references and work in progress, and a
+           loaded pawn re-thinks from scratch.
 
    HEALTH = { bodyId, d: 0|1, parts, injuries, hediffs, bloodLoss, pain,
               downed, dead, immunityGain, ticks, deathCause }
-             With d:1 (the normal case) `parts` holds only the parts that
-             are hurt or missing, as [partId, hp, missing]; Health.create
-             rebuilds the rest of the body from the body def. With d:0 -
-             health.js was not loaded when the save was written - `parts`
-             is the whole table.
+           With d:1, the normal case, `parts` holds only the parts that are
+           hurt or missing, as [partId, hp, missing], and Health.create
+           rebuilds the body from its def. d:0 means health.js was not
+           loaded when the save was written and `parts` is the whole table.
    ============================================================ */
 (function (root) {
   'use strict';
@@ -96,11 +108,7 @@
 
   /* Thing records repeat once per grass plant, so their keys are worth a
      letter each: seventeen thousand things is a megabyte of punctuation
-     otherwise. x and y keep their names because they are already one
-     character and everyone reading a save looks for them. A field this
-     table does not name travels under its own name; one that happens to
-     BE a single letter is written with a '+' in front so it can never be
-     mistaken for a code. */
+     otherwise. See the schema at the top of the file. */
   var SHORT = {
     id: 'i', defId: 'd', stack: 's', hp: 'h', maxHp: 'H', rot: 'r',
     faction: 'f', quality: 'q', stuff: 'u', spawned: 'S', spawnTick: 'k',
@@ -122,11 +130,10 @@
     return k.charAt(0) === '+' ? k.slice(1) : k;
   }
 
-  /* Six decimals is finer than anything the simulation can perceive and
-     an order of magnitude shorter than the eighteen digits a growth
-     value carries by default. Idempotent, which is what lets the
-     checksum quantise through it and still compare equal either side of
-     a round trip. */
+  /* Six decimals is finer than the simulation can perceive and far
+     shorter than the eighteen digits a growth value carries by default.
+     Idempotent, which is what lets the checksum quantise through it and
+     still compare equal either side of a round trip. */
   function round6(v) {
     if (typeof v !== 'number' || !isFinite(v)) return v;
     if (v === (v | 0)) return v;
@@ -143,6 +150,13 @@
     equipment: 1, apparel: 1, inventory: 1, carried: 1,
     health: 1, _traitFx: 1
   };
+
+  /* Below the top level only two names are ever dropped, and both are
+     dropped because they are references rather than because of what they
+     mean. The rest of PAWN_SKIP is about the pawn itself: applying it at
+     depth would delete a hediff's own `id` and quietly cure the disease.
+     That is not hypothetical - it happened. */
+  var DEEP_SKIP = { def: 1, map: 1 };
 
   function sys(name) {
     var m = root[name];
@@ -164,11 +178,11 @@
   /* ============================================================
      PLAIN COPIES
 
-     One deep copy that drops references rather than following them.
-     Anything whose constructor is not Object or Array is a live object
-     - a Pawn, a Thing, a Map - and is dropped on purpose: a save that
-     accidentally reached one would either cycle forever or resurrect a
-     second copy of something the registry already owns.
+     One deep copy that drops references rather than following them. A
+     value that is not a plain object or an array is a live object - a
+     Pawn, a Thing, a Map - and goes no further: a save that reached one
+     would either cycle forever or resurrect a second copy of something
+     the registry already owns.
      ============================================================ */
   function plain(value, skip, depth) {
     if (value === null || value === undefined) return null;
@@ -180,7 +194,7 @@
     if (Array.isArray(value)) {
       var arr = [];
       for (var i = 0; i < value.length; i++) {
-        var v = plain(value[i], skip, depth + 1);
+        var v = plain(value[i], DEEP_SKIP, depth + 1);
         if (v !== undefined) arr.push(v);
       }
       return arr;
@@ -195,7 +209,7 @@
     var out = {}, keys = Object.keys(value);
     for (var k = 0; k < keys.length; k++) {
       if (skip && skip[keys[k]]) continue;
-      var pv = plain(value[keys[k]], skip, depth + 1);
+      var pv = plain(value[keys[k]], DEEP_SKIP, depth + 1);
       if (pv !== undefined) out[keys[k]] = pv;
     }
     return out;
@@ -203,11 +217,9 @@
 
   function clone(value) { return plain(value, null, 0); }
 
-  /* plain() refuses to walk into a live object, which is exactly what
-     protects it from following a Pawn back into the map. A Pawn is also
-     the one live object whose own fields we do want, so it is handed
-     over as a shallow snapshot: plain plumbing on the outside, the same
-     reference-dropping rules everywhere below it. */
+  /* A Pawn is the one live object whose own fields we do want, so it is
+     handed over as a shallow snapshot: plain plumbing on the outside, the
+     same reference-dropping rules everywhere below it. */
   function plainOwn(obj, skip) {
     var raw = {}, keys = Object.keys(obj);
     for (var i = 0; i < keys.length; i++) {
@@ -221,10 +233,9 @@
      GRIDS
      ============================================================ */
 
-  /* Run-length encoding, with an honest fallback. Terrain on a generated
-     map is long bands of soil and rock and shrinks to a few per cent;
-     a grid that is genuinely noisy would double in size instead, so the
-     encoder measures and keeps whichever is smaller. */
+  /* Run-length encoding with an honest fallback: terrain is long bands of
+     soil and rock and shrinks to a few per cent, but a genuinely noisy
+     grid would double, so the encoder keeps whichever is smaller. */
   function encodeGrid(arr) {
     var runs = [], last = arr[0], n = 0, i;
     for (i = 0; i < arr.length; i++) {
@@ -266,10 +277,15 @@
 
   /* What `new Thing(defId)` would have produced, so the writer can omit
      every field that is still at its birth value. This is what keeps ten
-     thousand grass plants down to five keys each. */
+     thousand grass plants down to five keys each. Cached per def: only
+     the hit points vary, and a save walks tens of thousands of things. */
+  var _defaults = Object.create(null);
+
   function thingDefaults(def) {
+    var cached = _defaults[def.id];
+    if (cached) return cached;
     var hp = def.hp || 1;
-    return {
+    cached = {
       spawned: true, stack: 1, hp: hp, maxHp: hp, rot: 0,
       faction: null, quality: null, stuff: null,
       powered: false, netId: 0, fuel: null, open: false,
@@ -277,6 +293,8 @@
       growth: 0, sown: false, blighted: false, plantAgeTicks: 0,
       rotProgress: 0, spawnTick: 0
     };
+    _defaults[def.id] = cached;
+    return cached;
   }
 
   function packThing(thing) {
@@ -307,11 +325,11 @@
     }
 
     if (thing.materials) rec.m = clone(thing.materials);
-    if (thing.bills && thing.bills.length) rec.L = plain(thing.bills, null, 0);
+    if (thing.bills && thing.bills.length) rec.L = clone(thing.bills);
     if (thing.corpse) rec.c = clone(thing.corpse);
 
-    /* A corpse keeps what it was wearing, so a raid leaves clothes worth
-       taking. Those are unspawned Things hanging off the corpse. */
+    /* A corpse keeps what it was wearing, so a raid leaves clothes
+       worth taking: unspawned Things hanging off the corpse. */
     if (thing.apparel && thing.apparel.length) {
       rec.A = [];
       for (var a = 0; a < thing.apparel.length; a++) {
@@ -328,9 +346,9 @@
       isFinite(rec.x) && isFinite(rec.y);
   }
 
-  /* Rebuilds one Thing on the map at its own id. spawnThing hands the
-     new Thing whatever U.nextId() says next, so the counter is parked on
-     the saved id first: that keeps every id reference in the save -
+  /* Rebuilds one Thing at its own id. spawnThing hands the new Thing
+     whatever U.nextId() says next, so the counter is parked on the saved
+     id first: that is what keeps every id reference in the file -
      bed.ownerId, bill.buildingId, Power's battery table, corpse.pawnId -
      pointing at the same object it pointed at before. */
   function spawnThingRec(map, rec, atX, atY) {
@@ -379,11 +397,10 @@
     return thing;
   }
 
-  /* A Thing that belongs to nobody's cell: a weapon in a hand, a shirt
-     on a corpse, a stack being carried. The only way to get one without
-     reaching into map.js is to spawn it and take it straight back off
-     the map, which is exactly what pawn.js does when a pawn picks
-     something up. */
+  /* A Thing that belongs to nobody's cell: a weapon in a hand, a shirt on
+     a corpse, a stack being carried. `new Thing` is private to map.js, so
+     one is made by spawning it and taking it straight back off the map -
+     exactly what pawn.js does when a pawn picks something up. */
   function looseThing(map, rec, x, y) {
     var thing = spawnThingRec(map, rec, x, y);
     if (!thing) return null;
@@ -406,12 +423,7 @@
     return out;
   }
 
-  /* ============================================================
-     HEALTH
-
-     The body itself is data: health.js builds the same part table every
-     time from the pawn's body def. Only the damage is worth storing.
-     ============================================================ */
+  /* ---- health: the body is data, only the damage is worth storing ---- */
   function packHealth(pawn) {
     var h = pawn.health;
     if (!h) return null;
@@ -422,7 +434,7 @@
     if (h.parts) {
       for (var i = 0; i < h.parts.length; i++) {
         var p = h.parts[i];
-        if (!derived) { parts.push(plain(p, null, 0)); continue; }
+        if (!derived) { parts.push(clone(p)); continue; }
         if (p.missing || p.hp !== p.maxHp) parts.push([p.id, p.hp, p.missing ? 1 : 0]);
       }
     }
@@ -431,8 +443,8 @@
       bodyId: h.bodyId || null,
       d: derived ? 1 : 0,
       parts: parts,
-      injuries: plain(h.injuries || [], PAWN_SKIP, 0),
-      hediffs: plain(h.hediffs || [], PAWN_SKIP, 0),
+      injuries: clone(h.injuries || []),
+      hediffs: clone(h.hediffs || []),
       bloodLoss: h.bloodLoss || 0,
       pain: h.pain || 0,
       downed: !!h.downed,
@@ -633,6 +645,20 @@
       desig.push([i, d.type, d.defId || null]);
     });
 
+    /* Rooms themselves are re-derived from the walls, but what a room is
+       currently at is not derivable from anything: a freezer that came
+       back at twenty degrees would thaw the winter's meals every time
+       the player reloaded. Each one is keyed by a cell inside it, which
+       survives the rebuild that its room id does not. */
+    var temps = [];
+    var Regions = sys('Regions');
+    if (Regions && Regions.rooms) {
+      Regions.rooms(map).forEach(function (room) {
+        if (room.outdoor || !room.cells.length) return;
+        temps.push([room.cells[0], round6(room.temperature)]);
+      });
+    }
+
     var Zones = sys('Zones');
     var Research = sys('Research');
     var Power = sys('Power');
@@ -663,7 +689,8 @@
         things: things,
         pawns: pawns,
         zones: (Zones && Zones.serialize) ? Zones.serialize(map) : [],
-        desig: desig
+        desig: desig,
+        temps: temps
       },
       research: (Research && Research.save) ? Research.save() : null,
       power: (Power && Power.save) ? Power.save(map) : null,
@@ -721,6 +748,22 @@
     };
   }
 
+  /* Rooms come back with fresh ids, so a saved temperature finds its room
+     through a cell that was inside it. A room that has since been knocked
+     through simply is not there any more, and its warmth goes with it. */
+  function restoreRoomTemps(map, rows) {
+    var Regions = sys('Regions');
+    if (!Regions || !Regions.roomAt || !Array.isArray(rows)) return;
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (!row || row.length < 2) continue;
+      var idx = row[0] | 0;
+      if (idx < 0 || idx >= map.size) continue;
+      var room = Regions.roomAt(map, map.xOf(idx), map.yOf(idx));
+      if (room && !room.outdoor && isFinite(row[1])) room.temperature = row[1];
+    }
+  }
+
   Save.deserialize = function (data) {
     var bad = checkPayload(data);
     if (bad) return note(bad);
@@ -738,6 +781,12 @@
     var idMark = U.peekId();
     var rngMark = U.getSeed();
 
+    /* The counter the reloaded colony carries on from. It is the saved
+       one, unless a file has somehow been edited to hold an id above it:
+       handing out an id that something already owns is the one mistake
+       here that would not show up until much later. */
+    var highId = Math.max(1, data.nid | 0);
+
     try {
       map = new root.GameMap(m.w, m.h);
 
@@ -751,8 +800,14 @@
          lands: spawnThing marks its own cells dirty, but only its own. */
       for (var i = 0; i < map.size; i++) map.markPathDirtyIdx(i);
 
-      for (var t = 0; t < m.things.length; t++) spawnThingRec(map, m.things[t]);
-      for (var p = 0; p < m.pawns.length; p++) restorePawn(map, m.pawns[p]);
+      for (var t = 0; t < m.things.length; t++) {
+        var thing = spawnThingRec(map, m.things[t]);
+        if (thing && thing.id >= highId) highId = thing.id + 1;
+      }
+      for (var p = 0; p < m.pawns.length; p++) {
+        var pawn = restorePawn(map, m.pawns[p]);
+        if (pawn && pawn.id >= highId) highId = pawn.id + 1;
+      }
 
       var Zones = sys('Zones');
       if (Zones && Zones.deserialize) Zones.deserialize(map, m.zones || []);
@@ -774,6 +829,11 @@
     }
 
     /* ---- commit: from here the live game becomes the loaded one ---- */
+
+    /* Before any module restores: Caravans and Zones can allocate ids of
+       their own while loading, and they must come after everything the
+       file already named, not on top of it. */
+    U.setIdCounter(highId);
 
     Game.map = map;
     if (Game.restoreTimeState) Game.restoreTimeState(data.time);
@@ -821,9 +881,14 @@
     if (Regions) {
       if (Regions.reset) Regions.reset(map);
       if (Regions.rebuildAll) Regions.rebuildAll(map);
+      /* The drift pass first, so outdoor rooms and any room the save did
+         not name get a sensible number instead of the twenty degrees a
+         fresh Room is born with; the saved temperatures then land on top
+         of it, undrifted. */
       if (Regions.tickTemperature && Game.outdoorTemp) {
         Regions.tickTemperature(map, Game.outdoorTemp());
       }
+      restoreRoomTemps(map, m.temps);
     }
 
     var Power = sys('Power');
@@ -835,13 +900,12 @@
 
     if (Game.recalcWealth) Game.recalcWealth();
 
-    /* The dice and the id counter come last. Restoring anything above
-       may have rolled or allocated - Storyteller.loadState builds a
-       fresh schedule before overwriting it - and the point of saving the
-       RNG state is that the reloaded colony rolls what the live one
-       would have. */
+    /* The dice come last. Restoring anything above may have rolled -
+       Storyteller.loadState builds a fresh schedule before overwriting
+       it - and the whole point of saving the RNG state is that the
+       reloaded colony rolls what the live one would have. */
     U.setSeed(data.rng >>> 0);
-    U.setIdCounter(Math.max(1, data.nid | 0));
+    if (U.peekId() < highId) U.setIdCounter(highId);
 
     Save.lastError = null;
     return true;
@@ -852,10 +916,9 @@
 
      A round trip is only worth anything if something notices when it
      loses a stack of steel or a bleeding wound. Everything below is
-     accumulated as an integer - values are scaled and rounded before
-     they are added - because floating point addition is not
-     associative and the restored world is walked in a different order
-     than the live one was.
+     accumulated as an integer, values scaled and rounded before they are
+     added, because floating point addition is not associative and the
+     restored world is walked in a different order than the live one was.
      ============================================================ */
   function fnv(h, v) {
     v = v | 0;
@@ -902,7 +965,7 @@
       needs: 0, mood: 0, thoughts: 0, skillXp: 0, skillLevels: 0,
       downed: 0, mentalStates: 0,
       terrain: 0, roof: 0, blood: 0, pathCost: 0,
-      zones: 0, zoneCells: 0, designations: 0, rooms: 0,
+      zones: 0, zoneCells: 0, designations: 0, rooms: 0, roomTemp: 0,
       research: '', researchProgress: 0,
       messages: 0, letters: 0,
       byDef: '', stackByDef: ''
@@ -995,7 +1058,13 @@
     sum.designations = map.designations.size;
 
     var Regions = sys('Regions');
-    if (Regions && Regions.rooms) sum.rooms = Regions.rooms(map).size;
+    if (Regions && Regions.rooms) {
+      var rooms = Regions.rooms(map);
+      sum.rooms = rooms.size;
+      rooms.forEach(function (room) {
+        if (!room.outdoor) sum.roomTemp += q(room.temperature, 100);
+      });
+    }
 
     var Research = sys('Research');
     if (Research && Research.done) {
@@ -1012,15 +1081,11 @@
     return sum;
   };
 
-  /* ============================================================
-     SELF TEST
-
-     Serialise, put it back, and prove the world that came out is the
+  /* Serialise, put it back, and prove the world that came out is the
      world that went in. tools/verify-sim.js calls this at the end of a
-     long simulated run, which is the only moment a save is under real
-     pressure: thousands of things, half a dozen wounded colonists,
-     zones, bills, half-built walls and a storyteller mid-raid.
-     ============================================================ */
+     long run, which is the only moment a save is under real pressure:
+     thousands of things, wounded colonists, zones, bills, half-built
+     walls and a storyteller mid-raid. */
   Save.selfTest = function (game) {
     game = game || sys('Game');
     if (!game || !game.map) return { ok: false, reason: 'no game to test' };

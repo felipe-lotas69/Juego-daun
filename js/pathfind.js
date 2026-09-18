@@ -130,12 +130,24 @@
   }
 
   /* The tiles a thing actually occupies. A 2x1 stove turned east is two
-     tiles tall, and a pawn standing at either end of it is touching it. */
+     tiles tall, and a pawn standing at either end of it is touching it.
+     map.js owns that rule and two of its cases are not obvious from
+     def.size alone: a def that is not rotatable keeps its rot at 0 however
+     it was placed, and a blueprint or frame stands on the footprint of the
+     building it will become, not on the 1x1 of the blueprint def. So ask
+     the Thing whenever it can answer. The arithmetic below is the fallback
+     for a plain {def, rot} stand-in, and matches map.footprintOf. */
   function footprintRect(thing, x, y, out) {
-    var s = thing && thing.def && thing.def.size;
-    var w = s ? (s.w || 1) : 1, h = s ? (s.h || 1) : 1;
-    var rot = thing ? (thing.rot | 0) : 0;
-    if (rot === 1 || rot === 3) { var t = w; w = h; h = t; }
+    var w = 1, h = 1;
+    var f = (thing && typeof thing.footprint === 'function') ? thing.footprint() : null;
+    if (f) {
+      w = f.w || 1; h = f.h || 1;
+    } else {
+      var s = thing && thing.def && thing.def.size;
+      w = s ? (s.w || 1) : 1; h = s ? (s.h || 1) : 1;
+      var rot = thing ? (thing.rot | 0) : 0;
+      if (rot === 1 || rot === 3) { var t = w; w = h; h = t; }
+    }
     out.x0 = x; out.y0 = y; out.x1 = x + w - 1; out.y1 = y + h - 1;
   }
 
@@ -492,11 +504,15 @@
       stats.calls++;
       return [];
     }
-    /* find() is given a cell, not a thing, so an interaction query has to
-       look up whatever is standing there to find its working spot. */
+    /* find() is given a cell, not a thing, so an end mode that needs a
+       footprint or a working spot has to look up whatever is standing
+       there. A blueprint or frame lives in its own grid, so it takes a
+       second question - and a builder walking to a half-built 4x2 turbine
+       needs its real footprint, not the one tile the caller named. */
     var thing = opts.thing || null;
     if (!thing && (mode === PE.INTERACTION || mode === PE.TOUCH || mode === PE.ADJACENT)) {
-      thing = map.buildingAt ? map.buildingAt(dx, dy) : null;
+      thing = (map.buildingAt ? map.buildingAt(dx, dy) : null) ||
+              (map.ghostAt ? map.ghostAt(dx, dy) : null);
     }
     var pawn = opts.pawn || null;
     var canBash = opts.canBashDoors !== undefined ? !!opts.canBashDoors : defaultBash(pawn);
@@ -549,7 +565,10 @@
 
     var ws = workspaceFor(map), gen = nextGeneration(ws);
     var thing = opts.thing || null;
-    if (!thing && mode !== PE.ON_CELL) thing = map.buildingAt ? map.buildingAt(dx, dy) : null;
+    if (!thing && mode !== PE.ON_CELL) {
+      thing = (map.buildingAt ? map.buildingAt(dx, dy) : null) ||
+              (map.ghostAt ? map.ghostAt(dx, dy) : null);
+    }
 
     buildGoals(map, ws, gen, dx, dy, mode, thing, pc, imp);
     if (!goalN) return false;
@@ -640,7 +659,8 @@
     if (!candidates || !candidates.length) return null;
     stats.closestChecks++;
 
-    var f = frameAt(depth++);
+    var f = frameAt(depth);
+    depth++;
     try {
       var cList = f.list, cX = f.x, cY = f.y, cD = f.dist, cOrder = f.order;
       var px = pawn ? pawn.x : 0, py = pawn ? pawn.y : 0;

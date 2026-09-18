@@ -325,9 +325,12 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   font: inherit;
   cursor: pointer;
 }
-.arch-item:hover:not(:disabled) { background: var(--bg3); border-color: var(--bg4); }
+/* A locked item is a live button so it can be hovered for the reason it
+   is locked, so the greyed state has to be what stops it looking
+   clickable rather than the :disabled pseudo-class. */
+.arch-item:not(.off):hover { background: var(--bg3); border-color: var(--bg4); }
 .arch-item.on { border-color: var(--accent); background: var(--bg4); }
-.arch-item.off { opacity: 0.38; cursor: not-allowed; }
+.arch-item.off { opacity: 0.38; cursor: help; }
 .arch-item .ico { width: 22px; height: 22px; }
 .arch-label { font-size: 10px; text-align: center; line-height: 1.15; }
 .arch-cost { font-size: 9px; color: var(--faint); text-align: center; line-height: 1.1; }
@@ -442,6 +445,7 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   background: var(--bg1);
 }
 .tp-title { flex: 1; font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
+.tp-close { padding: 3px 12px; }
 .tp-body { flex: 1; overflow: auto; padding: 10px 12px; }
 .tp-note { color: var(--dim); margin-bottom: 8px; max-width: 900px; }
 

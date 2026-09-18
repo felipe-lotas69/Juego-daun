@@ -490,6 +490,7 @@
       if (elapsed > MAX_CATCHUP) elapsed = MAX_CATCHUP;
 
       feed(c, elapsed);
+      tendWounded(c);
       tickBodies(c, elapsed);
       if (!c.pawns.length) {
         letter(c.label + ' is gone',
@@ -518,6 +519,9 @@
 
       if (c.state === 'travelling') {
         rollTravelEvents(c, elapsed);
+        /* An ambush can end a party, or put the last of them on the
+           ground. Either way they do not walk any further this tick. */
+        if (!standing(c).length) continue;
         advance(c, elapsed);
         if (c.ticksToArrive <= 0) Caravans.arrive(c);
       } else if (c.state === 'trading') {
@@ -559,7 +563,8 @@
       if (!d || !(d.nutrition > 0) || d.id === 'corpse') continue;
       if (pawn.isHuman && d.foodType === 'kibble') continue;
       if (pawn.isAnimal && d.foodType === 'meal') continue;
-      /* Eat what will spoil first, and prefer a cooked meal to raw grain. */
+      /* A proper meal first, and among equals whatever keeps worst, which
+         is the order anyone eating out of a pack would choose. */
       var score = d.nutrition * 4 + (d.rotDays ? 6 / d.rotDays : 0);
       if (score > bestScore) { bestScore = score; best = rec; }
     }
@@ -654,6 +659,42 @@
       }
       if (pawn.dead) loseTraveller(c, pawn, 'the road');
     }
+  }
+
+  /* Nobody is coming to patch them up out here, so they do it for each
+     other: the best doctor still able works through whoever is bleeding,
+     spending the caravan's medicine while it lasts. Without this a party
+     that WON its ambush still bleeds to death three days later, which is
+     not a cost, it is a bug wearing a cost's clothes. */
+  function tendWounded(c) {
+    var health = Hp();
+    if (!health || !health.needsTending || !health.tend) return;
+    var medics = standing(c).filter(function (p) { return p.isHuman; });
+    /* All down but still conscious: a wounded pawn can bandage a wound. */
+    if (!medics.length) {
+      medics = c.pawns.filter(function (p) {
+        return p.isHuman && !p.dead && health.capacity(p, 'consciousness') >= 0.3;
+      });
+    }
+    if (!medics.length) return;
+
+    function skill(p) { return p.skillLevel ? p.skillLevel('medicine') : 0; }
+    for (var i = 0; i < c.pawns.length; i++) {
+      var patient = c.pawns[i];
+      if (!health.needsTending(patient)) continue;
+      var pool = medics.length > 1
+        ? medics.filter(function (p) { return p !== patient; })
+        : medics;
+      health.tend(patient, U.maxBy(pool, skill), takeMedicine(c));
+    }
+  }
+
+  /* The good stuff first. Nothing left is not a failure: health.js tends
+     at a floor quality with clean water and a steady hand. */
+  function takeMedicine(c) {
+    if (Caravans.removeItem(c, 'medicine', 1)) return { defId: 'medicine' };
+    if (Caravans.removeItem(c, 'herbalMedicine', 1)) return { defId: 'herbalMedicine' };
+    return null;
   }
 
   /* needs.js ages memories on a rare tick these pawns never get. Same
@@ -929,6 +970,7 @@
     else if (result.wounded.length) lines.push('Wounded: ' + listNames(result.wounded) + '.');
 
     letter('Ambush on the road', lines.join(' '), result.dead.length ? 'death' : 'threat');
+    tendWounded(c);
     refreshCargo(c);
     return result;
   };
@@ -1066,6 +1108,7 @@
     letter(result.won ? settlement.name + ' has fallen' : 'The attack on ' + settlement.name + ' failed',
       lines.join(' '), result.dead.length ? 'death' : (result.won ? 'good' : 'threat'));
 
+    tendWounded(c);
     c.settlementId = 0;
     if (c.pawns.length) Caravans.sendHome(c);
     else c.state = 'done';
@@ -1078,9 +1121,12 @@
       Math.floor(Caravans.freeMass(c) / perSilver));
     if (silver > 0) { Caravans.addItem(c, 'silver', silver); taken.push(silver + ' silver'); }
 
-    var goods = ['steel', 'cloth', 'leather', 'components', 'medicine', 'mealSimple'];
-    for (var i = 0; i < 3 && Caravans.freeMass(c) > 1; i++) {
-      var id = U.pick(goods), each = stackMass(id, 1);
+    /* Each kind is taken once: the ledger merges repeats anyway, and a
+       letter that says "36 leather, 36 simple meal, 19 simple meal" reads
+       like a bug even when the arithmetic is right. */
+    var goods = U.shuffle(['steel', 'cloth', 'leather', 'components', 'medicine', 'mealSimple']);
+    for (var i = 0; i < 3 && i < goods.length && Caravans.freeMass(c) > 1; i++) {
+      var id = goods[i], each = stackMass(id, 1);
       if (each <= 0) continue;
       var n = Math.min(U.randInt(8, 40), Math.floor(Caravans.freeMass(c) / each));
       if (n <= 0) continue;
