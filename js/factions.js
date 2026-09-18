@@ -33,9 +33,15 @@
   /* ---------- tuning ---------- */
 
   var TICKS_PER_DAY = 60000;
-  var HOSTILE_AT = -75;              /* at or below this, they are at war    */
-  var PEACE_AT = -40;                /* ...and it takes this much to end one  */
-  var ALLY_AT = 40;                  /* allies answer a call for help         */
+  /* RimWorld's own thresholds, and they are deliberately asymmetric: a
+     war starts at -75 but only ends once you have clawed back to 0, and
+     an alliance needs +75 but survives until goodwill falls to 0. That
+     hysteresis is what stops a faction flickering between friend and
+     enemy every time a stray bullet lands. */
+  var HOSTILE_AT = -75;              /* at or below this, they declare war    */
+  var PEACE_AT = 0;                  /* ...and a war only ends back at zero   */
+  var ALLY_AT = 75;                  /* allies answer a call for help         */
+  var ALLY_LOST_AT = 0;              /* ...and stay allied until goodwill hits zero */
   var ALLIANCE_OFFER_AT = 25;        /* warm enough to propose one            */
   var WAR_DRIFT_CEILING = -50;       /* drift alone never buys peace          */
   var HISTORY_MAX = 30;
@@ -562,7 +568,12 @@
     } else if (f.hostile && f.goodwill >= PEACE_AT) {
       Factions.makePeace(f.id, reason);
     }
-    var allied = !f.hostile && f.goodwill >= ALLY_AT;
+    /* Becoming an ally takes +75; losing one only happens back at zero, so
+       a single bad incident does not cost an alliance you spent a season
+       building. */
+    var allied = f.allied
+      ? (!f.hostile && f.goodwill > ALLY_LOST_AT)
+      : (!f.hostile && f.goodwill >= ALLY_AT);
     if (allied !== f.allied) {
       f.allied = allied;
       if (allied) {
@@ -1177,6 +1188,8 @@
   Factions.HOSTILE_AT = HOSTILE_AT;
   Factions.PEACE_AT = PEACE_AT;
   Factions.ALLY_AT = ALLY_AT;
+  Factions.ALLY_LOST_AT = ALLY_LOST_AT;
+  Factions.HOSTILE_AT = HOSTILE_AT;
 
   root.Factions = Factions;
 })(this);

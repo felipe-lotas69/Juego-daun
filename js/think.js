@@ -524,16 +524,22 @@
     return null;
   }
 
+  /* Combat.hostile answers best when it is handed the two pawns: given only
+     faction ids it cannot see a berserk colonist, a manhunter animal or a
+     predator that has already picked its prey. */
   function hostileTo(pawn, other) {
-    var G = sys('Game');
-    if (G && G.hostile) return G.hostile(pawn.faction, other.faction) ||
-      (other.isAnimal && other.manhunter === true);
     var C = sys('Combat');
-    return !!(C && C.hostile && C.hostile(pawn.faction, other.faction));
+    if (C && C.hostile && C.hostile(pawn, other)) return true;
+    if (other.isAnimal && other.manhunter === true) return true;
+    var G = sys('Game');
+    return !!(G && G.hostile && G.hostile(pawn.faction, other.faction));
   }
 
   function fleeJob(pawn, from) {
-    var job = makeJob('flee', target('pawn', from), null, {});
+    /* The flee driver reads targetA as where to run TO and targetB as what
+       to run FROM. Passing the threat as targetA walked the colonist onto
+       the thing chasing them. */
+    var job = makeJob('flee', null, target('pawn', from), {});
     if (job) return job;
     /* No flee driver on hand: put ground between them the hard way. */
     var map = pawn.map;

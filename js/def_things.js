@@ -975,7 +975,11 @@
       buildCategory: 'security', researchPrerequisite: 'defensiveTurrets',
       leavings: { steel: 30, components: 1 },
       building: bld({
-        isTurret: true, turretRange: 27, turretWeapon: 'autoRifle'
+        isTurret: true, turretRange: 27, turretWeapon: 'autoRifle',
+        /* A turret runs on the grid. combat.js already holds fire when an
+           armed turret has no power; without a draw here that branch could
+           never fire, and a turret was a free, unkillable sentry. */
+        powerConsumed: 60
       })
     },
 

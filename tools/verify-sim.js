@@ -194,7 +194,11 @@ for (const t of map.things.values()) {
   if (!t.spawned) continue;
   if (!map.inBounds(t.x, t.y)) { orphans++; continue; }
   if (t.isItem && t.isItem() && t.stack > t.def.stackLimit) overfull++;
-  if (t.category === 'building' && map.buildingId[map.idx(t.x, t.y)] !== t.id && !t.isBlueprint) ghosts++;
+  /* A Thing has no `category` of its own - the category is on its def, and
+     blueprints and frames live on map.ghostId rather than map.buildingId.
+     Checking t.category meant this never looked at anything. */
+  if (t.def.category === 'building' && !t.isBlueprint && !t.isFrame &&
+      map.buildingId[map.idx(t.x, t.y)] !== t.id) ghosts++;
 }
 if (ghosts) fail(`${ghosts} building(s) are in the registry but not in the building grid`);
 if (overfull) fail(`${overfull} item stack(s) exceed their stackLimit`);

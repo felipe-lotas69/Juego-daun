@@ -964,6 +964,15 @@
     return traitFactors(this).work;
   };
 
+  /* traitFactors memoises onto pawn._fx, which is right for traits (they
+     are rolled once and never change) but wrong for anything that edits
+     the list later - a gene implant, an ideoligion granting a trait, a
+     brain injury. Anything that touches pawn.traits calls this. */
+  Pawn.prototype.invalidateTraitCache = function () {
+    this._fx = null;
+    return this;
+  };
+
   Pawn.prototype.workRate = function (skillId) {
     var f = this.workSpeed(skillId) * this.workFactor();
     var H = sys('Health');

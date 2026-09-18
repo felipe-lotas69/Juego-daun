@@ -87,8 +87,16 @@
   }
 
   /* The contract's curve: 0.4 work units per tick at level 0, 2.0 at
-     level 20, scaled by how well the body still works. */
+     level 20, scaled by how well the body still works.
+
+     pawn.js owns the version that also applies the industrious/lazy/
+     slothful multiplier, so defer to it when it is there - exactly as
+     learn() below defers to pawn.learn. Without this, traits changed how
+     fast a colonist built and mined but not how fast they cooked, sowed,
+     crafted or researched, because only construct.js called the pawn's
+     own method. */
   function workRate(pawn, skillId) {
+    if (pawn && typeof pawn.workRate === 'function') return pawn.workRate(skillId);
     var H = sys('Health');
     var f = (H && H.workSpeedFactor) ? H.workSpeedFactor(pawn) : 1;
     return (0.4 + 0.08 * skillLevel(pawn, skillId)) * f;
