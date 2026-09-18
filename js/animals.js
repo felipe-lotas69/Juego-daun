@@ -242,13 +242,19 @@
      through the movement fields the contract freezes onto every pawn. */
   function walkTo(pawn, x, y) {
     var P = root.Pawn, map = pawn.map;
+    var dest = map.idx(x, y);
+    /* This is called every tick for as long as the chase lasts, so a walk
+       that is already under way to this exact cell has to be left alone.
+       pawn.js's startPath rewinds pathIdx and moveProgress, and a pawn
+       told to start the same walk again on every tick never takes a
+       single step - it stands still while the quarry bleeds out in front
+       of it. Answering "yes, still going" is the whole fix. */
+    if (pawn.pathDest === dest && pawn.path && pawn.pathIdx < pawn.path.length) return true;
     if (P) {
       if (typeof P.startPath === 'function') return P.startPath(pawn, x, y) !== false;
       if (typeof P.pathTo === 'function') return P.pathTo(pawn, x, y) !== false;
       if (typeof P.goTo === 'function') return P.goTo(pawn, x, y) !== false;
     }
-    var dest = map.idx(x, y);
-    if (pawn.pathDest === dest && pawn.path && pawn.pathIdx < pawn.path.length) return true;
     var Path = root.Path;
     if (!Path) return false;
     var path = Path.find(map, pawn.x, pawn.y, x, y, { pawn: pawn });
