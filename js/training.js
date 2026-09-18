@@ -848,11 +848,13 @@
     return livePawn(animal.map, animal.master);
   };
 
+  /* pawn.master is the field animals.js follows, so setting it here is
+     the whole job; the call is exposed because the UI and this file's
+     own bonding both need one name for it. */
   Husbandry.setMaster = function (animal, human) {
     if (!animal || animal.isAnimal !== true) return false;
+    if (human && !Husbandry.isTrained(animal, 'obedience') && !beast(animal).bondId) return false;
     animal.master = human ? human.id : null;
-    var A = sys('Animals');
-    if (A && A.setMaster && animal.master !== (human ? human.id : null)) A.setMaster(animal, human);
     return true;
   };
 
@@ -1484,21 +1486,26 @@
 
   function tickHunger(animal, h, dt) {
     if (!isLivestock(animal)) return;
-    var food = foodOf(animal);
-    if (food > STARVING_AT) { h.hunger = 0; return; }
+    if (foodOf(animal) > STARVING_AT) { h.hunger = 0; return; }
+    var was = h.hunger;
     h.hunger += dt;
-    if (now() - h.starveNote < TICKS_PER_DAY) return;
+    if (now() - h.starveNote < TICKS_PER_DAY * 0.5) return;
     h.starveNote = now();
-    if (h.hunger > TICKS_PER_DAY * 0.5) {
-      msg(nameOf(animal) + ' is starving.', 'threat', animal);
+    msg(nameOf(animal) + ' is starving.', 'threat', animal);
+    /* Half a day at zero is not bad luck, it is a colony that stopped
+       feeding its herd, and the people who were meant to be doing it
+       know exactly whose job that was. */
+    if (was < TICKS_PER_DAY * 0.5 && h.hunger >= TICKS_PER_DAY * 0.5) {
+      noteStarving(animal.map, animal);
     }
   }
 
-  /* Called by the death sweep: an animal that starved is a colony
-     failure, and the people who were feeding it know it. */
-  function noteStarvedDeath(map, animal) {
+  function noteStarving(map, animal) {
     _stats.starved++;
-    var colonists = map.colonists ? map.colonists() : [];
+    letter('Livestock starving',
+      nameOf(animal) + ' has had nothing to eat for half a day. Grass runs out; a trough with ' +
+      'hay or kibble in it does not.', 'threat', animal);
+    var colonists = (map && map.colonists) ? map.colonists() : [];
     for (var i = 0; i < colonists.length; i++) thought(colonists[i], 'livestockStarved');
   }
 
@@ -1604,3 +1611,720 @@
     return marked;
   }
   Husbandry.applyPolicy = applyPolicy;
+
+  /* ============================================================
+     JOBS
+
+     Everything a handler does with an animal is the same shape: walk
+     over, stay next to something that will not stand still, and put
+     work in until it is done. jobs.js owns the machinery and animals.js
+     owns taming and slaughtering; these are the four this file adds.
+     ============================================================ */
+
+  var Path = root.Path;
+  var PE = Path && Path.PE ? Path.PE : { ON_CELL: 0, TOUCH: 1, ADJACENT: 2, INTERACTION: 3 };
+
+  function walkTo(pawn, x, y, s) {
+    if (s && pawn.moving && pawn.moving() && s.dx === x && s.dy === y) return true;
+    if (s) { s.dx = x; s.dy = y; }
+    if (typeof pawn.startPath !== 'function') return false;
+    return pawn.startPath(x, y, PE.TOUCH);
+  }
+
+  /* Work put into an animal that is free to walk away mid-lesson. The
+     chase counter is what stops a handler following a spooked muffalo
+     across the map for the rest of the day. */
+  function beastToil(spec) {
+    return Toils.custom({
+      name: spec.name,
+      init: function (pawn, job, s) { s.chase = 0; s.work = 0; s.dx = -1; s.dy = -1; },
+      tick: function (pawn, job, s) {
+        var map = pawn.map, a = T.resolve(job.targetA, map);
+        if (!a || a.isAnimal !== true || a.dead) return 'fail';
+        if (!spec.valid(a, pawn)) return 'fail';
+        if (U.cheb(pawn.x, pawn.y, a.x, a.y) > 1) {
+          if (++s.chase > 1200) return 'fail';
+          if (!walkTo(pawn, a.x, a.y, s)) return 'fail';
+          return 'stay';
+        }
+        if (pawn.stopPath) pawn.stopPath();
+        if (pawn.faceTo) pawn.faceTo(a.x, a.y);
+        var rate = workRate(pawn, 'animals');
+        var h = beast(a);
+        if (spec.store) h[spec.store] = (h[spec.store] || 0) + rate;
+        else s.work += rate;
+        gainSkill(pawn, 'animals', rate * 0.11);
+        var done = spec.store ? h[spec.store] : s.work;
+        if (done < spec.work(a, pawn)) return 'stay';
+        if (spec.store) h[spec.store] = 0;
+        spec.done(a, pawn);
+        return 'next';
+      }
+    });
+  }
+
+  function beastJob(id, spec) {
+    Jobs.register(id, {
+      label: spec.label,
+      reportString: spec.report,
+      suspendable: true,
+      toils: function () {
+        return [Toils.goto('A', { pe: PE.TOUCH, failIfGone: true }), beastToil(spec)];
+      }
+    });
+  }
+
+  beastJob('husbandryTrain', {
+    name: 'train', label: 'train', report: 'Training {A}.', store: 'learn',
+    work: function (a, pawn) {
+      var k = kindOf(a.kindId);
+      var w = TRAIN_WORK_BASE + k.wildness * 320;
+      /* BEYOND: an animal listens to the person it chose. A bonded pair
+         gets through a lesson a third faster than a stranger would, and
+         is likelier to come out of it having learned something. */
+      if (pawn && beast(a).bondId === pawn.id) w *= 0.66;
+      return w;
+    },
+    valid: function (a) { return isLivestock(a) && !!Husbandry.lessonFor(a); },
+    done: function (a, pawn) {
+      var lesson = Husbandry.lessonFor(a);
+      if (!lesson) return;
+      if (!Husbandry.teach(a, pawn, lesson)) {
+        msg(nameOf(a) + ' would not take the lesson.', 'info', a);
+      }
+      tryBond(a, pawn, 1.4);
+    }
+  });
+
+  beastJob('husbandryGather', {
+    name: 'gather', label: 'gather', report: 'Gathering from {A}.',
+    work: function (a) {
+      var key = Husbandry.dueProduce(a);
+      var spec = key ? Husbandry.produceSpec(a, key) : null;
+      return (spec && spec.work) || 300;
+    },
+    valid: function (a) { return isLivestock(a) && !!Husbandry.dueProduce(a); },
+    done: function (a, pawn) {
+      var key = Husbandry.dueProduce(a);
+      if (!key) return;
+      var n = Husbandry.gather(a, key, pawn);
+      if (n) msg(nameOf(pawn) + ' took ' + n + ' ' + key + ' from ' + nameOf(a) + '.', 'info', a);
+    }
+  });
+
+  /* Company. It is not efficient and it is not meant to be: it builds
+     familiarity, which is what bonds grow out of, and it is the only
+     job in the game whose output is a mood. */
+  beastJob('husbandryPet', {
+    name: 'pet', label: 'pet', report: 'Spending time with {A}.',
+    work: function () { return 220; },
+    valid: function (a) { return isLivestock(a); },
+    done: function (a, pawn) {
+      var h = beast(a);
+      h.familiar = U.clamp01(h.familiar + 0.12);
+      hus(pawn).pets = now();
+      var N = sys('Needs');
+      if (N && N.gainJoy) N.gainJoy(pawn, PET_JOY, 'animals');
+      thought(pawn, 'pettedAnimal');
+      if (a.needs) a.needs.joy = U.clamp01((a.needs.joy || 0) + 0.25);
+      tryBond(a, pawn, 2.2);
+    }
+  });
+
+  /* Carrying fodder to a trough. targetB is the hay or kibble, targetA
+     the trough, which is the order the toils run in. */
+  Jobs.register('husbandryStockTrough', {
+    label: 'stock trough',
+    reportString: 'Filling the trough.',
+    suspendable: true,
+    toils: function () {
+      return [
+        Toils.startCarry('B', function (pawn, job) { return job.count > 0 ? job.count : 30; }),
+        Toils.goto('A', { pe: PE.TOUCH, failIfGone: true }),
+        Toils.custom({
+          name: 'pourFodder',
+          tick: function (pawn, job) {
+            var map = pawn.map;
+            var trough = T.resolve(job.targetA, map);
+            var load = pawn.carried;
+            if (!trough || !trough.spawned) return 'fail';
+            if (!load || load.stack <= 0) return 'fail';
+            var def = load.def || Defs.maybe('thing', load.defId);
+            var per = (def && def.nutrition > 0) ? def.nutrition : 0.05;
+            var added = Husbandry.addFodder(trough, load.defId, load.stack);
+            var used = Math.min(load.stack, Math.ceil(added / per));
+            load.stack -= used;
+            if (load.stack <= 0) {
+              pawn.carried = null;
+              if (map.despawnThing) map.despawnThing(load);
+            }
+            gainSkill(pawn, 'animals', 12);
+            return 'next';
+          }
+        }),
+        /* Whatever would not fit goes on the floor by the trough rather
+           than riding around in a colonist's arms for the rest of the day. */
+        Toils.dropCarried()
+      ];
+    }
+  });
+
+  /* The animal's own end of the same trough. */
+  Jobs.register('husbandryEatTrough', {
+    label: 'eat',
+    reportString: 'Eating from the trough.',
+    toils: function () {
+      return [
+        Toils.goto('A', { pe: PE.TOUCH, failIfGone: true }),
+        Toils.custom({
+          name: 'feed',
+          init: function (pawn, job, s) { s.left = 180; if (pawn.stopPath) pawn.stopPath(); },
+          tick: function (pawn, job, s) {
+            var trough = T.resolve(job.targetA, pawn.map);
+            if (!trough || !trough.spawned) return 'fail';
+            if (--s.left > 0) return 'stay';
+            return Husbandry.eatFromTrough(pawn, trough) > 0 ? 'done' : 'fail';
+          }
+        })
+      ];
+    }
+  });
+
+  /* ============================================================
+     WORK GIVERS
+
+     workgivers.js owns the scans for everything the contract assigned
+     it; these four are this system's own, on the handle column, and
+     they follow the same rules: indexes not map walks, a claim before
+     the job is handed over, and nothing expensive before the cheap
+     test has failed.
+     ============================================================ */
+
+  var WorkGivers = root.WorkGivers;
+
+  function areaOf(map, x, y) {
+    var R = sys('Regions');
+    return (R && R.areaOf && map.inBounds(x, y)) ? R.areaOf(map, x, y) : 1;
+  }
+
+  function inReach(map, pawn, x, y) {
+    if (!map.inBounds(x, y)) return false;
+    var from = areaOf(map, pawn.x, pawn.y);
+    if (!from) return true;
+    if (areaOf(map, x, y) === from) return true;
+    if (map.passable(x, y)) return false;
+    for (var k = 0; k < U.ADJ8.length; k++) {
+      if (areaOf(map, x + U.ADJ8[k][0], y + U.ADJ8[k][1]) === from) return true;
+    }
+    return false;
+  }
+
+  function nearestOf(pawn, list) {
+    if (!list.length) return null;
+    if (Path && Path.closestReachable) return Path.closestReachable(pawn.map, pawn, list, null);
+    return list[0];
+  }
+
+  function claimed(pawn, defId, target, b, opts) {
+    if (!Res.reserve(pawn, target, 1)) return null;
+    var job = Jobs.make(defId, target, b || null, opts);
+    if (!job) Res.release(pawn, target);
+    return job;
+  }
+
+  /* Every tame animal the colony owns, computed once per tick and
+     shared by all four givers below. */
+  function herdOf(map) {
+    var stamp = now();
+    if (map.__husHerdTick === stamp && map.__husHerd) return map.__husHerd;
+    var out = [], list = map.pawns;
+    for (var i = 0; i < list.length; i++) if (isLivestock(list[i])) out.push(list[i]);
+    map.__husHerd = out;
+    map.__husHerdTick = stamp;
+    return out;
+  }
+  Husbandry.herdOf = herdOf;
+
+  function animalGiver(id, order, label, jobId, wants) {
+    if (!WorkGivers || !WorkGivers.register) return;
+    WorkGivers.register({
+      id: id, workType: 'handle', order: order, label: label,
+      tryGiveJob: function (pawn) {
+        installOnce();
+        var map = pawn.map;
+        var herd = herdOf(map), cands = [];
+        for (var i = 0; i < herd.length; i++) {
+          var a = herd[i];
+          if (a.downed || a.designated === 'slaughter') continue;
+          if (!wants(a, pawn)) continue;
+          if (!Res.canReserve(pawn, T.pawn(a), 1)) continue;
+          if (!inReach(map, pawn, a.x, a.y)) continue;
+          cands.push(a);
+        }
+        var animal = nearestOf(pawn, cands);
+        return animal ? claimed(pawn, jobId, T.pawn(animal)) : null;
+      }
+    });
+  }
+
+  animalGiver('husbandryGather', 15, 'gather produce', 'husbandryGather', function (a) {
+    return !!Husbandry.dueProduce(a);
+  });
+
+  animalGiver('husbandryTrainUp', 25, 'train animal', 'husbandryTrain', function (a) {
+    return !!Husbandry.lessonFor(a);
+  });
+
+  /* Petting is last in the column on purpose: it is what a handler does
+     when the herd is fed, milked and taught. */
+  animalGiver('husbandryPet', 80, 'spend time with animal', 'husbandryPet', function (a, pawn) {
+    var h = beast(a);
+    if (h.bondId && h.bondId !== pawn.id) return false;
+    if (h.familiar >= 1 && h.bondId) return false;
+    var last = hus(pawn).pets || 0;
+    return now() - last > TICKS_PER_DAY * 0.6;
+  });
+
+  if (WorkGivers && WorkGivers.register) {
+    WorkGivers.register({
+      id: 'husbandryTrough', workType: 'handle', order: 40, label: 'fill trough',
+      tryGiveJob: function (pawn) {
+        installOnce();
+        var map = pawn.map;
+        var list = troughs(map);
+        if (!list.length) return null;
+        var hungry = null, i;
+        for (i = 0; i < list.length; i++) {
+          var t = list[i];
+          if (!t.spawned) continue;
+          if (troughLevel(t) > TROUGH_CAPACITY * TROUGH_RESTOCK_AT) continue;
+          if (!Res.canReserve(pawn, T.thing(t), 1)) continue;
+          if (!inReach(map, pawn, t.x, t.y)) continue;
+          hungry = t;
+          break;
+        }
+        if (!hungry) return null;
+
+        var ids = Husbandry.fodderDefIds(), fodder = null;
+        for (i = 0; i < ids.length && !fodder; i++) {
+          var stacks = map.byDef(ids[i]) || [];
+          for (var j = 0; j < stacks.length; j++) {
+            var stack = stacks[j];
+            if (!stack.spawned || stack.stack <= 0) continue;
+            if (!Res.canReserve(pawn, T.thing(stack), 1)) continue;
+            if (!inReach(map, pawn, stack.x, stack.y)) continue;
+            fodder = stack;
+            break;
+          }
+        }
+        if (!fodder) return null;
+        /* The trough is targetA because the toils end there; the fodder
+           is targetB because startCarry picks that up first. Both are
+           claimed before the job is handed over, and a claim that fails
+           gives the other one back. */
+        var trough = T.thing(hungry), load = T.thing(fodder);
+        if (!Res.reserve(pawn, trough, 1)) return null;
+        if (!Res.reserve(pawn, load, 1)) { Res.release(pawn, trough); return null; }
+        var job = Jobs.make('husbandryStockTrough', trough, load,
+          { count: Math.min(fodder.stack, 40) });
+        if (!job) { Res.release(pawn, trough); Res.release(pawn, load); }
+        return job;
+      }
+    });
+  }
+
+  /* ============================================================
+     WHAT A TAME ANIMAL DOES WITH ITS OWN TIME
+
+     animals.js decides first - danger, hunting, following a master,
+     grazing all outrank anything here. This is only consulted when its
+     answer was "wander about", which is exactly when a trained animal
+     should be working instead.
+     ============================================================ */
+
+  function haulJobFor(animal) {
+    if (!WorkGivers || !WorkGivers.forType) return null;
+    var givers = WorkGivers.forType('haul');
+    for (var i = 0; i < givers.length; i++) {
+      var job = null;
+      try {
+        job = givers[i].tryGiveJob(animal);
+      } catch (e) {
+        var G = root.Game;
+        if (G && G.debug) console.log('[husbandry] haul giver threw: ' + e);
+        job = null;
+      }
+      if (job) return job;
+    }
+    return null;
+  }
+
+  function downedNearby(animal, radius) {
+    var map = animal.map, list = map.colonists ? map.colonists() : [], best = null, bestD = radius * radius;
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      if (!p.downed || p.dead || p === animal) continue;
+      if (p.carriedBy) continue;
+      var d = U.distSq(animal.x, animal.y, p.x, p.y);
+      if (d > bestD) continue;
+      if (!Res.canReserve(animal, T.pawn(p), 1)) continue;
+      best = p; bestD = d;
+    }
+    return best;
+  }
+
+  Husbandry.animalJob = function (animal) {
+    if (!isLivestock(animal) || animal.downed || animal.drafted || !animal.map) return null;
+    if (animal.mentalState) return null;
+    var h = beast(animal);
+
+    /* Hungry, and the grass has already failed: the trough is the whole
+       reason a winter herd survives. */
+    if (foodOf(animal) < 0.5) {
+      var trough = nearestTrough(animal, true);
+      if (trough) return Jobs.make('husbandryEatTrough', T.thing(trough));
+    }
+
+    if (foodOf(animal) > HAUL_MIN_FOOD && !h.preg) {
+      if (Husbandry.isTrained(animal, 'rescue')) {
+        var patient = downedNearby(animal, 26);
+        if (patient && Res.reserve(animal, T.pawn(patient), 1)) {
+          var rescue = Jobs.make('rescue', T.pawn(patient));
+          if (rescue) return rescue;
+          Res.release(animal, T.pawn(patient));
+        }
+      }
+      if (Husbandry.isTrained(animal, 'haul')) {
+        var haul = haulJobFor(animal);
+        if (haul) return haul;
+      }
+    }
+
+    /* Nothing to do and out of bounds: go home. */
+    var marker = Husbandry.penOf(animal);
+    if (marker && !Husbandry.inPen(animal)) {
+      var spot = penTarget(animal.map, marker, animal);
+      if (spot) return Jobs.make('goto', T.cell(spot.x, spot.y));
+    }
+    return null;
+  };
+
+  /* ============================================================
+     THE TICKS
+
+     game.js calls tick once per tick with the map and tickPawn once per
+     pawn. Everything expensive is on a stagger or a slow beat, and
+     every per-animal update is written against elapsed ticks rather
+     than a fixed step, so a colony loaded from a save, or one whose
+     animals were asleep in a caravan, catches up honestly.
+     ============================================================ */
+
+  function tickAnimal(animal, t) {
+    var h = beast(animal);
+    var dt = (h.beat > 0 && t > h.beat) ? Math.min(t - h.beat, RARE * 8) : RARE;
+    h.beat = t;
+
+    if (tickAge(animal, h, dt)) return;
+    if (animal.tame) syncLevels(animal, h);
+
+    tickTraining(animal, h, dt);
+    tickProduce(animal, h, dt);
+    tickYoung(animal, h);
+
+    if (h.preg) {
+      Husbandry.tickPregnancy(animal, dt);
+    } else if (animal.gender === 'female' && kindOf(animal.kindId).breeds) {
+      var rate = (animal.faction === 'player' ? 0.35 : 0.14) * dt / TICKS_PER_DAY;
+      if (U.chance(rate)) Husbandry.tryBreed(animal, null);
+    }
+
+    if (animal.tame) {
+      tickStray(animal, h, dt);
+      tickHunger(animal, h, dt);
+      /* An animal with no pen and a master tags along; one with neither
+         has already been counted as straying above. */
+      if (!h.penId && !animal.master && markers(animal.map).length) Husbandry.assignPen(animal);
+    }
+  }
+
+  function tickHandler(human, t) {
+    var h = hus(human);
+    h.beat = t;
+    if (!h.bonds || !h.bonds.length || human.dead) return;
+    for (var i = 0; i < h.bonds.length; i++) {
+      var animal = livePawn(human.map, h.bonds[i]);
+      if (!animal) continue;
+      thought(human, 'bondedAnimal');
+      break;
+    }
+  }
+
+  Husbandry.tickPawn = function (pawn) {
+    if (!pawn || pawn.dead || !pawn.map) return;
+    var t = now();
+    if (((t + pawn.id) % RARE) !== 0) return;
+    installOnce();
+    if (pawn.isAnimal === true) tickAnimal(pawn, t);
+    else if (pawn.isHuman === true && pawn.faction === 'player') tickHandler(pawn, t);
+  };
+
+  /* A flock of half-wild birds wanders in every few days. It is the only
+     way a colony ever sees a chicken, which is the only way it ever sees
+     an egg, and it arrives as an ordinary wild pack that has to be tamed
+     the ordinary way. */
+  var _flock = { next: 0 };
+
+  function tickFlock(map, t) {
+    if (t < FLOCK_MIN_DAY * TICKS_PER_DAY) return;
+    if (!_flock.next) { _flock.next = t + U.randInt(1, 3) * TICKS_PER_DAY; return; }
+    if (t < _flock.next) return;
+    _flock.next = t + U.randInt(3, 7) * TICKS_PER_DAY;
+    var A = sys('Animals');
+    if (!A || !A.spawnWild || !Defs.has('pawnKind', 'chicken')) return;
+    var already = 0, list = map.pawns;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].kindId === 'chicken' && !list[i].dead) already++;
+    }
+    if (already >= 8) return;
+    var MG = sys('MapGen');
+    var side = U.pick(['n', 'e', 's', 'w']);
+    var cells = (MG && MG.edgeSpawnCells) ? MG.edgeSpawnCells(map, side) : null;
+    var at = (cells && cells.length) ? U.pick(cells) : freeCellNear(map, map.w >> 1, 2, 12);
+    if (!at) return;
+    var born = A.spawnWild(map, 'chicken', at.x, at.y, U.randInt(3, 5));
+    if (!born.length) return;
+    letter('A flock wandered in',
+      born.length + ' chickens have scratched their way onto the map. Tame them and they will ' +
+      'lay eggs for as long as you feed them.', 'good', born[0]);
+  }
+
+  Husbandry.tick = function (map) {
+    installOnce();
+    if (!map) return;
+    var t = now();
+    if (t % 500 === 0) sweepBonds(map);
+    if (t % SLOW !== 0) return;
+    _pens.clear();
+    tickPasture(map);
+    applyPolicy(map);
+    tickFlock(map, t);
+  };
+
+  /* ============================================================
+     WHAT THE UI ASKS FOR
+
+     A herd tab is a table, so this hands back rows rather than text,
+     and the alert list is the same shape ui.js already builds for
+     itself. Neither allocates unless it is called.
+     ============================================================ */
+
+  Husbandry.herd = function (map) {
+    var out = [], list = herdOf(map);
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i], h = beast(a), k = kindOf(a.kindId);
+      var bonded = h.bondId ? livePawn(map, h.bondId) : null;
+      var master = Husbandry.masterOf(a);
+      var marker = Husbandry.penOf(a);
+      out.push({
+        id: a.id,
+        name: nameOf(a),
+        kind: k.label,
+        kindId: a.kindId,
+        gender: a.gender,
+        age: Math.round((a.ageYears || 0) * 10) / 10,
+        stage: Husbandry.lifeStage(a),
+        growth: Math.round(Husbandry.growth(a) * 100) / 100,
+        stock: Math.round(h.stock * 100) / 100,
+        training: Husbandry.trainingSummary(a),
+        trained: {
+          obedience: h.train.obedience, release: h.train.release,
+          rescue: h.train.rescue, haul: h.train.haul
+        },
+        bond: bonded ? nameOf(bonded) : null,
+        master: master ? nameOf(master) : null,
+        pregnant: h.preg ? Math.round(100 * (1 - h.preg.left / Math.max(1, h.preg.total))) : null,
+        produce: Husbandry.produceSummary(a),
+        food: Math.round(foodOf(a) * 100) / 100,
+        pen: marker ? ('pen ' + marker.id) : null,
+        slaughter: a.designated === 'slaughter'
+      });
+    }
+    return out;
+  };
+
+  Husbandry.report = function (animal) {
+    if (!animal || animal.isAnimal !== true) return '';
+    var h = beast(animal);
+    var bits = [kindOf(animal.kindId).label, animal.gender, Husbandry.lifeStage(animal)];
+    if (animal.tame) bits.push(Husbandry.trainingSummary(animal));
+    if (h.preg) bits.push('pregnant');
+    if (h.bondId) {
+      var human = livePawn(animal.map, h.bondId);
+      if (human) bits.push('bonded to ' + nameOf(human));
+    }
+    return bits.join(', ');
+  };
+
+  Husbandry.alerts = function (map) {
+    var out = [];
+    if (!map) return out;
+    var herd = herdOf(map), i;
+
+    var starving = null, hungry = 0;
+    for (i = 0; i < herd.length; i++) {
+      if (foodOf(herd[i]) > STARVING_AT) continue;
+      hungry++;
+      if (!starving) starving = herd[i];
+    }
+    if (starving) {
+      out.push({
+        label: hungry === 1 ? nameOf(starving) + ' is starving'
+          : hungry + ' animals are starving',
+        severity: 'high', lookAt: starving
+      });
+    }
+
+    var list = markers(map);
+    for (i = 0; i < list.length; i++) {
+      var marker = list[i];
+      if (!marker.spawned) continue;
+      var info = Husbandry.penInfo(map, marker);
+      if (!info) continue;
+      if (!info.enclosed) {
+        out.push({ label: 'A pen is not enclosed', severity: 'medium', lookAt: marker });
+        continue;
+      }
+      var p = Husbandry.pasture(map, marker);
+      if (p && p.head && p.pressure > 1.2) {
+        out.push({ label: 'A pen is overgrazed', severity: 'low', lookAt: marker });
+      }
+    }
+
+    if (herd.length) {
+      var fed = 0, all = troughs(map);
+      for (i = 0; i < all.length; i++) if (troughLevel(all[i]) > 0.5) fed++;
+      if (all.length && !fed) {
+        out.push({ label: 'Every trough is empty', severity: 'medium', lookAt: all[0] });
+      }
+    }
+    return out;
+  };
+
+  Husbandry.stats = function () {
+    return {
+      births: _stats.births, produce: _stats.produce, starved: _stats.starved,
+      feral: _stats.feral, slaughtered: _stats.slaughtered
+    };
+  };
+
+  /* ============================================================
+     SAVE
+
+     Almost nothing lives here: training, bonds, pregnancies and stock
+     are fields on pawns, and a pen is a building plus a cell fill that
+     is recomputed from the world. What is left is the player's own
+     settings and the running totals the herd tab shows.
+     ============================================================ */
+
+  Husbandry.save = function () {
+    var policies = {};
+    for (var id in _policy) {
+      var p = _policy[id];
+      policies[id] = {
+        enabled: !!p.enabled, females: p.females | 0,
+        males: p.males | 0, keepYoung: !!p.keepYoung
+      };
+    }
+    return {
+      v: 1,
+      policies: policies,
+      flockNext: _flock.next | 0,
+      stats: Husbandry.stats()
+    };
+  };
+
+  Husbandry.load = function (obj) {
+    _policy = Object.create(null);
+    _flock.next = 0;
+    _stats = { births: 0, produce: 0, starved: 0, feral: 0, slaughtered: 0 };
+    _pens.clear();
+    if (!obj || typeof obj !== 'object') return false;
+    var policies = obj.policies || {};
+    for (var id in policies) {
+      var p = policies[id];
+      if (!p || typeof p !== 'object') continue;
+      Husbandry.setPolicy(id, p);
+    }
+    if (typeof obj.flockNext === 'number') _flock.next = obj.flockNext | 0;
+    var s = obj.stats;
+    if (s && typeof s === 'object') {
+      for (var key in _stats) if (typeof s[key] === 'number') _stats[key] = s[key] | 0;
+    }
+    return true;
+  };
+
+  Husbandry.reset = function () {
+    _policy = Object.create(null);
+    _flock.next = 0;
+    _stats = { births: 0, produce: 0, starved: 0, feral: 0, slaughtered: 0 };
+    _pens.clear();
+    _kind = {};
+  };
+
+  /* ============================================================
+     INSTALL
+
+     Two things cannot be done by registration alone, so they are done
+     once, at the first tick, rather than at load: this file takes over
+     breeding from the stopgap animals.js ships with, and it hangs its
+     own answer off the end of the animal brain. Neither touches another
+     file - one flips a field on a memoised species record, the other
+     wraps a function that is looked up by name at tick time.
+     ============================================================ */
+
+  var IDLE_JOBS = { wander: 1, wait: 1 };
+  var _installed = false;
+
+  function installOnce() {
+    if (_installed) return;
+    _installed = true;
+    var A = root.Animals;
+    if (!A) return;
+
+    /* Prime this file's own view of every species BEFORE the flag is
+       flipped, or a kind would be recorded as one that does not breed. */
+    var kinds = Defs.all('pawnKind') || [];
+    for (var i = 0; i < kinds.length; i++) {
+      if (!kinds[i].isAnimal) continue;
+      kindOf(kinds[i].id);
+      if (!A.info) continue;
+      var info = A.info(kinds[i].id);
+      /* animals.js breeds on a flat per-day roll with no gestation. That
+         was the right stopgap and it is the wrong answer now that young
+         have parents, a growth curve and inherited stock, so it is
+         switched off at its own source rather than raced against. */
+      if (info) info.breeds = false;
+    }
+
+    if (typeof A.think === 'function' && !A.__husbandryThink) {
+      var inner = A.think;
+      A.__husbandryThink = true;
+      A.think = function (pawn) {
+        var job = inner.call(A, pawn);
+        if (job && !IDLE_JOBS[job.defId]) return job;
+        var mine = null;
+        try {
+          mine = Husbandry.animalJob(pawn);
+        } catch (e) {
+          var G = root.Game;
+          if (G && G.debug) console.log('[husbandry] animalJob threw: ' + e);
+        }
+        return mine || job;
+      };
+    }
+  }
+
+  Husbandry.install = installOnce;
+
+  root.Husbandry = Husbandry;
+})(this);

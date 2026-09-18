@@ -1653,9 +1653,9 @@
     if (N && N.removeThought) N.removeThought(pawn, id);
   }
 
-  function exclusive(pawn, keep, remove, other) {
+  function exclusive(pawn, keep, remove, other, opts) {
     drop(pawn, remove);
-    thought(pawn, keep, other);
+    thought(pawn, keep, other, opts);
   }
 
   /* ============================================================
@@ -1859,13 +1859,6 @@
       if (!e) continue;
       if (e.v >= 25 || relationsWith(pawn, id)) thought(pawn, 'socFriendCorpse', { id: id });
     }
-  }
-
-  function findThought(pawn, id) {
-    var list = pawn && pawn.thoughts;
-    if (!list) return null;
-    for (var i = 0; i < list.length; i++) if (list[i].defId === id) return list[i];
-    return null;
   }
 
   function relationsWith(pawn, id) {
@@ -2457,9 +2450,7 @@
       }
     }
     if (friends) {
-      exclusive(pawn, 'socFriendHere', 'socLonely', null);
-      var t = findThought(pawn, 'socFriendHere');
-      if (t) t.degree = friends >= 3 ? 1 : 0;
+      exclusive(pawn, 'socFriendHere', 'socLonely', null, { degree: friends >= 3 ? 1 : 0 });
     } else {
       var colony = map.colonists ? map.colonists().length : 0;
       if (colony >= 3) exclusive(pawn, 'socLonely', 'socFriendHere', null);

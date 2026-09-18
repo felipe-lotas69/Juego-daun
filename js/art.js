@@ -239,13 +239,6 @@
 
   function pdisc(g, cx, cy, r, c) { pellipse(g, cx, cy, r, r, c); }
 
-  function speckle(g, rnd, n, c, x, y, w, h) {
-    g.fillStyle = c;
-    for (var i = 0; i < n; i++) {
-      g.fillRect(x + ((rnd() * w) | 0), y + ((rnd() * h) | 0), 1, 1);
-    }
-  }
-
   function dashedBox(g, w, h, c) {
     g.fillStyle = c;
     var step = Math.max(3, Math.round(w / 5));
@@ -463,12 +456,6 @@
     if (sides & 4) gradRect(g, x, y + h - d, w, d, linGrad(g, 0, y + h - d, 0, y + h, [0, rgba(darkC, 0), 1, rgba(darkC, 1)]));
     if (sides & 2) gradRect(g, x + w - d, y, d, h, linGrad(g, x + w - d, 0, x + w, 0, [0, rgba(darkC, 0), 1, rgba(darkC, 1)]));
     g.globalAlpha = 1;
-  }
-
-  /* A drop shadow under a piece of furniture, offset south-east so it
-     agrees with the light. Drawn before the object it belongs to. */
-  function castShadow(g, cx, cy, rx, ry, alpha) {
-    blobEll(g, cx, cy, rx, ry, '#000000', alpha === undefined ? 0.3 : alpha, 0.35);
   }
 
   /* A specular sweep across a flat panel: the diagonal band of sky a
@@ -4218,7 +4205,7 @@
      fall out, which costs a repaint if that pawn comes back and keeps
      the cache flat for a colony that runs for a hundred days. */
   var humanKeys = [];
-  var HUMAN_CACHE_MAX = 640;
+  var HUMAN_CACHE_MAX = 1024;
 
   function noteHuman(key) {
     humanKeys.push(key);
@@ -4262,8 +4249,12 @@
 
     var s = humanStyle(pawn);
     /* A lying pawn has no facing and no gait, so those drop out of the
-       key: one sprite covers all sixteen combinations. */
-    var hdir = lying ? 0 : dir, hframe = lying ? 0 : frame;
+       key: one sprite covers all sixteen combinations. A pawn with its
+       arms full keeps a two-beat walk rather than a four-beat one,
+       which halves that pose's share of the cache and reads the same,
+       because the arms it would swing are busy. */
+    var hdir = lying ? 0 : dir;
+    var hframe = lying ? 0 : (pose === 'carry' ? (frame & 1) * 2 : frame);
     var hkey = 'hu|' + s.skin + s.hair + s.style + s.build + '|' + s.top + '|' +
       (s.over || '-') + '|' + (s.vest || '-') + '|' + s.leg + '|' + (s.head || '-') +
       '|' + hdir + hframe + pose + (pawn.drafted && !lying ? 'D' : '');
