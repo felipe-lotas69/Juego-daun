@@ -1148,11 +1148,19 @@
   function addOverdose(pawn, st, drug) {
     var gain = drug.od || 0;
     if (!(gain > 0)) return;
-    /* Coming down hard on top of an existing high is what kills. */
+    /* Coming down hard on top of an existing high is what kills - and
+       only that. Counting every live record here charged the stacking
+       penalty for a hangover, for a chemical crash, and worst of all
+       for the five-day penoxycyline and the painkiller, so a colonist
+       on a prophylactic was a third closer to a fatal dose of beer for
+       a week because of a pill that does nothing you can feel. */
     var stacked = 1;
     for (var k in st.hi) {
       var h = st.hi[k];
-      if (h && !h.pending && h.end > now()) stacked += 0.35;
+      if (!h || h.pending || h.end <= now()) continue;
+      var hd = h.drug && DRUGS[h.drug];
+      if (!hd || hd.medical) continue;
+      stacked += 0.35;
     }
     st.od = U.clamp01(st.od + gain * stacked);
 
@@ -1419,11 +1427,16 @@
   };
 
   /* The strongest boost wins rather than stacking, so a colonist on
-     go-juice and yayo is not twice as fast as physics allows. */
+     go-juice and yayo is not twice as fast as physics allows. A drag
+     is tracked separately and multiplied in afterwards: boosts and
+     drags are different drugs saying different things, and folding
+     them into one running best made whichever the key order visited
+     last erase the other - inject go-juice after a joint and the
+     joint's work penalty simply vanished. */
   function bestFactor(pawn, key) {
     var st = pawn && pawn.drugs;
     if (!st || !st.hi) return 1;
-    var best = 1, t = now();
+    var up = 1, down = 1, t = now();
     for (var id in st.hi) {
       var rec = st.hi[id];
       if (!rec || rec.pending || t >= rec.end || t < rec.start) continue;
@@ -1433,9 +1446,10 @@
       if (sev <= 0.01) continue;
       /* Scale the stated factor by how far into the curve the pawn is. */
       var v = 1 + (drug[key] - 1) * sev;
-      if (drug[key] > 1 ? v > best : v < best) best = v;
+      if (v > up) up = v;
+      else if (v < down) down = v;
     }
-    return best;
+    return up * down;
   }
 
   Drugs.moveFactor = function (pawn) {
@@ -1503,6 +1517,19 @@
   Drugs.preventsDisease = function (pawn) {
     return !!(Health && Health.hasHediff && Health.hasHediff(pawn, 'penoxycylineProtection'));
   };
+
+  function shrugOffDisease(pawn) {
+    var h = pawn && pawn.health;
+    if (!h || !h.hediffs || !Health || !Health.removeHediff) return 0;
+    var cleared = 0;
+    for (var i = h.hediffs.length - 1; i >= 0; i--) {
+      var hd = h.hediffs[i];
+      if (!hd.def || !hd.def.isDisease || hd.severity >= 0.5) continue;
+      Health.removeHediff(pawn, hd.id);
+      cleared++;
+    }
+    return cleared;
+  }
 
   /* A colonist on wake-up simply does not get tired for a while. Rest
      is needs.js's number, so this nudges it back up rather than trying
@@ -2002,14 +2029,14 @@
     st._drunk = Drugs.wanderChance(pawn);
 
     /* Penoxycyline is a promise the colony paid for: while it holds,
-       nothing infectious takes. */
-    if (Drugs.preventsDisease(pawn) && Health && Health.hasHediff) {
-      var diseases = ['flu', 'infection'];
-      for (var i = 0; i < diseases.length; i++) {
-        var hd = Health.hediff(pawn, diseases[i]);
-        if (hd && hd.severity < 0.5) Health.removeHediff(pawn, diseases[i]);
-      }
-    }
+       nothing infectious takes. Read off the hediff's own isDisease
+       flag rather than a list of ids - health.js owns flu and
+       infection, medicine.js owns plague, malaria, sleeping sickness,
+       gut worms and muscle parasites, and a hard-coded pair silently
+       let the five that matter most straight through. Only an early
+       case is thrown off; a disease already past halfway has taken
+       hold and wants a doctor, not a prophylactic. */
+    if (Drugs.preventsDisease(pawn)) shrugOffDisease(pawn);
 
     /* Nothing left to remember: drop the state so a colonist who dried
        out twenty days ago stops costing a rare tick and a save line. */

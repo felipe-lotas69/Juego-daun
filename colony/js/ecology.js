@@ -84,6 +84,7 @@
   var SOIL_DRAIN_PER_DAY = 0.022;   /* a crop standing on a cell, before its own factor */
   var SOIL_REST_PER_DAY = 0.020;    /* bare, rested ground coming back           */
   var MONOCULTURE_STEP = 0.35;      /* extra drain per repeat of the same crop   */
+  var ROTATION_RELIEF = 0.35;       /* what a different crop costs, against the same one */
   var SOIL_DRAG = 0.33;             /* growth per day lost on wholly dead soil   */
   var SOIL_EXHAUSTED = 0.55;        /* below this the player should be told      */
 
@@ -547,9 +548,12 @@
   /* How much crop drain each sowable plant does, relative to rice. A
      field of haygrass is close to a rest, which is the whole reason a
      rotation is worth planning. */
+  /* A negative number is a crop that puts something back: haygrass is
+     the rest crop, which is why a four-field rotation through it is very
+     nearly sustainable and a field of rice is not. */
   var CROP_DRAIN = {
     plantRice: 1.0, plantCorn: 1.3, plantCotton: 1.15,
-    plantPotato: 0.7, plantHealroot: 0.5, plantHaygrass: 0.25
+    plantPotato: 0.7, plantHealroot: 0.5, plantHaygrass: -0.4
   };
 
   /* ============================================================
@@ -575,6 +579,7 @@
       seasonSeen: '',
       apexDay: -99,
       swarmDay: -99,
+      predatorRaidDay: -99,
       log: [],
       _starveTold: {},
       _goneTold: {},
@@ -1002,8 +1007,12 @@
     }
     if (!candidates.length) return;
 
-    var chance = 0.16 * days * U.clamp(pressure - 1.5, 0, 3);
+    var G = game();
+    var day = G && G.day ? G.day() : 0;
+    if (day - (state.predatorRaidDay || -99) < 2) return;
+    var chance = 0.45 * days * U.clamp(pressure - 1.5, 0, 3);
     if (!U.chance(chance)) return;
+    state.predatorRaidDay = day;
     var beast = U.pick(candidates);
     A.makeManhunter(beast, { ticks: U.randInt(14000, 30000) });
     letter('Starving predator',
@@ -1357,9 +1366,14 @@
      ground comes back on its own if you leave it alone.
      ============================================================ */
 
+  /* [fertility, last crop id, repeat streak, days since a crop stood here,
+     1 while one is standing]. The fifth slot is what lets a harvest be
+     noticed without anybody reporting it: a crop that was here last pass
+     and is gone this one came off the field. */
   function soilRec(idx) {
     var r = state.soil[idx];
-    if (!r) { r = state.soil[idx] = [1, '', 0, 0]; }
+    if (!r) { r = state.soil[idx] = [1, '', 0, 0, 0]; }
+    if (r.length < 5) r[4] = 0;
     return r;
   }
 
@@ -1398,22 +1412,30 @@
                       plant.def.plant.sowable) ? plant.defId : '';
 
         if (cropId) {
+          var rotated = false;
           if (cropId !== r[1]) {
             /* Rotation. A new crop resets the streak, and the ground
                notices immediately. */
             r[1] = cropId;
             r[2] = 0;
+            rotated = true;
           }
           r[3] = 0;
+          r[4] = 1;
           var drain = (CROP_DRAIN[cropId] === undefined ? 1 : CROP_DRAIN[cropId]);
           drain *= (1 + MONOCULTURE_STEP * Math.min(r[2], 4));
-          r[0] = Math.max(SOIL_MIN, r[0] - SOIL_DRAIN_PER_DAY * drain * days);
+          /* A crop that follows a different one takes far less out than
+             the same one over and over. This is the whole of rotation and
+             it is the cheapest real idea in the genre. */
+          if (rotated || r[2] === 0) drain *= ROTATION_RELIEF;
+          r[0] = U.clamp(r[0] - SOIL_DRAIN_PER_DAY * drain * days, SOIL_MIN, SOIL_MAX);
           /* Growth actually slows on tired ground. Without this the
              number would be a readout rather than a mechanic. */
           if (r[0] < 1 && plant.growth > 0) {
             plant.growth = Math.max(0, plant.growth - SOIL_DRAG * (1 - r[0]) * days);
           }
         } else {
+          if (r[4]) { r[4] = 0; bumpStreak(r, r[1]); }
           r[3] += days;
           if (r[2] > 0 && r[3] > 1.5) r[2] = Math.max(0, r[2] - 1);
           var rest = SOIL_REST_PER_DAY * days * (r[3] > 3 ? 1.6 : 1);
@@ -1449,17 +1471,23 @@
     }
   }
 
-  /* When a crop comes off a cell, the streak for that crop goes up. The
-     honest place to learn this is from whoever harvested it, and the
-     census below is the fallback for everything that never tells us. */
+  function bumpStreak(r, defId) {
+    if (!defId || CROP_DRAIN[defId] === undefined) return;
+    if (defId === r[1]) r[2] = Math.min(6, r[2] + 1);
+    else { r[1] = defId; r[2] = 0; }
+  }
+
+  /* When a crop comes off a cell, the streak for that crop goes up.
+     plants.js does not report a harvest and nothing obliges it to, so
+     tickSoil notices the crop disappearing by itself; this entry point
+     exists for callers that would rather say so outright, and calling it
+     twice for one harvest is harmless because the standing-crop flag has
+     already been cleared by then. */
   Ecology.noteHarvest = function (map, x, y, defId, count) {
     map = mapOf(map);
     if (!map || !map.inBounds(x, y)) return;
     var r = soilRec(map.idx(x, y));
-    if (defId && CROP_DRAIN[defId] !== undefined) {
-      if (defId === r[1]) r[2] = Math.min(6, r[2] + 1);
-      else { r[1] = defId; r[2] = 0; }
-    }
+    if (r[4]) { r[4] = 0; bumpStreak(r, defId || r[1]); }
     r[3] = 0;
     state.harvested = (state.harvested || 0) + (count || 0);
   };
@@ -1947,7 +1975,7 @@
     var soil = [];
     for (var key in state.soil) {
       var r = state.soil[key];
-      soil.push([key | 0, Math.round(r[0] * 1000) / 1000, r[1], r[2], Math.round(r[3] * 100) / 100]);
+      soil.push([key | 0, Math.round(r[0] * 1000) / 1000, r[1], r[2], Math.round(r[3] * 100) / 100, r[4] || 0]);
     }
     return {
       v: 1,
@@ -1960,6 +1988,7 @@
       fish: { stock: state.fish.stock, cap: state.fish.cap, caught: state.fish.caught, seeded: state.fish.seeded },
       seasonSeen: state.seasonSeen,
       apexDay: state.apexDay, swarmDay: state.swarmDay,
+      predatorRaidDay: state.predatorRaidDay,
       policy: state.policy,
       log: state.log.slice(-20)
     };
@@ -1982,7 +2011,8 @@
           U.clamp(+row[1] || 1, SOIL_MIN, SOIL_MAX),
           typeof row[2] === 'string' ? row[2] : '',
           row[3] | 0,
-          +row[4] || 0
+          +row[4] || 0,
+          row[5] ? 1 : 0
         ];
       }
     }
@@ -1995,6 +2025,7 @@
     state.seasonSeen = obj.seasonSeen || '';
     state.apexDay = obj.apexDay === undefined ? -99 : obj.apexDay;
     state.swarmDay = obj.swarmDay === undefined ? -99 : obj.swarmDay;
+    state.predatorRaidDay = obj.predatorRaidDay === undefined ? -99 : obj.predatorRaidDay;
     if (obj.policy) Ecology.setPolicy(obj.policy);
     if (Array.isArray(obj.log)) state.log = obj.log.slice(-40);
     _loaded = true;

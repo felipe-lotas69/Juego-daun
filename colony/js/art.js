@@ -2997,13 +2997,16 @@
     var spread = tall ? 22 : 18;
     var h = (tall ? 26 : 17) * (0.5 + stage * 0.25);
     blobEll(g, cx + 2, base + 2, spread, 6, DARK, 0.08, 0.2);
-    /* The mass. Wide and soft enough that the tufts on neighbouring
-       cells run into one another, which is the whole point: wild grass
-       covers nearly every cell mapgen touches, so a field of it has to
-       read as a green wash over the earth and not as a thousand
-       separate dots laid out on the tile grid. */
-    blobEll(g, cx, base - h * 0.3, spread * 1.5, h * 0.66,
-      mix(c1, c2, 0.4), 0.4, 0.02);
+    /* The mass, and the whole reason a field of grass no longer reads as
+       static. Wild grass covers over half of every map mapgen makes, so
+       it has to arrive as a wash of colour over the earth rather than as
+       a thousand separate dots on the tile grid. It is centred on the
+       tile and stops just short of every edge - the blades are what move
+       off centre - so it fades to nothing before the canvas ends. A
+       wash cut off at the canvas edge would be the one straight line in
+       a whole field of grass. */
+    blobEll(g, PX / 2, base - h * 0.22, PX / 2 - 2, h * 0.95,
+      mix(c1, c2, 0.4), 0.44, 0.05);
     var tones = [c1, c2, shade(c1, -0.08), mix(c1, P.foliageLight, 0.14)];
     var n = tall ? 6 : 5;
     for (var i = 0; i < n; i++) {

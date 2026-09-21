@@ -1864,22 +1864,32 @@
   };
 
   /* 0 when no desk is manned, 1 for one watcher, up to 1.3 for two. */
+  var _deskTick = -1, _deskValue = 0;
+
   Prison.deskManned = function (map) {
+    var t = now();
+    if (_deskTick === t) return _deskValue;
+    _deskTick = t;
+    _deskValue = 0;
     var desks = Prison.facilities(map).desks;
     if (!desks.length) return 0;
-    var P = sys('Power'), watchers = 0;
-    for (var i = 0; i < desks.length; i++) {
+    var P = sys('Power'), watchers = 0, i, k;
+    for (i = 0; i < desks.length; i++) {
       var d = desks[i];
       if (P && P.isPowered && !P.isPowered(d)) continue;
-      var here = map.pawnsAt(d.x, d.y + 1).concat(map.pawnsAt(d.x, d.y));
-      for (var k = 0; k < here.length; k++) {
-        var p = here[k];
-        if (p.dead || p.prisoner || p.faction !== 'player' || !p.isHuman) continue;
-        if (p.job && p.job.defId === 'prisonWatchDesk') { watchers++; break; }
+      for (var pass = 0; pass < 2; pass++) {
+        var here = map.pawnsAt(d.x, d.y + pass);
+        var found = false;
+        for (k = 0; k < here.length; k++) {
+          var p = here[k];
+          if (p.dead || p.prisoner || p.faction !== 'player' || !p.isHuman) continue;
+          if (p.job && p.job.defId === 'prisonWatchDesk') { watchers++; found = true; break; }
+        }
+        if (found) break;
       }
     }
-    if (!watchers) return 0;
-    return watchers === 1 ? 1 : 1.3;
+    _deskValue = watchers ? (watchers === 1 ? 1 : 1.3) : 0;
+    return _deskValue;
   };
 
   /* Average coverage over a cell's floor, which is the number the
