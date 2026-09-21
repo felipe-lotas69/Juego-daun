@@ -295,8 +295,11 @@
 
   function burning(pawn) {
     var F = sys('Fire');
-    if (F && F.isBurning && F.isBurning(pawn)) return true;
-    return pawn.burning === true;
+    if (F && F.isBurning) return F.isBurning(pawn);
+    /* fire.js keeps a severity record on the pawn rather than a flag, so
+       read it the same way when that file is not loaded. */
+    var b = pawn.burning;
+    return b === true || !!(b && b.sev > 0);
   }
 
   function fireAt(map, x, y) {
@@ -433,6 +436,11 @@
     for (var i = 0; i < list.length; i++) {
       var q = list[i];
       if (q === pawn) continue;
+      /* The list is built once a tick and shared by every caller, and
+         somebody on it may have been shot since it was built. A corpse
+         is not a threat, and one left in the list drags the threat
+         point towards a cell nothing is firing from. */
+      if (q.dead || q.downed) continue;
       if (U.dist(pawn.x, pawn.y, q.x, q.y) > radius) continue;
       if (!hostile(pawn, q)) continue;
       out.push(q);
@@ -790,16 +798,21 @@
     radius = U.clamp(radius, 1, 8);
 
     var cells = U.cellsInRadius(pawn.x, pawn.y, radius);
-    var limit = opts.maxCells || 150;
+    /* A ceiling on cells LOOKED AT, not on cells that survived scoring:
+       counting only the survivors means a pawn hemmed in by fire or by
+       other pawns' claims walks the whole ring anyway, which is exactly
+       the case the budget exists for. The default clears radius 8 (197
+       cells), so it is a safety valve rather than a silent truncation. */
+    var limit = opts.maxCells || 220;
     var best = null, current = null, looked = 0;
 
     /* cellsInRadius comes back nearest-first, so the cell underfoot is
        scored before anything else and its score becomes the floor every
        other candidate has to clear. */
     for (var i = 0; i < cells.length && looked < limit; i++) {
+      looked++;
       var rec = scoreCell(ctx, cells[i][0], cells[i][1]);
       if (!rec) continue;
-      looked++;
       if (rec.travel === 0) current = rec;
       if (!best || rec.score > best.score) { best = rec; ctx.floor = rec.score; }
     }
@@ -1444,10 +1457,15 @@
     var st = pawn.tactics;
     if (st && tick < st.nextThink) return null;
 
-    /* Standing in a fire outranks every order there is, drafted or not. */
+    /* Standing in a fire outranks every order there is, drafted or not.
+       Gated the same way every other withdrawal is: the walk out takes
+       longer than a think does, and a pawn asked to leave twice drops
+       the path it was already following and starts again. */
     if (burning(pawn) || fireAt(map, pawn.x, pawn.y)) {
-      var out = retreatJob(pawn, 'fire');
-      if (out) return out;
+      if (!st || tick - st.lastRetreatTick >= RETREAT_GAP) {
+        var out = retreatJob(pawn, 'fire');
+        if (out) return out;
+      }
     }
 
     var order = st ? Tactics.orderOf(pawn) : null;
@@ -1712,12 +1730,25 @@
      ------------------------------------------------------------------ */
 
   var _mapTick = -1;
+  var CLAIM_SWEEP = 600;
+
+  /* A claim expires on its own, but only a pawn who asks about that exact
+     cell ever notices it has. A pawn who dies holding one - which in a
+     raid is most of them - leaves the entry behind, so the table is swept
+     on its own beat rather than growing for the life of the colony. */
+  function sweepClaims(map, tick) {
+    var tbl = map.__tacticsClaims;
+    if (!tbl || !tbl.size) return;
+    tbl.forEach(function (e, key) { if (e.until < tick) tbl.delete(key); });
+  }
 
   Tactics.tick = function (map, game) {
     var tick = game && typeof game.tick === 'number' ? game.tick : gameTick();
     if (tick === _mapTick || !map) return;
     _mapTick = tick;
+    Tactics.installThinkLevel();
     scanProjectiles(map);
+    if ((tick % CLAIM_SWEEP) === 0) sweepClaims(map, tick);
   };
 
   Tactics.tickPawn = function (pawn) {

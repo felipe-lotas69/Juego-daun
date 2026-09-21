@@ -114,6 +114,22 @@
     return out;
   }
 
+  /* A multi-cell building dropped on top of another one would write its
+     id over cells the first still thinks it owns, so a code-spawned
+     structure checks the whole footprint first. */
+  function areaClear(map, x, y, w, h) {
+    for (var dy = 0; dy < h; dy++) {
+      for (var dx = 0; dx < w; dx++) {
+        var cx = x + dx, cy = y + dy;
+        if (!map.inBounds(cx, cy)) return false;
+        if (!map.passable(cx, cy)) return false;
+        if (map.buildingAt(cx, cy)) return false;
+        if (map.plantAt(cx, cy)) return false;
+      }
+    }
+    return true;
+  }
+
   function colonyCentre(map) {
     var list = map.colonists ? map.colonists() : [];
     if (!list.length) return { x: map.w >> 1, y: map.h >> 1 };
@@ -134,17 +150,6 @@
       if (d < bestD) { bestD = d; best = p; }
     }
     return best ? { x: best.x, y: best.y } : colonyCentre(map);
-  }
-
-  function atMapEdge(map, x, y) {
-    return x <= 1 || y <= 1 || x >= map.w - 2 || y >= map.h - 2;
-  }
-
-  function nearestEdgeCell(map, pawn) {
-    var dx = Math.min(pawn.x, map.w - 1 - pawn.x);
-    var dy = Math.min(pawn.y, map.h - 1 - pawn.y);
-    if (dx < dy) return { x: pawn.x < map.w / 2 ? 1 : map.w - 2, y: pawn.y };
-    return { x: pawn.x, y: pawn.y < map.h / 2 ? 1 : map.h - 2 };
   }
 
   /* Re-issuing a walk every slow tick resets the path and the pawn
@@ -191,11 +196,6 @@
         C.lineOfSight(pawn.map, pawn.x, pawn.y, target.x, target.y);
     }
     return Jobs.start(pawn, Jobs.make(ranged ? 'attackStatic' : 'attackMelee', tgt));
-  }
-
-  function pawnById(map, id) {
-    for (var i = 0; i < map.pawns.length; i++) if (map.pawns[i].id === id) return map.pawns[i];
-    return null;
   }
 
   /* ============================================================
@@ -1573,8 +1573,7 @@
 
   function plantHiveNode(map, near) {
     var spot = freeCellNear(map, near.x + U.randInt(-8, 8), near.y + U.randInt(-8, 8), 14);
-    if (!spot) return null;
-    if (map.buildingAt(spot.x, spot.y)) return null;
+    if (!spot || !areaClear(map, spot.x, spot.y, 1, 1)) return null;
     var node = map.spawnThing('hiveNode', spot.x, spot.y, { faction: 'xenoHive' });
     if (!node) return null;
     node.hiveNextSpawn = now() + Math.round(1.2 * TICKS_PER_DAY);
@@ -1966,8 +1965,12 @@
 
     var spires = [];
     for (var i = 0; i < 2; i++) {
-      var spot = freeCellNear(map, anchor.x + U.randInt(-10, 10), anchor.y + U.randInt(-6, 6), 16);
-      if (!spot || map.buildingAt(spot.x, spot.y)) continue;
+      var spot = null;
+      for (var attempt = 0; attempt < 12 && !spot; attempt++) {
+        var cand = freeCellNear(map, anchor.x + U.randInt(-10, 10), anchor.y + U.randInt(-6, 6), 16);
+        if (cand && areaClear(map, cand.x, cand.y, 2, 2)) spot = cand;
+      }
+      if (!spot) continue;
       var spire = map.spawnThing('machineSpire', spot.x, spot.y, { faction: 'xenoMachine' });
       if (spire) { spire.spireNextWave = now() + SPIRE_WAVE_GAP; spires.push(spire.id); }
     }

@@ -190,7 +190,11 @@
      exactly what it looked like on water. So when a channel will not
      fit, both halves are pulled in together until they do. The pair
      stays balanced and the mark gets quieter, which on a board-game
-     palette is the right way to lose the argument. */
+     palette is the right way to lose the argument.
+
+     One array, reused: this is called a few hundred times while the
+     sprites are built and there is no reason to leave that much litter
+     behind. Read both entries out before calling it again. */
   var pairOut = ['#000000', '#000000'];
 
   function tonePair(base, c) {
@@ -667,11 +671,14 @@
        so the light patch covers exactly as much ground as the dark one.
        That is what makes the cancellation exact rather than approximate:
        with independent radii the leftover was a luma unit, and a luma
-       unit stepped across a ruled tile edge is still a line. */
+       unit stepped across a ruled tile edge is still a line. An odd
+       count is rounded up rather than left with a patch that has no
+       partner, which would put the imbalance straight back. */
+    patches += patches & 1;
     for (var i = 0; i < patches; i += 2) {
       var r = rr(rnd, 18, PX / 2), a = rr(rnd, 0.1, 0.18);
       wrapPatch(g, rnd() * PX, rnd() * PX, r, lit, a);
-      if (i + 1 < patches) wrapPatch(g, rnd() * PX, rnd() * PX, r, dim, a);
+      wrapPatch(g, rnd() * PX, rnd() * PX, r, dim, a);
     }
   }
 
@@ -733,13 +740,11 @@
   function paintSoil(g, rnd, c1, c2, rich, variant) {
     var base = c1;
     groundBase(g, rnd, base, mix(c2, base, 0.55), 3);
-    /* Clods: a soft dark underside and a lit crown, which is the whole
-       trick for reading broken earth from directly above. Six of them,
-       each three times the size the old ones were, shaded within six per
-       cent of the field. */
-    /* In pairs, one face turned to the light and one away, sharing a
-       radius, for the same reason the tone patches are paired: six clods
-       that happened to fall bright would lift the whole tile. */
+    /* Six clods, each three times the size the old ones were and shaded
+       within three per cent of the field, in pairs that share a radius
+       with one face turned to the light and one away - for the same
+       reason the tone patches are paired: six clods that all happened to
+       fall bright would lift the whole tile above its neighbour. */
     var n = rich ? 8 : 6;
     for (var i = 0; i < n; i += 2) {
       var r = rr(rnd, 4.5, 8.5);
@@ -760,9 +765,9 @@
        pale stone on dark earth is enough to lift a whole tile of rich
        soil a shade above its neighbour. */
     var stones = tonePair(base, mix('#8b8278', base, 0.62));
-    for (var s = 0; s < 2; s++) {
-      wrapPebble(g, rnd, rnd() * PX, rnd() * PX, rr(rnd, 2.6, 4.2), stones[s]);
-    }
+    var pale = stones[0], dark = stones[1];
+    wrapPebble(g, rnd, rnd() * PX, rnd() * PX, rr(rnd, 2.6, 4.2), pale);
+    wrapPebble(g, rnd, rnd() * PX, rnd() * PX, rr(rnd, 2.6, 4.2), dark);
     tileGrain(g, rnd, 0.09);
   }
 
@@ -864,10 +869,18 @@
     var base = c1;
     flatBase(g, base);
     /* Depth banding: four broad soft patches so the surface has somewhere
-       to shelve. Wrapped and paired light against dark, so a lake is one
-       body of water rather than a tray of blue tiles - clipped at the
-       edge, these were the worst quilt on the map, a fifty per cent
-       stronger step across a tile line than inside one.
+       to shelve, wrapped and paired light against dark, so a lake is one
+       body of water rather than a tray of blue tiles. Clipped at the
+       canvas edge, these were the worst quilt on the map - half again as
+       strong a step across a tile line as inside one.
+
+       They are also kept faint, which is a separate point and cost a
+       round of screenshots to learn: a patch is as wide as half a tile,
+       and that is the one size a mark must not be loud at. Repeat a
+       strong mark about a tile across on every tile and the eye finds
+       the lattice even when the tiles join seamlessly - a lake that read
+       as woven cloth. Water is the flattest thing on the map and is
+       allowed to look it.
 
        A full-tile gradient used to stand in for sun dappling a sandy
        bottom, pointing a different way in each variant. That is a tile
@@ -876,12 +889,6 @@
        now made of the same wrapped patches, warmed toward sand. */
     var band = tonePair(base, shade(deep ? c2 : mix(c2, P.sand, 0.3), 0.06));
     var shallower = band[0], deeper = band[1];
-    /* Kept faint on purpose. A patch is as wide as half a tile, which is
-       the one size a mark must not be loud at: repeat a strong mark of
-       about a tile across on every tile and the eye reads the lattice
-       even when the tiles join seamlessly, which is how a lake came to
-       look like woven cloth. Water is the flattest surface on the map
-       and is allowed to look it. */
     for (var i = 0; i < 4; i += 2) {
       var pr = rr(rnd, 22, PX / 2), pa = rr(rnd, 0.07, 0.13);
       wrapPatch(g, rnd() * PX, rnd() * PX, pr, deeper, pa);
