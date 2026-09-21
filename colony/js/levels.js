@@ -64,7 +64,7 @@
   var BASEMENT_DRIFT = -0.9;     /* per further level down                     */
 
   var FACE_PERIOD = 20;          /* how often mined-out faces are noticed      */
-  var FACE_SLICE = 32;           /* face cells examined per sweep              */
+  var FACE_FULL = 60;            /* every face is looked at inside this span   */
   var CONNECTION_PERIOD = 60;    /* how often stair pairs are reconciled       */
   var COLLAPSE_PER_TICK = 6;     /* bounded, so a cave-in never eats a frame   */
   var COLLAPSE_CAP = 3000;
@@ -154,7 +154,10 @@
           'above and puts a matching flight down on the far side.',
         sprite: 'box', color: '#8a6134', color2: '#c9a86a',
         hp: 220, mass: 60, flammable: true,
-        pathCost: 16, fillPercent: 0.4,
+        /* A flight of steps is structure: it holds up the cell it opens
+           into, or a stairway built up from the surface would find
+           itself unsupported and bring its own head down. */
+        pathCost: 16, fillPercent: 0.4, holdsRoof: true,
         buildCost: { wood: 35 }, workToBuild: 1100,
         leavings: { wood: 15 },
         building: bld({})
@@ -166,7 +169,10 @@
           'the level below and puts a matching flight up on the far side.',
         sprite: 'box', color: '#8a6134', color2: '#5a4526',
         hp: 220, mass: 60, flammable: true,
-        pathCost: 16, fillPercent: 0.4,
+        /* A flight of steps is structure: it holds up the cell it opens
+           into, or a stairway built up from the surface would find
+           itself unsupported and bring its own head down. */
+        pathCost: 16, fillPercent: 0.4, holdsRoof: true,
         buildCost: { wood: 35 }, workToBuild: 1100,
         leavings: { wood: 15 },
         building: bld({})
@@ -180,7 +186,7 @@
           'carrying steel up it.',
         sprite: 'box', color: '#6f5533', color2: '#8a6134',
         hp: 90, mass: 18, flammable: true,
-        pathCost: 52, fillPercent: 0.2,
+        pathCost: 52, fillPercent: 0.2, holdsRoof: true,
         buildCost: { wood: 15 }, workToBuild: 420,
         leavings: { wood: 6 },
         building: bld({})
@@ -194,7 +200,7 @@
           'seconds, and stops dead when the lower platform loses power.',
         sprite: 'box', color: '#8f97a3', color2: '#ffc23c',
         hp: 260, mass: 140, flammable: false,
-        pathCost: 4, fillPercent: 0.5,
+        pathCost: 4, fillPercent: 0.5, holdsRoof: true,
         buildCost: { steel: 70, components: 4 }, workToBuild: 2000,
         leavings: { steel: 35 },
         researchPrerequisite: 'electricity',
@@ -388,6 +394,13 @@
 
     if (!(opts && opts.blank)) {
       if (z < 0) generateBasement(level); else generateUpper(level);
+    } else {
+      /* A blank level still has to be the RIGHT kind of nothing: a fresh
+         GameMap is soil everywhere, and soil on an upper floor would read
+         as eight thousand cells of unsupported structure. */
+      map.terrain.fill(tIdx(z < 0 ? 'bedrock' : 'openSky'));
+      if (z < 0) map.roof.fill(2);
+      for (var c = 0; c < map.size; c++) map.pathCost[c] = map._computeCost(c);
     }
     level.generated = true;
 
@@ -781,7 +794,7 @@
     var riders = here.length ? here.slice() : [];
     for (var p = 0; p < riders.length; p++) {
       var pawn = riders[p];
-      if (below) Levels.transfer(pawn, z - 1, { force: true });
+      if (below) Levels.transfer(pawn, z - 1, { force: true, landingRadius: 12 });
       if (Health && Health.damage) {
         Health.damage(pawn, {
           amount: U.randInt(COLLAPSE_DAMAGE[0], COLLAPSE_DAMAGE[1]),
@@ -814,6 +827,7 @@
     map.terrain[i] = tIdx('openSky');
     map.markPathDirtyIdx(i);
     U.remove(lv.supportList, i);
+    rescueStranded(lv);
 
     /* Neighbours that were leaning on this cell's support may now be
        unsupported themselves. Queued, so the sweep stays bounded. */
@@ -825,6 +839,33 @@
     }
     _graph = null;
     return true;
+  }
+
+  /* A pawn left standing on a cell that has just stopped being a cell.
+     Nothing else in the game produces one, because nothing else deletes
+     the ground - but a pawn on an impassable tile cannot path anywhere,
+     so it would stand still for the rest of the game rather than crash,
+     which is the worst kind of bug to find. Nudge it to the nearest
+     floor, and failing that, drop it to the level below. */
+  function rescueStranded(level) {
+    var map = level.map;
+    for (var i = 0; i < map.pawns.length; i++) {
+      var pawn = map.pawns[i];
+      if (pawn.dead || map.passable(pawn.x, pawn.y)) continue;
+      var spot = landingCell(map, pawn.x, pawn.y, 8);
+      if (spot) {
+        var wasX = pawn.x, wasY = pawn.y;
+        pawn.stopPath();
+        pawn.x = spot.x; pawn.y = spot.y;
+        pawn.fx = spot.x; pawn.fy = spot.y;
+        map.notePawnMoved(pawn, wasX, wasY);
+        continue;
+      }
+      if (Levels.get(level.z - 1)) {
+        Levels.transfer(pawn, level.z - 1, { force: true, landingRadius: 16 });
+        i--;                                  /* the list just shrank under us */
+      }
+    }
   }
 
   function announceCollapse(z, x, y, n) {
@@ -873,8 +914,14 @@
     var list = level.faces;
     if (!list.length) return;
     var map = level.map;
-    var n = Math.min(FACE_SLICE, list.length);
+    /* The slice is a fraction of the list, not a fixed count, so the
+       whole face is examined inside FACE_FULL ticks however far the
+       colony has dug. A miner takes 800 work on one rock; a second of
+       latency before the next face appears is invisible, and thirty
+       seconds - which a fixed slice would give a big basement - is not. */
+    var n = Math.min(list.length, Math.max(8, Math.ceil(list.length / (FACE_FULL / FACE_PERIOD))));
     for (var k = 0; k < n; k++) {
+      if (!list.length) break;
       if (level.faceCursor >= list.length) level.faceCursor = 0;
       var i = list[level.faceCursor];
       if (map.buildingId[i]) { level.faceCursor++; continue; }
@@ -1603,32 +1650,119 @@
     });
   }
 
-  /* Loose things on this pawn's level that no stockpile HERE will take
-     but a stockpile on another level will. Anything with local storage
-     is haulGeneral's business and is skipped, so the two givers never
+  /* Which defs a stockpile on some OTHER level would accept. Asking
+     this first is what keeps the scan honest: walking every loose item
+     on the map and stopping at a budget would starve whichever def
+     happens to sort late, and the steel a colony actually wants
+     downstairs would never be looked at. */
+  var _accept = { tick: -1, byZ: null };
+
+  function acceptedElsewhere(fromZ) {
+    var t = now();
+    if (_accept.tick !== t) { _accept.tick = t; _accept.byZ = Object.create(null); }
+    var hit = _accept.byZ[fromZ];
+    if (hit !== undefined) return hit;
+
+    var Zones = sys('Zones');
+    var set = null;
+    if (Zones && Zones.stockpiles && Zones.accepts) {
+      var defs = Defs.items();
+      for (var l = 0; l < _list.length; l++) {
+        if (_list[l].z === fromZ) continue;
+        var piles = Zones.stockpiles(_list[l].map);
+        if (!piles.length) continue;
+        for (var d = 0; d < defs.length; d++) {
+          if (set && set[defs[d].id]) continue;
+          if (!Zones.storable(defs[d])) continue;
+          for (var p = 0; p < piles.length; p++) {
+            if (!Zones.accepts(piles[p], defs[d])) continue;
+            if (!set) set = Object.create(null);
+            set[defs[d].id] = 1;
+            break;
+          }
+        }
+      }
+    }
+    _accept.byZ[fromZ] = set;
+    return set;
+  }
+
+  /* Loose things on this pawn's level, of a def some other level wants,
+     that no stockpile HERE will take. Anything with local storage is
+     haulGeneral's business and is skipped, so the two givers never
      fight over the same stack. */
-  function crossHaulCandidates(map, limit) {
+  function crossHaulCandidates(map, accepted, limit) {
     var cache = map.__levelsHaulScan;
     var t = now();
     if (cache && cache.tick === t) return cache.list;
 
     var Zones = sys('Zones');
     var out = [];
-    if (Zones && Zones.storable && Zones.bestStorageFor) {
-      var defs = Defs.items();
-      for (var d = 0; d < defs.length && out.length < limit; d++) {
-        if (!Zones.storable(defs[d])) continue;
-        var list = map.byDef(defs[d].id);
+    if (Zones && Zones.bestStorageFor) {
+      for (var defId in accepted) {
+        var list = map.byDef(defId);
         for (var k = 0; k < list.length && out.length < limit; k++) {
           var thing = list[k];
           if (!thing.spawned || thing.isBlueprint || thing.isFrame) continue;
           if (Zones.bestStorageFor(map, thing, null)) continue;
           out.push(thing);
         }
+        if (out.length >= limit) break;
       }
     }
     map.__levelsHaulScan = { tick: t, list: out };
     return out;
+  }
+
+  /* Where on another level this thing should go.
+
+     Zones.bestStorageFor cannot answer this: with no pawn it measures
+     from the thing's own x,y, and those coordinates on the destination
+     map are usually the middle of solid rock, so its reachability test
+     rejects every cell and it returns nothing. The origin that matters
+     is where the hauler will ARRIVE - the far side of the connection -
+     so the search is done from there, one connection at a time, which
+     also proves the route exists before the job is handed over. */
+  function bestStorageAcross(pawn, fromZ, level, thing) {
+    var conns = Levels.connectionsFrom(level.z);
+    for (var c = 0; c < conns.length; c++) {
+      var conn = conns[c];
+      if (!conn.usable()) continue;
+      if (!Levels.reachable(fromZ, pawn.x, pawn.y, level.z, conn.x, conn.y)) continue;
+      var hit = nearestStorage(level, thing, conn.x, conn.y, pawn);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function nearestStorage(level, thing, ox, oy, pawn) {
+    var Zones = sys('Zones'), Regions = sys('Regions'), T = sys('T');
+    if (!Zones || !Regions || !T || !Zones.stockpiles) return null;
+    var map = level.map;
+    var piles = Zones.stockpiles(map);
+    if (!piles.length) return null;
+    var limit = thing.def.stackLimit || 1;
+    var best = null, bestScore = -Infinity;
+
+    for (var z = 0; z < piles.length; z++) {
+      var zone = piles[z];
+      if (!zone.cells.size || !Zones.accepts(zone, thing.def)) continue;
+      var prio = zone.priority;
+      zone.cells.forEach(function (i) {
+        if (!map.passableIdx(i)) return;
+        var x = map.xOf(i), y = map.yOf(i);
+        var existing = map.itemOfDefAt(x, y, thing.defId);
+        if (existing) { if (existing.stack >= limit) return; }
+        else if (!map.cellTakesNewStack(i)) return;
+        if (!Regions.sameArea(map, ox, oy, x, y)) return;
+        if (!Levels.canReserveOn(level.z, pawn, T.cell(x, y), 1)) return;
+        /* Priority dominates distance, exactly as the single-map
+           search does; distance only breaks ties inside a tier. */
+        var score = prio * 1e9 - U.distSq(x, y, ox, oy);
+        if (score > bestScore) { bestScore = score; best = { x: x, y: y, priority: prio }; }
+      });
+    }
+    return best;
   }
 
   Levels.tryGiveHaulJob = function (pawn) {
@@ -1639,7 +1773,9 @@
     var Jobs = sys('Jobs'), T = sys('T'), Res = sys('Res'), Zones = sys('Zones');
     if (!Jobs || !T || !Res || !Zones) return null;
 
-    var candidates = crossHaulCandidates(pawn.map, HAUL_SCAN_LIMIT);
+    var accepted = acceptedElsewhere(z);
+    if (!accepted) return null;
+    var candidates = crossHaulCandidates(pawn.map, accepted, HAUL_SCAN_LIMIT);
     for (var i = 0; i < candidates.length; i++) {
       var thing = candidates[i];
       if (!thing.spawned) continue;
@@ -1649,12 +1785,10 @@
       for (var l = 0; l < _list.length; l++) {
         var lv = _list[l];
         if (lv.z === z) continue;
-        var spot = Zones.bestStorageFor(lv.map, thing, null);
+        var spot = bestStorageAcross(pawn, z, lv, thing);
         if (!spot) continue;
-        if (!Levels.reachable(z, pawn.x, pawn.y, lv.z, spot.x, spot.y)) continue;
 
         var cell = T.cell(spot.x, spot.y);
-        if (!Levels.canReserveOn(lv.z, pawn, cell, 1)) continue;
         if (!Res.reserve(pawn, T.thing(thing), 1)) continue;
         if (!Levels.reserveOn(lv.z, pawn, cell, 1)) { Res.release(pawn, T.thing(thing)); continue; }
 
@@ -1763,9 +1897,26 @@
     var Combat = sys('Combat');
     if (Combat) Combat.tick(map);
 
-    if (t % HOUSEKEEPING_PERIOD === 0 && Regions && Regions.tickTemperature) {
-      Regions.tickTemperature(map, Levels.ambientTemperature(level.z));
+    if (t % HOUSEKEEPING_PERIOD === 0) {
+      if (Regions && Regions.tickTemperature) {
+        Regions.tickTemperature(map, Levels.ambientTemperature(level.z));
+      }
+      if (level.z > 0) rescueStranded(level);
     }
+    /* Cheap insurance against a floor laid by something that never told
+       this file about it: one pass over an upper level every 2000 ticks
+       is ten array reads a tick, and a cell nobody is watching is a
+       cell that can hang in the air forever. */
+    if (level.z > 0 && t % 2000 === 0) relistSupport(level);
+  }
+
+  function relistSupport(level) {
+    var map = level.map, sky = tIdx('openSky'), list = level.supportList;
+    list.length = 0;
+    for (var i = 0; i < map.size; i++) {
+      if (map.terrain[i] !== sky || map.buildingId[i]) list.push(i);
+    }
+    if (level.supportCursor >= list.length) level.supportCursor = 0;
   }
 
   /* Plants are rare below ground and possible above it, so the slice
@@ -1965,9 +2116,12 @@
      Called with a packer, every level round-trips completely. Called
      with none - which is what happens today, before save.js is touched
      - Levels falls back to its own compact packer: terrain, roofs,
-     things and designations survive, and pawns standing on a sub-level
-     come back on the surface. That is a visible degradation and it is
-     stated rather than hidden.
+     things and designations survive, and PAWNS DO NOT. save.js only
+     walks Game.map.pawns, and this packer carries no health, skills or
+     jobs, so anybody standing on a sub-level when the game is saved is
+     not in the file and is gone on load. The record says how many, and
+     the load says so out loud rather than letting a colonist vanish
+     quietly.
      ============================================================ */
 
   Levels.SAVE_VERSION = 1;
@@ -1986,15 +2140,23 @@
 
   Levels.save = function (packMap) {
     if (!_inited) return null;
+    var lossy = typeof packMap !== 'function';
     var out = {
       v: Levels.SAVE_VERSION,
       seed: _seed,
       active: _active,
+      lossy: lossy,
+      strandedPawns: 0,
       levels: []
     };
     for (var i = 0; i < _list.length; i++) {
       var level = _list[i];
       if (level.z === 0) continue;         /* save.js already holds the surface */
+      if (lossy) {
+        for (var p = 0; p < level.map.pawns.length; p++) {
+          if (!level.map.pawns[p].dead) out.strandedPawns++;
+        }
+      }
       out.levels.push({
         z: level.z,
         kind: level.kind,
@@ -2031,6 +2193,14 @@
     }
     _active = data.active || 0;
     if (!Levels.get(_active)) _active = 0;
+
+    /* Say it out loud. A colonist who was in the cellar when the game
+       was saved is not in the file, and a colony that quietly comes
+       back one person short is worse than one that is told why. */
+    if (data.lossy && data.strandedPawns > 0 && root.Game && root.Game.msg) {
+      root.Game.msg(data.strandedPawns + ' pawn' + (data.strandedPawns === 1 ? '' : 's') +
+        ' on other levels were not in this save file', { type: 'threat' });
+    }
     reconcileConnections();
     _graph = null;
     return true;

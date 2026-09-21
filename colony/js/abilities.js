@@ -125,7 +125,12 @@
       castTicks: spec.castTicks === undefined ? 0 : spec.castTicks | 0,
       range: spec.range === undefined ? 0 : spec.range,
       radius: spec.radius === undefined ? 0 : spec.radius,
-      targetKind: spec.targetKind || 'self',
+      /* A spec that states a range but no target kind means a range: the
+         old default of 'self' made resolveTarget answer from the caster's
+         own tile and threw the range away without saying so, which is how
+         biotech's three gene abilities came to be registered with a range
+         of six and no way to point them. */
+      targetKind: spec.targetKind || (spec.range > 0 ? 'cell' : 'self'),
       hostileOk: !!spec.hostileOk,
       needsLineOfSight: spec.needsLineOfSight !== false,
       /* An ability with autoGrant learns itself the moment requires()
@@ -142,7 +147,11 @@
       pay: typeof spec.pay === 'function' ? spec.pay : null,
       effect: typeof spec.effect === 'function' ? spec.effect : null,
       aiUse: typeof spec.aiUse === 'function' ? spec.aiUse : null,
-      aiPriority: spec.aiPriority === undefined ? 5 : spec.aiPriority
+      aiPriority: spec.aiPriority === undefined ? 5 : spec.aiPriority,
+      /* Which of the two think rungs this one is allowed to interrupt.
+         A reflex fires above emergency care and food; everything else
+         waits until the pawn would otherwise go to work. See section 9. */
+      reflex: !!spec.reflex
     };
     DEFS[def.id] = def;
     ORDER.push(def);
@@ -201,7 +210,9 @@
     var i = st.known.indexOf(id);
     if (i < 0) return false;
     st.known.splice(i, 1);
-    delete st.cooldowns[id];
+    /* A colony saved before the cooldown table existed has `known` and
+       nothing else, and deleting a key off nothing throws. */
+    if (st.cooldowns) delete st.cooldowns[id];
     return true;
   };
 
@@ -328,17 +339,36 @@
     if (!check.ok) return check;
     var def = check.def;
 
+    /* Everything that comes through this door is somebody asking on
+       purpose - a player order, a bridge, a test - so it counts as
+       forced unless the caller says otherwise, and a forced cast that
+       finds nothing is told why rather than locked out. */
+    var forced = opts.playerForced !== false;
+
     var wantsJob = !opts.immediate && Jobs && Jobs.make && pawn.map &&
                    (def.castTicks > 0 || def.range > 0);
-    if (!wantsJob) return Abilities.resolve(pawn, id, target, opts);
+    if (!wantsJob) {
+      return Abilities.resolve(pawn, id, target,
+        { dest: opts.dest || null, playerForced: forced });
+    }
 
     var job = Jobs.make('useAbility', target || null, null, {
-      playerForced: opts.playerForced !== false,
+      playerForced: forced,
       state: { abilityId: id, dest: opts.dest || null }
     });
     if (!Jobs.start(pawn, job)) return { ok: false, reason: 'could not begin' };
     return { ok: true, reason: null, job: job, def: def, castTicks: def.castTicks };
   };
+
+  /* How long an ability the world refused sits out before the AI is
+     allowed to reach for it again. Without this, an aiUse that keeps
+     answering "yes" while the effect keeps finding nothing to work on
+     re-queues the same cast every AI_RESCAN ticks for as long as the
+     condition holds - measured at six useAbility jobs and four failed
+     casts in half a day for one colonist, none of which ever set a
+     cooldown. A player who clicks the button is told why and is not
+     made to wait. */
+  var RETRY_TICKS = 2500;
 
   /* The moment the warm-up ends: check once more, pay, fire, then set
      the cooldown. The effect runs inside a try because a registered
@@ -363,7 +393,14 @@
       if (root.Game && root.Game.debug) console.log('[abilities] ' + id + ' threw: ' + e);
       worked = false;
     }
-    if (!worked) return { ok: false, reason: 'it found nothing to work on' };
+    if (!worked) {
+      if (!opts.playerForced) {
+        var st = stateOf(pawn);
+        var wait = def.cooldownTicks > 0 ? Math.min(def.cooldownTicks, RETRY_TICKS) : RETRY_TICKS;
+        st.cooldowns[id] = now() + wait;
+      }
+      return { ok: false, reason: 'it found nothing to work on' };
+    }
 
     if (def.pay) def.pay(pawn);
     if (def.cooldownTicks > 0) stateOf(pawn).cooldowns[id] = now() + def.cooldownTicks;
@@ -446,11 +483,15 @@
         var pos = job.targetA ? T.pos(job.targetA, pawn.map) : null;
         if (pos && pawn.faceTo) pawn.faceTo(pos.x, pos.y);
         if (--s.left > 0) return 'stay';
-        var out = Abilities.resolve(pawn, def.id, job.targetA, { dest: job.state.dest });
+        var out = Abilities.resolve(pawn, def.id, job.targetA,
+          { dest: job.state.dest, playerForced: !!job.playerForced });
         if (!out.ok && pawn.faction === 'player') {
           message(nameOf(pawn) + ' could not: ' + out.reason + '.', 'info', pawn);
         }
-        return 'done';
+        /* A cast that resolved into nothing ended in failure, and the job
+           driver's own end reason is what think.js reads to decide not to
+           hand the same plan straight back. */
+        return out.ok ? 'done' : 'fail';
       }
     });
   }
@@ -729,7 +770,7 @@
     id: 'firstAidSprint', label: 'First-aid sprint', icon: 'sprint', autoGrant: true,
     description: 'Drop everything and run. For fifteen seconds the doctor covers ground at ' +
       'twice their usual pace, which is the difference between a tended wound and a grave.',
-    cooldownTicks: 20000, castTicks: 0, range: 0, targetKind: 'self', aiPriority: 1,
+    cooldownTicks: 20000, castTicks: 0, range: 0, targetKind: 'self', aiPriority: 1, reflex: true,
     requires: function (pawn) {
       if (skill(pawn, 'medicine') < 6) return 'needs medicine 6';
       if (pawn.capable && !pawn.capable('doctor')) return 'is not a doctor';
@@ -801,6 +842,7 @@
     description: 'Shut the pain out for half a minute and pay for it afterwards. The crash ' +
       'is real: slow, clumsy and sore for a minute and a half once the wind runs out.',
     cooldownTicks: TICKS_PER_DAY, castTicks: 60, range: 0, targetKind: 'self', aiPriority: 0,
+    reflex: true,
     requires: function (pawn) {
       if (skill(pawn, 'melee') < 8 && !hasTrait(pawn, 'tough') && !hasTrait(pawn, 'ironWilled')) {
         return 'needs melee 8, or to be tough or iron-willed';
@@ -888,7 +930,7 @@
     id: 'animalCall', label: 'Animal call', icon: 'animal', autoGrant: true,
     description: 'Call the colony\'s tame animals in. They break off whatever they were doing ' +
       'and come, and any of them without a master takes this one.',
-    cooldownTicks: 20000, castTicks: 90, range: 0, targetKind: 'self', aiPriority: 3,
+    cooldownTicks: 20000, castTicks: 90, range: 0, targetKind: 'self', aiPriority: 3, reflex: true,
     requires: function (pawn) {
       return skill(pawn, 'animals') >= 5 ? true : 'needs animals 5';
     },
@@ -950,6 +992,7 @@
     description: 'Ten seconds of breathing and a quarter more hit chance for the next half ' +
       'minute. Granted by the Deadeye mastery and by nothing else.',
     cooldownTicks: TICKS_PER_DAY, castTicks: 120, range: 0, targetKind: 'self', aiPriority: 2,
+    reflex: true,
     requires: function (pawn) {
       return skill(pawn, 'shooting') >= MASTERY_TIER_2 ? true : 'needs shooting 20';
     },
@@ -972,23 +1015,25 @@
      answer into a job the think tree can return. The scan is throttled
      per pawn because a colonist with seven abilities and nothing to do
      would otherwise re-ask the same seven questions every think.
+
+     Two answers come out of one scan, because there are two rungs in
+     the tree. A reflex - shut the pain out, sprint to the patient,
+     steady the aim, call the animals in - belongs above emergency care
+     and food, because by the time a colonist has eaten the moment is
+     gone. Everything calmer than that does not: a firebreak, a rally
+     or a research breakthrough is not worth stepping over a bleeding
+     colonist or a hungry one, and at one shared rung above emergency
+     it was.
      ============================================================ */
 
   var AI_RESCAN = 90;
 
-  Abilities.aiPick = function (pawn) {
-    if (!pawn || pawn.dead || pawn.downed || !pawn.map) return null;
-    var st = pawn.abilities;
-    if (!st || !st.known || !st.known.length) return null;
-    if (pawn.mentalState) return null;
-
-    var t = now();
-    if (st.aiNext && t < st.aiNext) return null;
-    st.aiNext = t + AI_RESCAN;
-
+  function scanAbilities(pawn, st) {
+    var out = { reflex: null, calm: null, t: 0 };
     for (var i = 0; i < ORDER.length; i++) {
       var def = ORDER[i];
       if (!def.aiUse) continue;
+      if (def.reflex ? out.reflex : out.calm) continue;
       if (st.known.indexOf(def.id) < 0) continue;
       if (Abilities.cooldownLeft(pawn, def.id) > 0) continue;
       var check = Abilities.can(pawn, def.id);
@@ -1001,15 +1046,43 @@
       var target = want === true ? null : want;
       var full = Abilities.can(pawn, def.id, target);
       if (!full.ok) continue;
-      return { id: def.id, target: target };
+
+      var pick = { id: def.id, target: target };
+      if (def.reflex) out.reflex = pick; else out.calm = pick;
+      if (out.reflex && out.calm) break;
     }
-    return null;
+    return out;
+  }
+
+  /* `kind` is 'reflex', 'calm', or absent for whichever is better. Both
+     rungs ask on the same tick, so the scan is kept for that tick and
+     the throttle only governs how often it is redone - otherwise the
+     first rung to ask would spend the window and the second would be
+     told there is nothing, every time. */
+  Abilities.aiPick = function (pawn, kind) {
+    if (!pawn || pawn.dead || pawn.downed || !pawn.map) return null;
+    var st = pawn.abilities;
+    if (!st || !st.known || !st.known.length) return null;
+    if (pawn.mentalState) return null;
+
+    var t = now();
+    var scan = st.aiScan;
+    if (!scan || scan.t !== t) {
+      if (st.aiNext && t < st.aiNext) return null;
+      st.aiNext = t + AI_RESCAN;
+      scan = scanAbilities(pawn, st);
+      scan.t = t;
+      st.aiScan = scan;
+    }
+    if (kind === 'reflex') return scan.reflex;
+    if (kind === 'calm') return scan.calm;
+    return scan.reflex || scan.calm;
   };
 
   /* What think.js calls. Returns a job rather than casting directly so
      the warm-up is interruptible and the tier system can outrank it. */
-  Abilities.aiJob = function (pawn) {
-    var pick = Abilities.aiPick(pawn);
+  Abilities.aiJob = function (pawn, kind) {
+    var pick = Abilities.aiPick(pawn, kind);
     if (!pick) return null;
     var job = Jobs.make('useAbility', pick.target || null, null, {
       state: { abilityId: pick.id, dest: null }
@@ -1017,11 +1090,25 @@
     return job;
   };
 
-  /* think.js exports its level list, so the ability level is spliced in
-     rather than written into that file: directly after self-defence and
-     before the fight level, which is where an ability belongs - after
-     "something is hitting me", before "I go and hit something". */
+  /* think.js exports its level list, so the two ability rungs are
+     spliced in rather than written into that file. The reflex rung goes
+     directly after self-defence and before the fight level - after
+     "something is hitting me", before "I go and hit something". The
+     calm rung goes directly above work, so an ability the colony would
+     merely like still beats hauling and still loses to eating, sleeping
+     and a bleeding friend. policies.js splices two rungs the same way,
+     for the same reason. */
   var thinkInstalled = false;
+
+  function spliceLevel(Think, level, before, after) {
+    var at = -1, i;
+    for (i = 0; i < Think.LEVELS.length; i++) {
+      if (after && Think.LEVELS[i].name === after) { at = i + 1; break; }
+      if (before.indexOf(Think.LEVELS[i].name) >= 0) { at = i; break; }
+    }
+    if (at < 0) at = Think.LEVELS.length - 1;
+    Think.LEVELS.splice(at, 0, level);
+  }
 
   Abilities.installThinkLevel = function () {
     if (thinkInstalled) return true;
@@ -1030,17 +1117,19 @@
     for (var i = 0; i < Think.LEVELS.length; i++) {
       if (Think.LEVELS[i].name === 'ability') { thinkInstalled = true; return true; }
     }
+
     var tier = Think.TIER.ABILITY;
     if (tier === undefined) { tier = 5.45; Think.TIER.ABILITY = tier; }
-    var level = { tier: tier, name: 'ability', fn: function (p) { return Abilities.aiJob(p); } };
+    spliceLevel(Think,
+      { tier: tier, name: 'ability', fn: function (p) { return Abilities.aiJob(p, 'reflex'); } },
+      ['fight', 'emergency'], 'defend');
 
-    var at = -1;
-    for (i = 0; i < Think.LEVELS.length; i++) {
-      if (Think.LEVELS[i].name === 'defend') { at = i + 1; break; }
-      if (Think.LEVELS[i].name === 'fight' || Think.LEVELS[i].name === 'emergency') { at = i; break; }
-    }
-    if (at < 0) at = Think.LEVELS.length - 1;
-    Think.LEVELS.splice(at, 0, level);
+    var calm = Think.TIER.ABILITY_CALM;
+    if (calm === undefined) { calm = 9.5; Think.TIER.ABILITY_CALM = calm; }
+    spliceLevel(Think,
+      { tier: calm, name: 'abilityCalm', fn: function (p) { return Abilities.aiJob(p, 'calm'); } },
+      ['work', 'joy', 'idle'], null);
+
     thinkInstalled = true;
     return true;
   };
@@ -1331,23 +1420,49 @@
     done();
   }
 
+  /* Trade quotes every row of a deal through Trade.priceOf, but it hands
+     that function `socialSkill` and never the pawn, so opts.negotiator -
+     the field the price chain below was written against - is undefined at
+     both of the only two call sites in the game. Measured: opening a real
+     deal with a stocked caravan made one priceOf call and none of them
+     carried a negotiator, so inspired trade and the social masteries
+     moved nothing. The pawn is known one frame further out, in
+     Trade.refresh, so that is where it is picked up and held for the
+     length of the rebuild. */
+  var dealNegotiator = null;
+
   function chainTrading() {
     var Tr = sys('Trade');
     if (!Tr || !Tr.priceOf) return;
     if (Tr.__abilitiesTrade) return done();
     var base = Tr.priceOf;
     Tr.__abilitiesTrade = true;
+
+    if (Tr.refresh && !Tr.__abilitiesRefresh) {
+      var baseRefresh = Tr.refresh;
+      Tr.__abilitiesRefresh = true;
+      Tr.refresh = function (deal) {
+        var was = dealNegotiator;
+        dealNegotiator = (deal && deal.negotiator) || null;
+        try { return baseRefresh.call(Tr, deal); }
+        finally { dealNegotiator = was; }
+      };
+    }
+
     Tr.priceOf = function (defId, opts) {
       var v = base.call(Tr, defId, opts);
-      var who = opts && opts.negotiator;
+      var who = (opts && opts.negotiator) || dealNegotiator;
       var st = who && who.abilities;
       if (!st) return v;
       var edge = Abilities.masteryBonus(who, 'social') * 0.5;
       if (hasInspiration(who, 'inspiredTrade')) edge += 0.22;
       if (edge <= 0) return v;
-      /* Better for the colony means cheaper to buy and dearer to sell. */
+      /* Better for the colony means cheaper to buy and dearer to sell.
+         Rounded back to a whole silver: trade.js quotes integers, the
+         basket balance is summed from these and a fractional price puts
+         a price of 2.34 in front of the player. */
       var buying = !opts || opts.buying !== false;
-      return v * (buying ? Math.max(0.35, 1 - edge) : 1 + edge);
+      return Math.max(1, Math.round(v * (buying ? Math.max(0.35, 1 - edge) : 1 + edge)));
     };
     if (Tr.confirm && !Tr.__abilitiesConfirm) {
       var baseConfirm = Tr.confirm;

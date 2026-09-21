@@ -254,7 +254,26 @@
       defaultRepeat: 'count', defaultTargetCount: 1,
       description: 'An empty mechanoid body. A mechanitor decides what it becomes.'
     }
+  }, {
+    jobString: 'Working', skill: null, skillRequirement: 0,
+    workType: 'craft', uiCategory: 'mechtech', workbenches: [],
+    products: {}, dynamicProducts: false, productQuality: false,
+    researchPrerequisite: null,
+    defaultRepeat: 'forever', defaultTargetCount: 0, defaultIngredientRadius: 999,
+    foodPoisonChance: 0, description: ''
   });
+
+  /* Defs.finalize is what normally links a recipe to its bench in both
+     directions, and nothing calls it in a live game - only the checker
+     does. Production.benchAccepts reads either side, so the recipe's own
+     workbenches list is enough for bills; this second half is for
+     anything that walks the bench instead. */
+  (function linkGestatorRecipe() {
+    var bench = Defs.maybe('thing', 'mechGestator');
+    if (!bench) return;
+    if (!bench.recipes) bench.recipes = [];
+    if (bench.recipes.indexOf('gestateMechShell') < 0) bench.recipes.push('gestateMechShell');
+  })();
 
   /* ------------------------------------------------------------------
      Thoughts. Children are the reason this file exists, so they get the
@@ -281,7 +300,9 @@
     btGeneAggression: { label: 'Aggression gene', durationDays: 1, stackLimit: 1,
       stages: [{ label: 'Everything is irritating', mood: -6 }] },
     btGeneContentment: { label: 'Contentment gene', durationDays: 1, stackLimit: 1,
-      stages: [{ label: 'Nothing much bothers me', mood: 8 }] }
+      stages: [{ label: 'Nothing much bothers me', mood: 8 }] },
+    btGeneCraving: { label: 'Chemical craving', durationDays: 1, stackLimit: 1,
+      stages: [{ label: 'My body is asking for something', mood: -8 }] }
   });
 
   /* ------------------------------------------------------------------
@@ -771,7 +792,7 @@
     /* Metabolism is the budget: a pawn who spent more than their body
        can pay for is permanently hungrier for it. */
     st.metabolism = met;
-    fx.hungerFromMetabolism = met > 0 ? 1 + met * 0.055 : 1;
+    fx.hungerFromMetabolism = met > 0 ? U.clamp(1 + met * 0.055, 1, 1.6) : 1;
     pawn._geneFx = fx;
     if (pawn.invalidateTraitCache) pawn.invalidateTraitCache();
     else pawn._fx = null;
@@ -1795,6 +1816,12 @@
        drifts hungry would be sent to the larder by the think tree. */
     if (mech.needs) { mech.needs.food = 1; mech.needs.rest = 1; mech.needs.joy = 1; }
 
+    /* A rogue mechanoid has no mechanitor and wants none: bandwidth,
+       charge and work priorities are the colony's problem, and a hostile
+       walking onto the map is combat.js's. Everything below this line
+       would switch a raid off. */
+    if (mech.faction !== 'player') return;
+
     if (((now() + mech.id) % RARE) !== 0) return;
 
     /* Charge falls faster while working than while standing about. */
@@ -1987,7 +2014,9 @@
       if (fx.toxic > 0) shrugOff(pawn, H, 'foodPoisoning', fx.toxic * 0.4);
     }
 
-    if (fx.sickly && H && H.addHediff && U.chance(0.0015)) {
+    /* Roughly one bout every ten days: enough that a sickly colonist is
+       a doctor's problem, not enough that they live in bed. */
+    if (fx.sickly && H && H.addHediff && U.chance(0.0004)) {
       if (!H.hasHediff(pawn, 'flu')) {
         H.addHediff(pawn, 'flu', 0.05);
         msg(nameOf(pawn) + ' has fallen ill again.', 'threat', pawn);
@@ -2000,14 +2029,17 @@
     if (fx.drugNeed && (t % 6000) < RARE) {
       var D = sys('Drugs');
       var satisfied = !!(D && D.isSatisfied && D.isSatisfied(pawn));
-      if (!satisfied) thought(pawn, 'btGeneAggression', { degree: 0 });
+      if (!satisfied) thought(pawn, 'btGeneCraving');
     }
 
     if (fx.hungerFromMetabolism > 1 && pawn.needs) {
-      /* A pawn who spent more metabolism than they have burns the
-         difference: applied here rather than through the trait cache
-         because the figure changes whenever the gene list does. */
-      pawn.needs.food = U.clamp01(pawn.needs.food - 0.00004 * (fx.hungerFromMetabolism - 1) * RARE);
+      /* A pawn who spent more metabolism than their body can pay for
+         burns the difference. The figure is a fraction of the contract's
+         1.6-per-day food fall, charged over the same rare tick, so a
+         metabolism of +4 costs about a third of a meal a day rather than
+         a meal and a half. */
+      var extra = (fx.hungerFromMetabolism - 1) * (1.6 / TICKS_PER_DAY) * RARE;
+      pawn.needs.food = U.clamp01(pawn.needs.food - extra);
     }
   }
 

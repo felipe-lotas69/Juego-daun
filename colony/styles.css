@@ -86,9 +86,11 @@
   --nav-h: 40px;
   --rail-w: 250px;
   --arch-w: 620px;
-  --arch-h: 288px;
+  --arch-h: 306px;
   --ins-w: 352px;
-  --ins-h: 288px;
+  /* The inspect pane and the architect sit side by side over the same
+     bottom edge, so they share a height and their top edges line up. */
+  --ins-h: var(--arch-h);
   --msg-h: 116px;
   --bottom: calc(var(--nav-h) + var(--gap));
 
@@ -196,7 +198,39 @@ canvas#game {
   font: var(--fs-md)/1.3 var(--font);
   padding: var(--s2) var(--s3);
 }
-.mini-select { padding: var(--s1) var(--s2); font-size: var(--fs-sm); }
+.mini-select { padding: var(--s1) var(--s3); font-size: var(--fs-md); }
+
+/* A native <select> is the one control the browser draws itself, and
+   left alone it turns up in the middle of a flat dark panel with its
+   own arrow, its own corner radius and its own idea of a line height.
+   The chevron is two gradients rather than an image, so this still
+   works with no files and no data URIs. */
+select.field, select.mini-select {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 24px;
+  min-width: 108px;
+  padding-right: 22px;
+  border-radius: 0;
+  background-color: var(--bg0);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--dim) 50%),
+    linear-gradient(135deg, var(--dim) 50%, transparent 50%);
+  background-position: right 11px center, right 7px center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+select.field:hover, select.mini-select:hover {
+  border-color: var(--bg4);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--accent) 50%),
+    linear-gradient(135deg, var(--accent) 50%, transparent 50%);
+}
+select.field option, select.mini-select option {
+  background: var(--bg1);
+  color: var(--text);
+}
 .field:focus, .mini-select:focus, .arch-search:focus {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
@@ -290,8 +324,11 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   align-items: center;
   gap: var(--s3);
   height: 19px;
+  padding: 0 var(--s1);
+  margin: 0 calc(var(--s1) * -1);
   cursor: help;
 }
+.res-row:hover { background: var(--bg2); }
 .res-row .ico { width: 18px; height: 18px; }
 .res-n {
   font-size: var(--fs-md);
@@ -450,7 +487,7 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 .clock-temp { color: var(--dim); font-variant-numeric: tabular-nums; }
 .clock-temp.cold { color: var(--cold); }
 .clock-temp.hot { color: var(--hot); }
-.clock-wealth { font-size: var(--fs-sm); color: var(--faint); }
+.clock-wealth { font-size: var(--fs-sm); color: var(--dim); }
 .speed-row {
   display: flex;
   justify-content: flex-end;
@@ -479,10 +516,21 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
+  /* Each line is its own pill and hugs its own text. Stretching every
+     one of them to the width of the widest reads as five black slabs
+     rather than as a log. */
+  align-items: flex-start;
   gap: var(--s1);
   pointer-events: none;
+  /* The oldest line runs off the top of the log. Cutting it through the
+     middle of its words looks like a clipping bug; fading it out is
+     what the contract asks a scrolling log to do. With only a line or
+     two up there is nothing in the fade to see. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 20px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 20px);
 }
 .msg {
+  max-width: 100%;
   padding: var(--s1) var(--s3);
   font-size: var(--fs-md);
   color: var(--text);
@@ -510,7 +558,7 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 }
 .ins-head { padding: var(--s3) var(--s4); border-bottom: 1px solid var(--line-soft); }
 .ins-title { font-size: var(--fs-lg); font-weight: 600; color: var(--paper); }
-.ins-sub { font-size: var(--fs-sm); color: var(--faint); }
+.ins-sub { font-size: var(--fs-sm); color: var(--dim); }
 .ins-job { font-size: var(--fs-md); color: var(--accent); margin-top: var(--s1); }
 .ins-tabs { display: flex; border-bottom: 1px solid var(--line-soft); }
 .ins-tab {
@@ -538,13 +586,17 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 
 .kv { display: flex; align-items: baseline; gap: var(--s3); padding: 1px 0; }
 .kv-l { color: var(--dim); flex: none; min-width: 96px; }
+/* "Production specialist" is wider than the 96 the shared row gives a
+   label, so its control started further right than the two above it. */
+.role-row { align-items: center; padding: var(--s1) 0; }
+.role-row .kv-l { min-width: 156px; }
 .kv-v { color: var(--text); flex: 1; word-break: break-word; }
 .head {
   margin: var(--s3) 0 var(--s1);
   font-size: var(--fs-sm);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--faint);
+  color: var(--dim);
 }
 .line { padding: 1px 0; }
 
@@ -572,6 +624,11 @@ input, textarea { user-select: text; -webkit-user-select: text; }
    architect - a category column down the left, commands to its right
    ============================================================ */
 
+/* Fixed height on purpose: the bottom edge is pinned to the nav bar,
+   so a panel that sized itself to each category would move its top
+   edge every time the player read down the column. It is sized to hold
+   three full rows of commands, which is every category but Furniture,
+   and that one scrolls against a scrollbar you can actually see. */
 #architect {
   left: var(--gap);
   bottom: var(--bottom);
@@ -628,6 +685,9 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* The gutter is held whether or not this category overflows, so the
+     grid does not shift sideways as the player moves down the column. */
+  scrollbar-gutter: stable;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
   gap: var(--s2);
@@ -640,7 +700,11 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   align-items: center;
   justify-content: flex-start;
   gap: var(--s1);
-  height: 76px;
+  /* A <button> with no font of its own is drawn in the user agent's
+     Arial, which put the whole command grid in a different typeface
+     from the category column beside it. */
+  font: 500 var(--fs-sm)/1.2 var(--font);
+  height: 82px;
   padding: var(--s3) var(--s1);
   background: var(--bg2);
   border: 1px solid var(--line-soft);
@@ -657,12 +721,23 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   text-align: center;
   line-height: 1.15;
   color: var(--text);
+  /* Two lines, then stop. "Cooking practice station" was being cut
+     through the middle of its third line, which reads as a bug. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  max-width: 100%;
 }
 .arch-cost {
   font-size: var(--fs-xs);
-  color: var(--faint);
+  color: var(--dim);
   text-align: center;
   line-height: 1.1;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .arch-hint {
   flex: none;
@@ -677,6 +752,13 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   min-height: 30px;
 }
 .arch-hint-text { flex: 1; min-width: 200px; }
+/* .more is set by ui.js when there is more below. Chromium's overlay
+   scrollbar is invisible at rest, and a row cut in half with nothing to
+   explain it reads as a rendering fault rather than as a scroll. */
+.arch-grid.more, .ins-body.more {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent 100%);
+}
 .arch-grid .line { grid-column: 1 / -1; }
 
 /* ============================================================
@@ -693,6 +775,23 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   display: flex;
   flex-direction: column;
   background: #10141c;
+}
+/* The research tree and the world screen want the whole window. The
+   Animals tab is two sentences and the Assign tab is a three-row
+   table, and a full sheet around either of them reads as a panel that
+   failed to load. Those size to what is in them and stop. */
+#tab-panel.fit {
+  right: auto;
+  /* Anchored to the bar it was opened from, so it grows up out of its
+     own button and never lands half across a colonist box or an alert
+     the way a top-left window did once it stopped filling the screen. */
+  top: auto;
+  bottom: var(--bottom);
+  width: max-content;
+  min-width: 560px;
+  max-width: calc(100% - var(--gap) * 2);
+  max-height: calc(100% - var(--gap) - var(--bottom));
+  box-shadow: var(--panel-shadow);
 }
 /* A bills window has four lines in it; a full-screen sheet for four
    lines reads as something that failed to load. It keeps the frame and
@@ -719,10 +818,13 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 }
 .tp-close { padding: var(--s2) var(--s5); }
 .tp-body { flex: 1; overflow: auto; padding: var(--s5); }
+/* A line of explanation is easier to read short, and in a panel that
+   sizes itself to its content it is also what sets the panel's width,
+   so 940 made a three-column table 970 pixels wide. */
 .tp-note {
   color: var(--dim);
   margin-bottom: var(--s4);
-  max-width: 940px;
+  max-width: 660px;
 }
 .tp-foot { margin-top: var(--s5); }
 
@@ -836,7 +938,7 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--faint);
+  color: var(--dim);
   background: var(--bg1);
   border-bottom: 1px solid var(--line);
 }
@@ -1089,10 +1191,13 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 
 /* ---------- scrollbars ---------- */
 
+/* The thumb used to be the panel's own colour on the panel's own
+   background, so a grid that scrolled gave no sign of it and simply
+   looked as though its last row had been cut off. */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: var(--bg0); }
-::-webkit-scrollbar-thumb { background: var(--bg3); border: 2px solid var(--bg0); }
-::-webkit-scrollbar-thumb:hover { background: var(--bg4); }
+::-webkit-scrollbar-thumb { background: #4c566c; border: 2px solid var(--bg0); }
+::-webkit-scrollbar-thumb:hover { background: #5e6a83; }
 
 /* ============================================================
    narrow and short windows
@@ -1124,11 +1229,10 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 
 @media (max-height: 780px) {
   :root {
-    --arch-h: 256px;
-    --ins-h: 236px;
+    --arch-h: 288px;
     --msg-h: 92px;
   }
-  .arch-item { height: 70px; }
+  .arch-item { height: 76px; }
   .arch-cat { padding: 3px var(--s3); font-size: var(--fs-sm); }
   .arch-cat .ico { width: 14px; height: 14px; }
   .wg-head { height: 92px; }
@@ -1139,8 +1243,7 @@ input, textarea { user-select: text; -webkit-user-select: text; }
     --arch-w: 720px;
     --ins-w: 400px;
     --rail-w: 290px;
-    --arch-h: 300px;
-    --ins-h: 330px;
+    --arch-h: 330px;
   }
   html, body { font-size: 13px; }
   #messages { width: 480px; }

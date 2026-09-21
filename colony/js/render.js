@@ -38,6 +38,7 @@
   var PATCH = 3;               /* tiles across a terrain-variant patch, so variety is not per-cell */
   var BASE_CHUNKS = 3;         /* chunks per frame allowed a full base coat */
   var DETAIL_CHUNKS = 2;       /* chunks per frame allowed to paint their seams */
+  var HALF_CHUNKS = 3;         /* chunks per frame allowed to refresh their zoomed-out copy */
   var ZOOM_MIN = 1, ZOOM_MAX = 3;
   var OVERSCROLL = 6;          /* tiles of void the camera may pull past an edge */
   var DARK_STEPS = 16;         /* quantisation of the night tint, to merge fill runs */
@@ -168,11 +169,57 @@
     } catch (e) { artOff.pawn = true; warnOnce('Art.pawn', e); return null; }
   }
 
+  /* ---------- sprites at the size they are shown at ----------
+
+     Art is authored at 64 pixels a tile and a tile on screen is 16, 32
+     or 48, so every sprite in the world arrives downscaled - and a
+     smoothed downscale is not free. At zoom 1 a forest is two thousand
+     of them a frame, which was three quarters of a second per frame and
+     the single worst thing in this file.
+
+     A sprite is immutable once art.js has built it and there are only
+     ever a few tile sizes, so each one is filtered once, well, at the
+     size it is being shown at, and drawn one-to-one from then on. The
+     per-size maps are weak, so dropping one releases every canvas in it
+     and an art file that rebuilds its own cache is not pinned by this. */
+  var scaleCaches = new Map(), scaleOrder = [];
+
+  function atScreenScale(art) {
+    /* Upscaling is cheap and there is nothing to precompute for it. */
+    if (TS >= ART_PX) return null;
+    var byTs = scaleCaches.get(TS);
+    if (!byTs) {
+      byTs = new WeakMap();
+      scaleCaches.set(TS, byTs);
+      scaleOrder.push(TS);
+      while (scaleOrder.length > 4) scaleCaches.delete(scaleOrder.shift());
+    }
+    var s = byTs.get(art);
+    if (s) return s;
+    var u = TS / ART_PX;
+    var w = Math.max(1, Math.round(art.width * u)), h = Math.max(1, Math.round(art.height * u));
+    s = document.createElement('canvas');
+    s.width = w; s.height = h;
+    var g = s.getContext('2d');
+    g.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high';
+    g.drawImage(art, 0, 0, w, h);
+    s.dx = Math.round((art.ox || 0) * u);
+    s.dy = Math.round((art.oy || 0) * u);
+    byTs.set(art, s);
+    return s;
+  }
+
   /* art.js hands back sprites that are not always one tile: a tree is
      2x2 drawn from half a tile up and left, an explosion 3x3. Every
      sprite carries ox/oy in authored pixels, so one blit honours all of
      them and nothing has to know which sprite is which size. */
   function blitAt(art, px, py) {
+    var s = atScreenScale(art);
+    if (s) {
+      ctx.drawImage(s, Math.round(px) + s.dx, Math.round(py) + s.dy);
+      return;
+    }
     var u = TS / ART_PX;
     ctx.drawImage(art,
       Math.round(px + (art.ox || 0) * u), Math.round(py + (art.oy || 0) * u),
@@ -274,7 +321,17 @@
     if (canvas.height !== ch) canvas.height = ch;
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
-    if (root.Art && root.Art.PX) ART_PX = root.Art.PX;
+    /* art.js could in principle be swapped for one that authors at a
+       different size. Everything cached in terms of the old ratio - the
+       pre-scaled sprites, every chunk - has to go with it. */
+    if (root.Art && root.Art.PX && root.Art.PX !== ART_PX) {
+      ART_PX = root.Art.PX;
+      scaledArt = new WeakMap();
+      scaleCaches.clear();
+      scaleOrder.length = 0;
+      chunks = null;
+      chunkOwner = null;
+    }
     /* Sprites are authored larger than a tile and land downscaled, and
        nearest-neighbour downscaling tears detail apart. */
     ctx.imageSmoothingEnabled = true;
@@ -471,17 +528,63 @@
     gravel: 4, richSoil: 3, soil: 2, rockFloor: 1
   };
 
+  /* How far apart two grounds look, which is not how far apart their
+     bytes are. Marsh and rich soil sit a few RGB units from each other
+     and still read as green against brown, because the eye compares hue
+     first and brightness second. So the colours are split into
+     chromaticity - each channel over the sum, the part that survives a
+     change in light - and plain brightness, and the hue term is given
+     the weight it deserves. Near nought for two shades of one earth,
+     a quarter and up where the ground changes kind. */
+  function terrainContrast(a, b) {
+    if (!a || !b || a.length < 7 || b.length < 7 || a.charAt(0) !== '#' || b.charAt(0) !== '#') return 0.5;
+    var ar = hexChannel(a, 0), ag = hexChannel(a, 1), ab = hexChannel(a, 2);
+    var br = hexChannel(b, 0), bg = hexChannel(b, 1), bb = hexChannel(b, 2);
+    var asum = ar + ag + ab || 1, bsum = br + bg + bb || 1;
+    var dr = ar / asum - br / bsum, dg = ag / asum - bg / bsum;
+    return Math.sqrt(dr * dr + dg * dg) * 3 + Math.abs(asum - bsum) / 765;
+  }
+
+  /* art.js cuts two widths of stencil and leaves the choice here, which
+     is right: it knows what a shoreline should look like, this file is
+     the one that knows which two grounds are meeting. Nought unpicks the
+     ruled line between two shades of one earth - a bank that wide
+     between two browns is a smudged square, and a map of smudged squares
+     is the quilt this was supposed to cure. One is the crumbling bank a
+     shoreline wants, about a third of a tile, which is the least that
+     will wander across a whole step of the staircase it is hiding.
+     One body of water shelving into another counts, however close the
+     two blues are, because from above that edge is a cliff. */
+  var reaches = new Map();
+
+  function seamReach(a, b) {
+    var key = a.defIndex * 256 + b.defIndex;
+    var v = reaches.get(key);
+    if (v !== undefined) return v;
+    v = (a.isWater && b.isWater) || terrainContrast(a.color, b.color) > 0.13 ? 1 : 0;
+    if (a.buildCategory === 'floor' || b.buildCategory === 'floor') v = 0;
+    reaches.set(key, v);
+    return v;
+  }
+
+  /* Asked eight times per cell of a repaint, so the answer is kept: a
+     guarded call into another file is not something to do a quarter of a
+     million times for a result that never changes. */
+  var ranks = [];
+
   function terrainRank(def) {
+    if (!def) return -1;
+    var i = def.defIndex, v = ranks[i];
+    if (v !== undefined) return v;
     var A = root.Art;
     if (!artOff.edge && A && A.terrainRank) {
-      try { return A.terrainRank(def); }
+      try { return (ranks[i] = A.terrainRank(def)); }
       catch (e) { artOff.edge = true; warnOnce('Art.terrainRank', e); }
     }
-    if (!def) return -1;
-    if (def.buildCategory === 'floor') return 12;
-    var r = RANK[def.id];
-    if (r !== undefined) return r;
-    return def.terrainCategory === 'water' ? 8 : 2;
+    v = def.buildCategory === 'floor' ? 12 : RANK[def.id];
+    if (v === undefined) v = def.terrainCategory === 'water' ? 8 : 2;
+    ranks[i] = v;
+    return v;
   }
 
   /* Neighbour order matches the bit order art.js uses for wall joins and
@@ -546,8 +649,12 @@
 
   var masks = new Map(), seamCanvas = null, seamCtx = null;
 
-  function localMask(bits, variant) {
-    var key = bits | (variant << 8);
+  /* The same two widths art.js authors, so the fallback and the real
+     thing draw the same shoreline. */
+  var EDGE_LO = [0.11, 0.24], EDGE_SPAN = [0.17, 0.32];
+
+  function localMask(bits, variant, reach) {
+    var key = bits | (variant << 8) | (reach << 10);
     var hit = masks.get(key);
     if (hit) return hit;
     var c = document.createElement('canvas');
@@ -555,8 +662,8 @@
     var g = c.getContext('2d');
     var rnd = seeded(Math.imul(key + 1, 2654435761) ^ 0x9e3779b9);
     var d;
-    for (d = 0; d < 4; d++) if (bits & (1 << d)) maskBand(g, rnd, d);
-    for (d = 4; d < 8; d++) if (bits & (1 << d)) maskCorner(g, rnd, d);
+    for (d = 0; d < 4; d++) if (bits & (1 << d)) maskBand(g, rnd, d, reach);
+    for (d = 4; d < 8; d++) if (bits & (1 << d)) maskCorner(g, rnd, d, reach);
     if (masks.size > 400) masks.clear();
     masks.set(key, c);
     return c;
@@ -566,14 +673,15 @@
      has to be deep enough to wander across a whole step of the staircase
      it is hiding; a fringe thinner than that only draws an outline around
      the staircase and makes it easier to see. */
-  function maskBand(g, rnd, dir) {
+  function maskBand(g, rnd, dir, reach) {
     var E = EDGE_PX, n = 4, dep = [], i, deep = 0;
+    var lo = E * EDGE_LO[reach], span = E * EDGE_SPAN[reach];
     g.save();
     g.translate(E * 0.5, E * 0.5);
     g.rotate(dir * 1.5707963267948966);
     g.translate(-E * 0.5, -E * 0.5);
     for (i = 0; i <= n; i++) {
-      dep.push(E * (0.18 + rnd() * 0.24));
+      dep.push(lo + rnd() * span);
       if (dep[i] > deep) deep = dep[i];
     }
     var grd = g.createLinearGradient(0, -1, 0, deep + E * 0.05);
@@ -587,7 +695,7 @@
     g.lineTo(E + 2, dep[n]);
     for (i = n - 1; i >= 0; i--) {
       var mx = ((i + 0.5) / n) * E;
-      var my = (dep[i] + dep[i + 1]) * 0.5 + (rnd() - 0.5) * E * 0.2;
+      var my = (dep[i] + dep[i + 1]) * 0.5 + (rnd() - 0.5) * span * 0.9;
       g.quadraticCurveTo(mx, my, (i / n) * E, dep[i]);
     }
     g.lineTo(-2, dep[0]);
@@ -596,10 +704,10 @@
     /* A few grains carried past the bank. Small and few: this is grit on
        a beach, not a second coat of paint. */
     for (i = 0; i < 3; i++) {
-      var r = E * (0.03 + rnd() * 0.04);
-      g.fillStyle = 'rgba(255,255,255,' + (0.5 - i * 0.12).toFixed(2) + ')';
+      var r = E * (0.025 + rnd() * 0.035);
+      g.fillStyle = 'rgba(255,255,255,' + (0.44 - i * 0.1).toFixed(2) + ')';
       g.beginPath();
-      g.ellipse(rnd() * E, deep + r + rnd() * E * 0.1, r * 1.4, r, rnd() * 3.14159, 0, 6.283185307179586);
+      g.ellipse(rnd() * E, deep + r + rnd() * span * 0.9, r * 1.4, r, rnd() * 3.14159, 0, 6.283185307179586);
       g.fill();
     }
     g.restore();
@@ -607,10 +715,10 @@
 
   /* A corner neighbour with no shared edge: a soft bite out of the
      corner, which is what stops a diagonal coastline from stepping. */
-  function maskCorner(g, rnd, dir) {
+  function maskCorner(g, rnd, dir, reach) {
     var E = EDGE_PX;
     var cx = CORNER_X[dir] * E, cy = CORNER_Y[dir] * E;
-    var r = E * (0.3 + rnd() * 0.14);
+    var r = E * (EDGE_LO[reach] + EDGE_SPAN[reach] * (0.7 + rnd() * 0.5)) * 1.5;
     var grd = g.createRadialGradient(cx, cy, 0, cx, cy, r);
     grd.addColorStop(0, 'rgba(255,255,255,0.96)');
     grd.addColorStop(0.5, 'rgba(255,255,255,0.78)');
@@ -624,7 +732,7 @@
   /* One scratch tile, reused: the neighbour's ground goes in, the stencil
      cuts it, and what is left is stamped into the chunk. Only the
      fallback path needs it; art.js hands back the cut tile already. */
-  function localBlend(def, bits, variant, x, y) {
+  function localBlend(def, bits, variant, reach) {
     if (!seamCanvas) {
       seamCanvas = document.createElement('canvas');
       seamCanvas.width = EDGE_PX; seamCanvas.height = EDGE_PX;
@@ -645,19 +753,21 @@
       sg.fillRect(0, 0, EDGE_PX, EDGE_PX);
     }
     sg.globalCompositeOperation = 'destination-in';
-    sg.drawImage(localMask(bits, variant), 0, 0, EDGE_PX, EDGE_PX);
+    sg.drawImage(localMask(bits, variant, reach), 0, 0, EDGE_PX, EDGE_PX);
     sg.globalCompositeOperation = 'source-over';
     return seamCanvas;
   }
 
-  function blitSeam(g, def, bits, x, y, dx, dy) {
-    var A = root.Art, variant = terrainVariant(x, y);
+  function blitSeam(g, hereDef, def, bits, x, y, dx, dy) {
+    bits = tidyBits(bits);
+    if (!bits) return;
+    var A = root.Art, variant = terrainVariant(x, y), reach = seamReach(hereDef, def);
     if (!artOff.edge && A && A.terrainBlend) {
       try {
-        /* art.js stencils the four sides; its blobs are centred outside
-           the tile and wide enough that the corners come out rounded on
-           their own, so a diagonal-only neighbour is simply left alone. */
-        var bl = (bits & 15) ? A.terrainBlend(def, bits & 15, variant) : null;
+        /* The neighbour's ground already cut to the seam and cached, so a
+           seam costs one blit. Bit 2 of the variant is how art.js lets
+           the caller pick the width instead of guessing from the def. */
+        var bl = A.terrainBlend(def, bits, variant | (reach << 2));
         if (bl && bl.width) {
           var sc = atCachePx(bl);
           g.drawImage(sc, dx + sc.dx, dy + sc.dy);
@@ -665,9 +775,7 @@
         return;
       } catch (e) { artOff.edge = true; warnOnce('Art.terrainBlend', e); }
     }
-    bits = tidyBits(bits);
-    if (!bits) return;
-    g.drawImage(localBlend(def, bits, variant, x, y), dx, dy, CACHE_PX, CACHE_PX);
+    g.drawImage(localBlend(def, bits, variant, reach), dx, dy, CACHE_PX, CACHE_PX);
   }
 
   /* ---------- the slow, large-scale variation ----------
@@ -709,8 +817,8 @@
       for (var i = 0; i <= 32; i++) {
         var t = i / 16 - 1;
         macroInk[i] = t >= 0
-          ? 'rgba(255,244,214,' + (t * 0.05).toFixed(3) + ')'
-          : 'rgba(16,14,24,' + (-t * 0.08).toFixed(3) + ')';
+          ? 'rgba(255,244,214,' + (t * 0.075).toFixed(3) + ')'
+          : 'rgba(16,14,24,' + (-t * 0.12).toFixed(3) + ')';
       }
     }
     var k = Math.round((v + 1) * 16);
@@ -786,7 +894,8 @@
       if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high';
       c = chunks[ci] = {
         canvas: el, ctx: g, snap: new Uint8Array(APRON * APRON),
-        painted: false, detailed: false, seen: 0
+        painted: false, detailed: false, seen: 0,
+        half: null, halfCtx: null, version: 0, halfVersion: -1
       };
     }
     c.seen = frameCount;
@@ -859,6 +968,7 @@
     snapshotChunk(map, c, cx, cy);
     c.painted = true;
     c.detailed = false;
+    c.version++;
   }
 
   /* The second half: seams over the whole chunk, then the wash over that.
@@ -874,6 +984,7 @@
     }
     paintMacroShade(g, x0, y0);
     c.detailed = true;
+    c.version++;
   }
 
   /* Hoisted: this runs a quarter of a million times on a map-wide repaint
@@ -909,7 +1020,7 @@
       }
     }
     for (k = 0; k < n; k++) {
-      blitSeam(g, Defs.fromIndex('terrain', seamTer[k]), seamBits[k], x, y, dx, dy);
+      blitSeam(g, hereDef, Defs.fromIndex('terrain', seamTer[k]), seamBits[k], x, y, dx, dy);
     }
   }
 
@@ -936,6 +1047,30 @@
     }
   }
 
+  /* ---------- the zoomed-out copy ----------
+     A chunk is cached at 32 pixels a tile, and at zoom 1 a tile is 16,
+     so every frame was asking the browser to filter a 512px canvas down
+     to 256 - two dozen times, which was a third of the frame. The chunk
+     keeps a half-size copy instead, refreshed only when the chunk itself
+     changes, and zoom 1 becomes a one-to-one blit like every other zoom.
+     It is built on demand, so a colony played zoomed in never pays for
+     it at all. */
+  function chunkHalf(c) {
+    var side = CHUNK * CACHE_PX, h = side >> 1;
+    if (!c.half) {
+      c.half = document.createElement('canvas');
+      c.half.width = h; c.half.height = h;
+      c.halfCtx = c.half.getContext('2d');
+      c.halfCtx.imageSmoothingEnabled = true;
+    }
+    /* Exactly one half is the one downscale where plain bilinear is the
+       correct box filter, so the cheap setting costs nothing in quality. */
+    c.halfCtx.clearRect(0, 0, h, h);
+    c.halfCtx.drawImage(c.canvas, 0, 0, h, h);
+    c.halfVersion = c.version;
+    return c.half;
+  }
+
   function pruneChunks() {
     if (!chunks || (frameCount & 511) !== 0) return;
     for (var i = 0; i < chunks.length; i++) {
@@ -950,7 +1085,8 @@
        them all in the frame the camera jumped is a visible stall. Both
        halves are budgeted, so a jump fills in over a handful of frames
        instead of dropping one long one. */
-    var side = CHUNK * TS, coats = BASE_CHUNKS, details = DETAIL_CHUNKS;
+    var side = CHUNK * TS, coats = BASE_CHUNKS, details = DETAIL_CHUNKS, halves = HALF_CHUNKS;
+    var wantHalf = side * 2 <= CHUNK * CACHE_PX;
     var c0x = Math.max(0, Math.floor(b0x / CHUNK)), c1x = Math.min(chunksX - 1, Math.floor(b1x / CHUNK));
     var c0y = Math.max(0, Math.floor(b0y / CHUNK)), c1y = Math.min(chunksY - 1, Math.floor(b1y / CHUNK));
     for (var cy = c0y; cy <= c1y; cy++) {
@@ -962,7 +1098,12 @@
           else if (!c.painted) paintChunkFlat(map, c, cx, cy);
         }
         if (c.painted && !c.detailed && details > 0) { detailChunk(map, c, cx, cy); details--; }
-        ctx.drawImage(c.canvas, originX + cx * side, dy, side, side);
+        var src = c.canvas;
+        if (wantHalf) {
+          if (c.halfVersion !== c.version && halves > 0) { chunkHalf(c); halves--; }
+          if (c.half && c.halfVersion === c.version) src = c.half;
+        }
+        ctx.drawImage(src, originX + cx * side, dy, side, side);
       }
     }
     pruneChunks();
@@ -1021,17 +1162,22 @@
     return z || null;
   }
 
+  /* A zone is a note the player wrote on the floor. It has to be legible
+     at a glance and invisible the moment you stop looking for it, which
+     means a wash and a thin border rather than a coat of paint. zones.js
+     hands every zone an opaque palette colour; the colour is what it is
+     saying and is kept, the weight is not. */
   function zoneFill(z) {
     var c = zoneFills.get(z.id);
     if (c) return c;
-    var hue = z.kind === 'growing' ? 96 : 38;
-    hue = (hue + (tileHash(z.id, 17) % 40) - 20 + 360) % 360;
-    /* A zone is a note the player wrote on the floor. It has to be
-       legible at a glance and invisible the moment you stop looking for
-       it, which means a wash and a thin border, not a coat of paint. */
-    c = z.color
-      ? [z.color, z.color]
-      : ['hsla(' + hue + ',42%,46%,0.13)', 'hsla(' + hue + ',58%,62%,0.42)'];
+    if (z.color && z.color.charAt(0) === '#' && z.color.length >= 7) {
+      var rgb = hexChannel(z.color, 0) + ',' + hexChannel(z.color, 1) + ',' + hexChannel(z.color, 2);
+      c = ['rgba(' + rgb + ',0.14)', 'rgba(' + rgb + ',0.55)'];
+    } else {
+      var hue = z.kind === 'growing' ? 96 : 38;
+      hue = (hue + (tileHash(z.id, 17) % 40) - 20 + 360) % 360;
+      c = ['hsla(' + hue + ',42%,46%,0.13)', 'hsla(' + hue + ',58%,62%,0.45)'];
+    }
     zoneFills.set(z.id, c);
     return c;
   }
@@ -2184,10 +2330,13 @@
     if (!(interp >= 0)) interp = 0;
     if (interp > 1) interp = 1;
     /* Every sprite is authored at 64 and lands at 16, 32 or 48; nearest
-       neighbour on that downscale is what made the world look like gravel.
-       Smoothing is on for the whole world layer and stays on. */
+       neighbour on that downscale is what made the world look like
+       gravel. Smoothing is on for the whole world layer and stays on.
+       The good filter is paid once per sprite per zoom, up in
+       atScreenScale, so what is left here is one-to-one blits and the
+       occasional upscale, and those want the cheap filter. */
     ctx.imageSmoothingEnabled = true;
-    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
+    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'low';
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
 

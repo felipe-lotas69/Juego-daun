@@ -94,6 +94,16 @@
 
   function isHuman(pawn) { return !!pawn && pawn.isHuman === true; }
 
+  /* pawn.js sets isHuman to "not an animal", which is true of a
+     mechanoid as well, and the rest of the game is happy with that.
+     Surgery is not: a mech has no kidney to take and no back to go
+     bad, so anything that cuts into a body asks for flesh. */
+  function isFlesh(pawn) {
+    if (!isHuman(pawn)) return false;
+    var kind = pawn.kind || Defs.maybe('pawnKind', pawn.kindId);
+    return !!kind && kind.body === 'human';
+  }
+
   function think(pawn, thoughtId, opts) {
     var N = sys('Needs');
     if (N && N.addThought && isHuman(pawn) && !pawn.dead) N.addThought(pawn, thoughtId, opts || {});
@@ -399,10 +409,17 @@
 
     /* Butchery with a scalpel. The output is not knowable from the def -
        it depends on who died and how long ago - so it carries its own
-       table the way butcherCorpse does. */
+       table the way butcherCorpse does.
+
+       The work type is 'cook', not 'doctor', because workgivers.js scans
+       bench bills in exactly two columns - cookBills for 'cook' and
+       craftBills for 'craft' - and the butcher table is the cook one.
+       A bill in any third column is a bill nobody is ever given. The
+       skill stays 'medicine': who is allowed to take it and how fast
+       they get through it are different questions. */
     harvestOrgansFromCorpse: {
       label: 'harvest organs', jobString: 'Harvesting organs', uiCategory: 'butchery',
-      workAmount: 1600, skill: 'medicine', skillRequirement: 5, workType: 'doctor',
+      workAmount: 1600, skill: 'medicine', skillRequirement: 5, workType: 'cook',
       workbenches: ['butcherTable'],
       ingredients: [{ thing: 'corpse', count: 1 }],
       dynamicProducts: true,
@@ -702,17 +719,27 @@
     }
     if (!m.ops) m.ops = [];
     if (!m.implants) m.implants = [];
+    /* A save written before the bonus cache moved off the pawn carries
+       two derived fields that mean nothing now. Drop them on sight so
+       they are not copied into the next save as well. */
+    if (m._fx !== undefined) { delete m._fx; delete m._fxStamp; delete m._stamp; }
     return m;
   }
   Medicine.state = med;
 
   /* Bonuses are asked for on every step a pawn takes, so the sum is
-     cached against the implant list's own length and a stamp bumped by
-     every install and removal. */
+     cached - but off the pawn, because save.js copies every own field
+     of pawn.med into the file and a derived total has no business
+     being in a save. A WeakMap holds it for as long as the pawn is
+     alive and not one tick longer, and a pawn rebuilt by a load simply
+     has no entry yet. */
+  var _fxCache = new WeakMap();
+
   function bonuses(pawn) {
     var m = pawn && pawn.med;
     if (!m) return null;
-    if (m._fx && m._fxStamp === m.implants.length + (m._stamp || 0)) return m._fx;
+    var hit = _fxCache.get(pawn);
+    if (hit && hit.n === m.implants.length) return hit.fx;
     var fx = { move: 1, work: 1, aim: 1, melee: null };
     for (var i = 0; i < m.implants.length; i++) {
       var rec = m.implants[i];
@@ -727,16 +754,12 @@
     }
     if (fx.move < 0.2) fx.move = 0.2;
     if (fx.work < 0.2) fx.work = 0.2;
-    m._fx = fx;
-    m._fxStamp = m.implants.length + (m._stamp || 0);
+    _fxCache.set(pawn, { n: m.implants.length, fx: fx });
     return fx;
   }
 
   function invalidateBonuses(pawn) {
-    var m = pawn && pawn.med;
-    if (!m) return;
-    m._stamp = (m._stamp || 0) + 1;
-    m._fx = null;
+    if (pawn) _fxCache.delete(pawn);
   }
 
   Medicine.moveFactor = function (pawn) {
@@ -905,7 +928,7 @@
   Medicine.availableOperations = function (pawn) {
     var out = [];
     var H = sys('Health');
-    if (!pawn || !H || !isHuman(pawn) || pawn.dead) return out;
+    if (!pawn || !H || !isFlesh(pawn) || pawn.dead) return out;
     var h = pawn.health;
     if (!h || !h.parts) return out;
     var map = pawn.map;
@@ -916,6 +939,11 @@
     Object.keys(IMPLANTS).forEach(function (defId) {
       var spec = IMPLANTS[defId];
       if (!implantUnlocked(defId)) return;
+      /* Whether the colony owns one of these is a question about the
+         map, not about the part, so it is asked once per implant
+         rather than once per socket: byDef is a scan, and the health
+         tab asks this for every implant in the catalogue. */
+      var have = map ? findImplantItem(map, defId, null) : null;
       for (var p = 0; p < spec.parts.length; p++) {
         var target = H.partNamed(pawn, spec.parts[p]);
         if (!target) continue;
@@ -924,7 +952,6 @@
            where one came out. */
         if (spec.organ && !target.missing) continue;
         if (spec.additive && Medicine.implantAt(pawn, target.defName)) continue;
-        var have = map ? findImplantItem(map, defId, null) : null;
         out.push({
           kind: 'install', part: target.defName, defId: defId,
           label: 'install ' + Defs.thing(defId).label + ' (' + target.label + ')',
@@ -1092,6 +1119,7 @@
     if (patient.dead) return { ok: false, reason: 'the patient is dead' };
     if (surgeon === patient) return { ok: false, reason: 'nobody operates on themselves' };
     if (!isHuman(surgeon)) return { ok: false, reason: 'animals do not perform surgery' };
+    if (!isFlesh(patient)) return { ok: false, reason: 'there is nothing in there a scalpel understands' };
 
     var need = requiredSkill(op);
     if (skillLevel(surgeon, 'medicine') < need) {
@@ -1400,10 +1428,13 @@
     m.surgeries++;
     _stats.surgeries++;
 
+    /* pawn.js hangs learn off the prototype, so a pawn rebuilt as plain
+       data by a loader that skipped the prototype still gets its xp. */
     if (typeof surgeon.learn === 'function') surgeon.learn('medicine', 240);
     else {
       var P = sys('Pawn');
-      if (P && P.gainXp) P.gainXp(surgeon, 'medicine', 240);
+      var learn = P && P.prototype && P.prototype.learn;
+      if (typeof learn === 'function') learn.call(surgeon, 'medicine', 240);
     }
 
     if (ok) return succeed(surgeon, patient, op);
@@ -1632,27 +1663,42 @@
   Medicine.corpseOrganYield = function (corpse, pawn) {
     var out = {};
     if (!corpse || !corpse.corpse) return out;
+    /* Human bodies only. `isAnimal` alone lets a mechanoid through -
+       every mech kind is flagged false - and a kidney out of a war
+       machine is not a thing a butcher table should produce.
+       production.js tests the body the same way. */
     var kind = Defs.maybe('pawnKind', corpse.corpse.kindId);
-    if (!kind || kind.isAnimal) return out;
+    if (!kind || kind.body !== 'human') return out;
 
     /* A body left in the sun gives up nothing: that is the whole
        pressure behind building a freezer before a raid, not after. */
     var freshness = U.clamp01(1 - (corpse.rotProgress || 0) * 1.6);
     if (freshness <= 0.05) return out;
 
+    /* One roll for the whole body, not one per organ. At the rate this
+       shipped with - a chance per organ against a budget of one plus a
+       third of the surgeon's skill - a skill-15 doctor pulled three
+       organs out of every raider, so a six-body raid paid for a bionic
+       leg and had change, and cutting up the dead was the best-paid
+       work in the colony. One organ a body, and skill decides whether
+       there is one at all: that leaves a corpse as the thing that
+       makes a freezer worth building, not as an income. */
     var skill = skillLevel(pawn, 'medicine');
+    if (!U.chance(freshness * (0.25 + 0.025 * skill))) return out;
+
+    /* Shuffled, because walking a fixed list means the first name on it
+       comes out of every body in the colony's history and the heart
+       never does. */
     var taken = corpse.corpse.harvested || [];
-    var pool = ['kidneyLeft', 'kidneyRight', 'lungLeft', 'lungRight', 'liver', 'heart',
-                'eyeLeft', 'eyeRight'];
-    var budget = 1 + Math.floor(skill / 6);
-    for (var i = 0; i < pool.length && budget > 0; i++) {
+    var pool = U.shuffle(['kidneyLeft', 'kidneyRight', 'lungLeft', 'lungRight', 'liver',
+                          'heart', 'eyeLeft', 'eyeRight']);
+    for (var i = 0; i < pool.length; i++) {
       if (taken.indexOf(pool[i]) >= 0) continue;
       var organ = ORGAN_OF_PART[pool[i]];
       if (!organ) continue;
-      if (!U.chance(freshness * (0.35 + 0.03 * skill))) continue;
-      out[organ] = (out[organ] || 0) + 1;
+      out[organ] = 1;
       taken.push(pool[i]);
-      budget--;
+      break;
     }
     corpse.corpse.harvested = taken;
     return out;
@@ -1971,14 +2017,18 @@
             name: 'operate',
             /* No skill here: Medicine.perform pays the medical xp itself,
                and paying it twice would train a surgeon at double speed
-               for no reason a player could see. */
+               for no reason a player could see.
+
+               The amount is the nominal work and nothing else. A
+               shaky-handed surgeon is slow because `rate` below is
+               pawn.workRate, and pawn.workRate is Health.workSpeedFactor,
+               and that is manipulation times consciousness already.
+               Dividing the amount by manipulation as well charged a
+               one-handed doctor for the same disability twice. */
             amount: function (p, j) {
               var patient = T.resolve(j.targetA, p.map);
               var op = patient ? findOp(patient, j.state.opId) : null;
-              var base = op ? (OPS[op.kind] || {}).work || 2000 : 2000;
-              var H = sys('Health');
-              var manip = (H && H.capacity) ? Math.max(0.3, H.capacity(p, 'manipulation')) : 1;
-              return base / manip;
+              return op ? (OPS[op.kind] || {}).work || 2000 : 2000;
             },
             rate: function (p) {
               return (typeof p.workRate === 'function') ? p.workRate('medicine') : 0.6;
@@ -2353,15 +2403,15 @@
     _stats = { surgeries: 0, botched: 0, organs: 0, illnesses: 0 };
   };
 
-  /* A loaded pawn's cached bonus totals belong to the session that
-     built them, and its implant list came back as plain data. */
+  /* A loaded pawn's implant list came back as plain data, and the
+     bonus total derived from it belongs to the session that built it.
+     Nothing in save.js calls this - the WeakMap already has no entry
+     for a pawn a load has just rebuilt - but it is the honest answer
+     if a loader ever does. */
   Medicine.rebind = function (pawn) {
-    var m = pawn && pawn.med;
-    if (!m) return;
-    if (!m.ops) m.ops = [];
-    if (!m.implants) m.implants = [];
-    m._fx = null;
-    m._stamp = (m._stamp || 0) + 1;
+    if (!pawn) return;
+    med(pawn);
+    invalidateBonuses(pawn);
   };
 
   root.Medicine = Medicine;

@@ -571,8 +571,8 @@
     clockEls.time.textContent = clock + ' ' + timeName(Game.hour());
     clockEls.temp.textContent = temp + '°C';
     clockEls.temp.className = 'clock-temp' + (temp <= 0 ? ' cold' : (temp >= 32 ? ' hot' : ''));
-    clockEls.wealth.textContent = (wealth.toLocaleString ? wealth.toLocaleString('en') : wealth) +
-      ' silver of colony';
+    clockEls.wealth.textContent = 'Wealth ' +
+      (wealth.toLocaleString ? wealth.toLocaleString('en') : wealth) + ' silver';
     for (var i = 0; i < clockEls.speed.length; i++) {
       clockEls.speed[i].classList.toggle('on', Game.speed === i);
     }
@@ -993,7 +993,14 @@
         if (owner) rows.push(row('kv', 'Assigned to', nameOf(owner), 0));
       }
     }
-    var d = { kind: 'thing', thing: t, title: U.cap(t.label()), sub: def.label || def.id, rows: rows };
+    /* The subtitle is the def behind a label the stuff renamed - "wall"
+       under "wooden wall". When the label already is the def's, which is
+       every unstuffed thing, printing it again in grey underneath is
+       noise, so it is left out. */
+    var title = U.cap(t.label());
+    var sub = def.label || def.id || '';
+    if (sub.toLowerCase() === title.toLowerCase()) sub = '';
+    var d = { kind: 'thing', thing: t, title: title, sub: sub, rows: rows };
     d.sig = 't' + t.id + '|' + d.title + rowsSig(rows);
     return d;
   }
@@ -1063,7 +1070,9 @@
     head.appendChild(el('div', 'ins-job', ''));
     pane.appendChild(head);
     pane.appendChild(el('div', 'ins-tabs'));
-    pane.appendChild(el('div', 'ins-body'));
+    var insBody = el('div', 'ins-body');
+    insBody.addEventListener('scroll', function () { markOverflow(insBody); });
+    pane.appendChild(insBody);
     pane.appendChild(el('div', 'ins-foot'));
   }
 
@@ -1090,6 +1099,7 @@
     var body = pane.childNodes[2];
     clear(body);
     renderRows(body, data.rows, data);
+    overflowDirty = true;
 
     var foot = pane.childNodes[3];
     clear(foot);
@@ -1288,8 +1298,37 @@
     main.appendChild(hint);
     P.architect.appendChild(main);
 
+    grid.addEventListener('scroll', function () { markOverflow(grid); });
+
     archEls = { search: search, cats: cats, grid: grid, hint: hint };
     syncArchitectVisibility();
+  }
+
+  /* Chromium's overlay scrollbar is not painted at rest, so a list that
+     scrolls looks exactly like a list whose last row was cut off by a
+     bug. `.more` fades the bottom edge while there is more under it.
+
+     scrollHeight is a layout read, and reading it in the same turn that
+     just rebuilt the panel forces a synchronous layout - a millisecond,
+     measured, on the inspect pane. So a rebuild only raises a flag and
+     the read happens at the top of the next frame, where the layout is
+     the one the browser has already done for the last paint and the
+     read is free. A scroll event reads at once: nothing wrote. */
+  var overflowDirty = false;
+
+  function markOverflow(node) {
+    if (!node || !node.classList) return;
+    var over = node.scrollHeight - node.clientHeight;
+    node.classList.toggle('more', over > 2 && node.scrollTop < over - 2);
+  }
+
+  function flushOverflow() {
+    if (!overflowDirty) return;
+    overflowDirty = false;
+    if (archOpen) markOverflow(archEls.grid);
+    if (P.inspect && !P.inspect.classList.contains('hidden')) {
+      markOverflow(P.inspect.childNodes[2]);
+    }
   }
 
   function syncArchitectVisibility() {
@@ -1341,6 +1380,7 @@
       hint.appendChild(el('span', 'arch-hint-text dim',
         'Pick a category, then a thing to place. Escape puts the tool down.'));
     }
+    overflowDirty = true;
   }
 
   /* A locked item is greyed and refuses the click, but it is not a
@@ -1402,7 +1442,10 @@
         costText(def.id, stuff), active, function () {
           UI.setTool({ kind: 'build', defId: def.id, rot: 0, stuffId: stuff });
         }, reason);
-      if (!reason && def.description) tip(b, def.description);
+      if (!reason) {
+        tip(b, U.cap(def.label || def.id) + ' — ' + costText(def.id, stuff) +
+          (def.description ? '. ' + def.description : '.'));
+      }
       items.appendChild(b);
     });
   }
@@ -1474,14 +1517,26 @@
     schedule: 'Schedule', assign: 'Assign', animals: 'Animals'
   };
 
+  /* Which tabs are a window and which are a sheet. The research tree is
+     six columns of cards wide and the world screen is a map, so those
+     two take the window; everything else is a table that knows its own
+     size and should not be floated in the middle of black acreage. */
+  var FITTED_TABS = {
+    work: true, colonists: true, schedule: true, assign: true, animals: true
+  };
+
   UI.openTab = function (name) {
     if (openTabName === name && name !== 'bills') return UI.closeTab();
+    /* Nothing to tabulate before a colony exists, and every renderer
+       below this point reads Game.map. */
+    if (!Game.started || !Game.map) return;
     closeWorld();
     openTabName = name;
     sig.tab = '';
     sig.bar = '';
     P.tabPanel.classList.remove('hidden');
     P.tabPanel.classList.remove('compact');
+    P.tabPanel.classList.toggle('fit', !!FITTED_TABS[name]);
     renderTab();
   };
 
@@ -1496,6 +1551,7 @@
     sig.bar = '';
     P.tabPanel.classList.add('hidden');
     P.tabPanel.classList.remove('compact');
+    P.tabPanel.classList.remove('fit');
     clear(P.tabPanel);
   };
 
@@ -1507,6 +1563,7 @@
     sig.tab = '';
     sig.bar = '';
     P.tabPanel.classList.remove('hidden');
+    P.tabPanel.classList.remove('fit');
     P.tabPanel.classList.add('compact');
     renderTab();
   };
@@ -2045,7 +2102,7 @@
       roles.forEach(function (slot) {
         var def = root.Ideology.role ? Ideology.role(slot.id) : null;
         var holder = root.Ideology.roleHolder ? Ideology.roleHolder(slot.id, Game.map) : null;
-        var line = el('div', 'kv');
+        var line = el('div', 'kv role-row');
         line.appendChild(el('span', 'kv-l', (def && def.label) || slot.id));
         var pick = el('select', 'mini-select');
         var none = el('option', null, 'nobody');
@@ -2996,6 +3053,9 @@
 
   UI.update = function () {
     frame++;
+    /* Before anything writes to the DOM this frame, while the layout is
+       still the one that was painted. */
+    flushOverflow();
     var onMenu = !P.menu.classList.contains('hidden');
     if (onMenu || !Game.started || !Game.map) {
       P.inspect.classList.add('hidden');

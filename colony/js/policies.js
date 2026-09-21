@@ -142,10 +142,25 @@
     return (a.armorSharp || 0) >= 0.15 || (a.armorBlunt || 0) >= 0.12;
   }
 
+  /* Apparel worn for a reason a work policy can reason about: it keeps
+     the cold out or it stops something sharp. A collar and a coronet
+     are worn because of a social fact, and the systems that own those
+     put them on themselves - an outfit that listed them would have
+     colonists dressing up out of the stockpile. */
+  function practicalGear(def) {
+    if (def.royalApparel) return false;
+    var a = def.apparel || {};
+    return (a.insulationCold || 0) >= 1 ||
+           (a.armorSharp || 0) >= 0.05 ||
+           (a.armorBlunt || 0) >= 0.05;
+  }
+  Policies.practicalGear = practicalGear;
+
   function defaultOutfits() {
     var apparel = Policies.apparelDefs();
     var worker = [], soldier = [];
     apparel.forEach(function (d) {
+      if (!practicalGear(d)) return;
       soldier.push(d.id);
       if (!isArmour(d)) worker.push(d.id);
     });
@@ -464,20 +479,38 @@
     var home = Policies.homeArea();
     if (!home) return false;
 
-    var seen = Object.create(null), out = [];
+    /* Additive, like the game it is copied from. A colonist who wanders
+       off does not drag the home area with them, and a shed that burned
+       down does not un-declare the ground it stood on. */
+    var seen = Object.create(null), out = [], i, j;
     function mark(x, y) {
       if (!map.inBounds(x, y)) return;
-      var i = y * map.w + x;
-      if (seen[i]) return;
-      seen[i] = 1;
-      out.push(i);
+      var k = y * map.w + x;
+      if (seen[k]) return;
+      seen[k] = 1;
+      out.push(k);
     }
     function apron(x, y) {
       mark(x, y);
       for (var k = 0; k < U.ADJ8.length; k++) mark(x + U.ADJ8[k][0], y + U.ADJ8[k][1]);
     }
+    for (i = 0; i < home.cells.length; i++) {
+      seen[home.cells[i]] = 1;
+      out.push(home.cells[i]);
+    }
 
-    var buildings = Defs.buildings(), i, j;
+    /* Landing day: there is not one building on the map yet, and the
+       home area still has to mean something - so it starts as the
+       ground the survivors are standing on. */
+    if (!home.cells.length) {
+      var landed = map.colonists();
+      for (i = 0; i < landed.length; i++) {
+        var ring = U.cellsInRadius(landed[i].x, landed[i].y, 5);
+        for (j = 0; j < ring.length; j++) mark(ring[j][0], ring[j][1]);
+      }
+    }
+
+    var buildings = Defs.buildings();
     for (i = 0; i < buildings.length; i++) {
       var list = map.byDef(buildings[i].id);
       for (j = 0; j < list.length; j++) {
@@ -741,6 +774,21 @@
     return null;
   };
 
+  /* How much this piece of apparel is worth wearing. Deliberately
+     crude: two numbers the player can see in the item's own tooltip,
+     weighted so that armour beats warmth, because a colonist only
+     wears one thing per body part in this game and something has to
+     break the tie. */
+  function gearScore(def) {
+    var a = (def && def.apparel) || {};
+    return (a.armorSharp || 0) * 2 + (a.armorBlunt || 0) + (a.insulationCold || 0) * 0.02;
+  }
+  Policies.gearScore = gearScore;
+
+  /* Enough of a gap to be worth undressing for. Without a margin a
+     colonist spends the day swapping one shirt for an identical one. */
+  var SWAP_MARGIN = 0.12;
+
   function slotsTaken(pawn) {
     var taken = Object.create(null);
     var list = pawn.apparel || [];
@@ -776,7 +824,14 @@
       if (!filterAllows(o, def.id)) continue;
       var slots = (def.apparel && def.apparel.slots) || [];
       var fills = false;
-      for (var s = 0; s < slots.length; s++) if (!taken[slots[s]]) { fills = true; break; }
+      for (var s = 0; s < slots.length && !fills; s++) {
+        var worn = taken[slots[s]];
+        if (!worn) { fills = true; break; }
+        /* The slot is taken, so this is a swap. Only worth it when the
+           thing on the floor is clearly better and the thing being
+           taken off is not something the outfit insisted on. */
+        if (gearScore(def) - gearScore(worn.def) >= SWAP_MARGIN) fills = true;
+      }
       if (!fills) continue;
 
       var list = map.byDef(def.id);
@@ -1248,16 +1303,17 @@
     return preset;
   };
 
-  Policies.applyStockpilePreset = function (zone, presetId) {
+  Policies.applyStockpilePreset = function (zone, presetId, map) {
     var Z = sys('Zones');
     var preset = findIn(st.stockpilePresets, presetId);
     if (!Z || !preset || !zone || zone.kind !== 'stockpile') return false;
+    map = mapOf(map);
     Z.setAllowAll(zone, preset.allowAll);
     var i;
     for (i = 0; i < preset.categories.length; i++) Z.setFilterCategory(zone, preset.categories[i], true);
     for (i = 0; i < preset.defs.length; i++) Z.setFilterDef(zone, preset.defs[i], true);
     for (i = 0; i < preset.deny.length; i++) Z.setFilterDef(zone, preset.deny[i], false);
-    if (Z.setPriority) Z.setPriority(zone, preset.priority);
+    if (Z.setPriority) Z.setPriority(map, zone, preset.priority);
     else zone.priority = preset.priority;
     return true;
   };
@@ -1573,6 +1629,22 @@
       }
     });
 
+    /* Idling, but inside the boundary. jobs.js's wander picks a cell
+       seven tiles away without asking anybody, which on its own is
+       enough to walk a restricted colonist straight out of the area
+       they were just sent back to. */
+    Jobs.register('policyIdle', {
+      label: 'wander',
+      reportString: 'Wandering.',
+      allowGoneTarget: true,
+      toils: function (job) {
+        return [
+          Toils.goto('A', { pe: PE.ON_CELL, failIfGone: false }),
+          Toils.wait(job.count > 0 ? job.count : 180)
+        ];
+      }
+    });
+
     var WG = sys('WorkGivers');
     if (WG && WG.register) {
       /* Taking off what the outfit forbids comes before putting on
@@ -1636,6 +1708,20 @@
     }
     if (at < 0) at = Think.LEVELS.length - 1;
     Think.LEVELS.splice(at, 0, level);
+
+    /* The second rung is about where a restricted colonist idles, so
+       it belongs below everything that is actually worth doing and
+       above the idle level whose wander would undo it. */
+    var idleTier = Think.TIER.POLICY_IDLE;
+    if (idleTier === undefined) { idleTier = 11.5; Think.TIER.POLICY_IDLE = idleTier; }
+    var idleAt = -1;
+    for (i = 0; i < Think.LEVELS.length; i++) {
+      if (Think.LEVELS[i].name === 'idle') { idleAt = i; break; }
+    }
+    if (idleAt < 0) idleAt = Think.LEVELS.length;
+    Think.LEVELS.splice(idleAt, 0,
+      { tier: idleTier, name: 'policyIdle', fn: policyIdleJob });
+
     thinkInstalled = true;
     return true;
   }
@@ -1649,6 +1735,31 @@
     if (job) return job;
     return scheduledDrugJob(pawn);
   }
+
+  /* Somewhere inside the area to stand about in. Sampled rather than
+     scanned: the point is variety, not the best cell, and an area can
+     be two thousand tiles. */
+  function policyIdleJob(pawn) {
+    if (!pawn || pawn.isHuman !== true || pawn.faction !== 'player') return null;
+    if (pawn.drafted || pawn.downed || pawn.mentalState) return null;
+    var area = Policies.areaOf(pawn);
+    if (!area || !area.cells.length) return null;
+    var map = pawn.map, J = sys('Jobs'), T = sys('T');
+    if (!map || !J || !T) return null;
+
+    var cells = area.cells, spot = null;
+    for (var tries = 0; tries < 12 && !spot; tries++) {
+      var c = cells[U.randInt(0, cells.length - 1)];
+      var x = map.xOf(c), y = map.yOf(c);
+      if (!map.passable(x, y)) continue;
+      if (U.cheb(x, y, pawn.x, pawn.y) > 14) continue;
+      spot = { x: x, y: y };
+    }
+    if (!spot) return null;
+    return J.make('policyIdle', T.cell(spot.x, spot.y), null,
+      { count: U.randInt(120, 360) });
+  }
+  Policies.policyIdleJob = policyIdleJob;
 
   function returnToAreaJob(pawn) {
     if (!Policies.restricted(pawn)) return null;
@@ -1675,17 +1786,22 @@
   Policies.tickPawn = function (pawn) {
     if (!pawn || pawn.dead || pawn.isHuman !== true) return;
     if (pawn.faction !== 'player') return;
-    var t = now();
+    boot();
+    var t = now(), rec = record(pawn);
+
+    /* Checked every time this is called rather than on the beat: it is
+       one field compare unless the pawn is actually walking to a meal,
+       and a refusal that arrives three seconds late arrives after the
+       colonist has already eaten the thing. */
+    enforceFood(pawn, rec, t);
+    enforceArea(pawn);
+
     var last = st.pawnBeat[pawn.id] || 0;
     if (last && t - last < PAWN_INTERVAL) return;
     st.pawnBeat[pawn.id] = t;
 
-    boot();
-    var rec = record(pawn);
     if (!rec.autoAssigned) Policies.autoAssign(pawn);
     Policies.scheduleOf(pawn);
-
-    enforceFood(pawn, rec, t);
   };
 
   /* A colonist walking across the colony to eat the fine meal the
@@ -1708,6 +1824,25 @@
     rec.blockedFoodUntil = t + FOOD_BLOCK_COOLDOWN;
     J.end(pawn, 'interrupted');
     debug((pawn.name && pawn.name.first) + ' refused ' + food.def.id + ' on policy');
+  }
+
+  /* A restricted pawn who is outside their area and doing nothing that
+     needs doing there is sent home. Only the aimless jobs are cut:
+     work is left to finish, because until workgivers.js consults
+     allowedAt a cancelled haul is simply handed straight back and the
+     colonist spends the day pacing the boundary. */
+  var LOITER_JOBS = { wander: 1, joyIdle: 1, goto: 1, wait: 1 };
+
+  function enforceArea(pawn) {
+    var job = pawn.job;
+    if (!job || job.playerForced || pawn.drafted) return;
+    if (!LOITER_JOBS[job.defId]) return;
+    if (!Policies.restricted(pawn)) return;
+    if (Policies.allowedAt(pawn, pawn.x, pawn.y)) return;
+    /* The walk home is itself a goto; cutting it would be a loop. */
+    if (job.defId === 'goto' && job.state && job.state.policyReturn) return;
+    var J = sys('Jobs');
+    if (J && J.end) J.end(pawn, 'interrupted');
   }
 
   Policies.tick = function (a, b) {

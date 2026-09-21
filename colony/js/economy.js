@@ -1728,9 +1728,10 @@
         { kind: 'threat' });
     }
 
-    /* A sheltered refugee goes home when their time is up, whichever way
-       it went; a colony that kept them alive does not also get to keep
-       them, which is what makes the fifteen days a real cost. */
+    /* A sheltered refugee who was kept alive to the end goes home, so
+       the weeks of feeding them were a cost and not a free colonist.
+       One whose contract fell through has nowhere to be sent and stays
+       where they are, which is its own kind of answer. */
     if (c.kind === 'shelter' && c.guestPawnId) releaseGuest(c, ok);
   }
 

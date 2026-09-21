@@ -368,10 +368,10 @@
 
   /* Fire, traps and water. A cell that is about to be on fire is not a
      firing position however good the sandbags are. */
-  function hazardAt(map, x, y) {
+  function hazardAt(map, x, y, fires) {
     var h = 0;
-    if (map.byDef) {
-      var fires = map.byDef('fire');
+    if (fires === undefined) fires = map.byDef ? map.byDef('fire') : null;
+    if (fires) {
       for (var i = 0; i < fires.length; i++) {
         var f = fires[i];
         if (!f.spawned) continue;
@@ -405,17 +405,36 @@
      throttled - see THINK_GAP and the rare-tick slice in tickPawn.
      ------------------------------------------------------------------ */
 
-  function hostilesNear(pawn, radius, includeDowned) {
-    var map = pawn.map, out = [];
-    if (!map) return out;
+  /* Everyone on the map who could be in a fight with somebody, rebuilt
+     at most once a tick and shared by every caller. It matters: think.js
+     asks combatJob about every pawn it considers, and without this each
+     of those questions walked the whole pawn list - which on a map with
+     a hundred and forty hares is most of what the system would cost on
+     a day when nothing happens. */
+  function fighters(map) {
+    var tick = gameTick();
+    if (map.__tacFightTick === tick && map.__tacFighters) return map.__tacFighters;
+    var out = map.__tacFighters || (map.__tacFighters = []);
+    out.length = 0;
     var list = map.pawns;
     for (var i = 0; i < list.length; i++) {
       var q = list[i];
-      if (q === pawn || q.dead) continue;
-      if (!includeDowned && q.downed) continue;
-      if (harmless(q)) continue;
-      if (!hostile(pawn, q)) continue;
+      if (q.dead || q.downed || harmless(q)) continue;
+      out.push(q);
+    }
+    map.__tacFightTick = tick;
+    return out;
+  }
+
+  function hostilesNear(pawn, radius) {
+    var map = pawn.map, out = [];
+    if (!map) return out;
+    var list = fighters(map);
+    for (var i = 0; i < list.length; i++) {
+      var q = list[i];
+      if (q === pawn) continue;
       if (U.dist(pawn.x, pawn.y, q.x, q.y) > radius) continue;
+      if (!hostile(pawn, q)) continue;
       out.push(q);
     }
     return out;
@@ -648,12 +667,25 @@
 
     var cover = Tactics.coverScoreAt(map, x, y, ctx.threatX, ctx.threatY);
     var score = W_COVER * cover;
+    var travel = U.cheb(pawn.x, pawn.y, x, y);
 
     if (ctx.target && ctx.w) {
       var band = 1 - Math.abs(d - ctx.ideal) / Math.max(8, ctx.w.range);
       score += W_BAND * U.clamp01(band);
     }
     if (!los) score -= 0.5;
+
+    /* Everything still to come either adds a bounded bonus - the flank
+       term and the anchor term - or takes something away, so this is
+       the most this cell could possibly be worth. A hundred and fifty
+       candidates times four line traces each, twice a second, per pawn
+       in the fight, is the difference between a system you can ship and
+       one that halves the frame rate during a raid. */
+    var ceiling = score - W_TRAVEL * travel +
+      (ctx.target ? (ctx.flank ? W_FLANK_ORDER : W_FLANK) : 0) +
+      (ctx.anchorR > 0 ? W_ANCHOR : 0) +
+      (travel === 0 ? INCUMBENT_BONUS : 0);
+    if (ctx.floor !== null && ceiling <= ctx.floor) return null;
 
     /* Flanking, stated mechanically: a cell their cover does not work
        from. Worth something always, worth a lot when the order says so
@@ -663,7 +695,7 @@
       score += (ctx.flank ? W_FLANK_ORDER : W_FLANK) * (1 - theirCover);
     }
 
-    score -= W_HAZARD * hazardAt(map, x, y);
+    score -= W_HAZARD * hazardAt(map, x, y, ctx.fires);
     score -= W_DEADEND * deadEndScore(map, x, y);
 
     /* Somebody else's line of fire, and everybody else's guns. */
@@ -679,11 +711,8 @@
     score -= W_FRIENDLY_FIRE * U.clamp01(ff * 0.6);
 
     var seen = 0;
-    for (i = 0; i < ctx.foes.length; i++) {
-      var foe = ctx.foes[i];
-      if (foe === ctx.target) continue;
-      if (U.dist(x, y, foe.x, foe.y) > SCAN_RADIUS) continue;
-      if (lineOfSight(map, x, y, foe.x, foe.y)) seen++;
+    for (i = 0; i < ctx.others.length; i++) {
+      if (lineOfSight(map, x, y, ctx.others[i].x, ctx.others[i].y)) seen++;
     }
     score -= W_CROSSFIRE * U.clamp01(seen * 0.5);
 
@@ -700,7 +729,6 @@
 
     /* The walk itself, then the two memory terms that stop a pawn
        trading the same two cells for the rest of the fight. */
-    var travel = U.cheb(pawn.x, pawn.y, x, y);
     score -= W_TRAVEL * travel;
     if (travel === 0) score += INCUMBENT_BONUS;
     else if (ctx.recent && x === ctx.recentX && y === ctx.recentY) score -= RECENT_PENALTY;
@@ -735,10 +763,22 @@
       anchorY: opts.anchorY === undefined ? pawn.y : opts.anchorY,
       anchorR: opts.anchorR || 0,
       foes: foes,
+      others: [],
+      fires: map.byDef ? map.byDef('fire') : null,
       friends: opts.friends || alliesNear(pawn, 18),
       recent: gameTick() - st.leftTick < HOME_MEMORY,
-      recentX: st.leftX, recentY: st.leftY
+      recentX: st.leftX, recentY: st.leftY,
+      floor: null
     };
+
+    /* Crossfire is read from the four nearest other guns. Past that the
+       term saturates anyway, and every one of them costs a line trace
+       per candidate cell. */
+    for (var f = 0; f < foes.length && ctx.others.length < 4; f++) {
+      if (foes[f] === target) continue;
+      if (U.dist(pawn.x, pawn.y, foes[f].x, foes[f].y) > SCAN_RADIUS) continue;
+      ctx.others.push(foes[f]);
+    }
 
     /* A veteran looks further for somewhere to stand, and a pinned pawn
        will not go far at all. */
@@ -753,12 +793,15 @@
     var limit = opts.maxCells || 150;
     var best = null, current = null, looked = 0;
 
+    /* cellsInRadius comes back nearest-first, so the cell underfoot is
+       scored before anything else and its score becomes the floor every
+       other candidate has to clear. */
     for (var i = 0; i < cells.length && looked < limit; i++) {
       var rec = scoreCell(ctx, cells[i][0], cells[i][1]);
       if (!rec) continue;
       looked++;
       if (rec.travel === 0) current = rec;
-      if (!best || rec.score > best.score) best = rec;
+      if (!best || rec.score > best.score) { best = rec; ctx.floor = rec.score; }
     }
     if (!best) return null;
     best.current = current;
@@ -1390,12 +1433,16 @@
 
   Tactics.combatJob = function (pawn) {
     if (!canAct(pawn)) return null;
-    var st = stateOf(pawn);
     var tick = gameTick();
-    if (tick < st.nextThink) return null;
-    st.nextThink = tick + THINK_GAP;
-
     var map = pawn.map;
+    /* A pawn who has never been in a fight has no state yet, and this
+       function must not be what gives them one: think.js asks it about
+       every colonist in the colony, and a mind on each of them means a
+       hostile scan per colonist per rare tick for the rest of the game,
+       plus a block of dead state in every save. Nothing below is
+       allowed to call stateOf until there is something to fight. */
+    var st = pawn.tactics;
+    if (st && tick < st.nextThink) return null;
 
     /* Standing in a fire outranks every order there is, drafted or not. */
     if (burning(pawn) || fireAt(map, pawn.x, pawn.y)) {
@@ -1403,20 +1450,24 @@
       if (out) return out;
     }
 
-    var order = Tactics.orderOf(pawn);
+    var order = st ? Tactics.orderOf(pawn) : null;
     var foes = hostilesNear(pawn, SCAN_RADIUS);
     if (!foes.length) {
       /* The fight is over as far as this pawn can see. */
-      if (order && order.kind === 'fallback') {
-        var home = rallyJob(pawn, st, order, tick);
-        if (home) return home;
+      if (st) {
+        if (order && order.kind === 'fallback') {
+          var home = rallyJob(pawn, st, order, tick);
+          if (home) return home;
+        }
+        if (st.engaged && tick - st.lastFoeTick > ENGAGE_MEMORY) endEngagement(pawn, st);
+        releaseClaim(pawn);
+        st.nextThink = tick + THINK_GAP * 4;
       }
-      if (st.engaged && tick - st.lastFoeTick > ENGAGE_MEMORY) endEngagement(pawn, st);
-      releaseClaim(pawn);
-      st.nextThink = tick + THINK_GAP * 4;
       return null;
     }
 
+    st = stateOf(pawn);
+    st.nextThink = tick + THINK_GAP;
     st.lastFoeTick = tick;
     if (!st.engaged) startEngagement(pawn, st);
 
@@ -1645,20 +1696,32 @@
     }
     if (pawn.downed) { st.suppression = 0; st.broken = false; return; }
 
-    /* The rest is the expensive half, on a staggered slice. The nerve
-       check belongs here rather than in the decay above: rolled every
-       tick it would break a pinned pawn within a second of the fire
-       arriving, which is a panic, not a firefight. */
-    if (((gameTick() + pawn.id) % 30) !== 0) return;
+    /* A pawn who has fought once keeps its mind for the rest of its
+       life, and a veteran hauling steel two seasons later must not
+       still be paying for it. The expensive half below only runs for
+       somebody who is plausibly in a fight right now, which is four
+       field reads to decide. */
+    var tick = gameTick();
+    if (!pawn.drafted && !(pawn.job && COMBAT_JOBS[pawn.job.defId]) &&
+        st.suppression <= 0 && tick - st.lastFoeTick > ENGAGE_MEMORY) {
+      if (st.engaged) endEngagement(pawn, st);
+      return;
+    }
+
+    /* The rest is on a staggered slice. The nerve check belongs here
+       rather than in the decay above: rolled every tick it would break
+       a pinned pawn within a second of the fire arriving, which is a
+       panic, not a firefight. */
+    if (((tick + pawn.id) % 30) !== 0) return;
     if (st.suppression > 0) breakCheck(pawn, st);
 
     var near = hostilesNear(pawn, SCAN_RADIUS);
     if (near.length) {
-      st.lastFoeTick = gameTick();
+      st.lastFoeTick = tick;
       if (!st.engaged) startEngagement(pawn, st);
       st.xp += XP_PER_COMBAT_TICK * 30;
       steer(pawn, st);
-    } else if (st.engaged && gameTick() - st.lastFoeTick > ENGAGE_MEMORY) {
+    } else if (st.engaged && tick - st.lastFoeTick > ENGAGE_MEMORY) {
       endEngagement(pawn, st);
     }
   };
