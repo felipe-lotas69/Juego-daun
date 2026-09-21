@@ -524,7 +524,7 @@
       ledger: [],
       totals: {
         smuggled: 0, found: 0, confiscated: 0, destroyed: 0, sold: 0,
-        deals: 0, extortions: 0, informants: 0, informantsKilled: 0, breaches: 0,
+        deals: 0, extortions: 0, informants: 0, informantsKilled: 0, breaches: 0, tunnels: 0,
         gangFights: 0, shakedowns: 0, frisks: 0
       },
       mapId: 0
@@ -544,6 +544,7 @@
         informant: false, informantSince: 0, informantById: 0,
         exposure: 0, intelGiven: 0, lastMeetTick: -99999,
         suspicion: 0, lastFriskTick: -99999, lastShakedownTick: -99999, lastTaxedTick: -99999,
+        digTargetId: 0, digProgress: 0, digKnown: false,
         lastDealTick: -99999, lastMadeTick: -99999, lastGetTick: -99999,
         grudge: 0, protection: 0
       };
@@ -1244,7 +1245,7 @@
     var power = 0.5 + 0.04 * skill(warden, 'social') + 0.03 * skill(warden, 'intellectual');
     state.totals.shakedowns++;
 
-    var got = {}, hitAny = 0, victims = [];
+    var got = {}, hitAny = 0, tunnels = 0, victims = [];
     var list = inmates(map);
     for (var p = 0; p < list.length; p++) {
       var st = list[p].contraband;
@@ -1284,6 +1285,22 @@
         }
       }
       if (mine) victims.push(list[p]);
+
+      /* And the walls. A tunnel is the one piece of contraband work that
+         is not an object, and catching one half-dug is the best thing a
+         shakedown ever does. */
+      if (st.digProgress > 0 && Regions.roomIdAt(map, list[p].x, list[p].y) === rid &&
+          U.chance(U.clamp01(0.25 + power * 0.5 + st.digProgress * 0.4))) {
+        var depth = Math.round(st.digProgress * 100);
+        st.digProgress = 0; st.digTargetId = 0; st.digKnown = false;
+        st.grudge = U.clamp01(st.grudge + 0.3);
+        tunnels++; state.totals.tunnels++;
+        log('tunnel', nameOf(warden) + ' found ' + nameOf(list[p]) + '\'s tunnel, ' + depth + '% through');
+        letter('A tunnel',
+          nameOf(warden) + ' pulled a panel off the wall of ' + nameOf(list[p]) + '\'s cell and ' +
+          'found a hole ' + depth + '% of the way through it. It has been filled in. Whoever ' +
+          'handed them the tool is still in there.', 'threat', list[p]);
+      }
     }
 
     /* The bill. Furniture is damaged, everyone who lives here is
@@ -1321,11 +1338,11 @@
         wrecked + ' piece(s) of furniture took damage and everyone who sleeps there knows ' +
         'exactly what happened.', 'neutral', warden);
       for (var w = 0; w < victims.length; w++) noteLoss(victims[w], cbOf(victims[w]));
-    } else {
+    } else if (!tunnels) {
       log('search', nameOf(warden) + ' tossed a cell and found nothing');
       msg(nameOf(warden) + ' searched the block and found nothing.', warden, 'info');
     }
-    return res || { count: 0, value: 0, text: 'nothing' };
+    return res || { count: 0, value: 0, text: tunnels ? 'a tunnel' : 'nothing', tunnels: tunnels };
   };
 
   /* A dog works the other half of the catalogue: it cannot smell a
@@ -1690,8 +1707,12 @@
         text: 'the ' + g.name + ' are ' + g.memberIds.length + ' strong and hold ' +
               (g.rooms.length || 'no') + ' part(s) of the block' };
     } else {
+      var rst = cbOf(runner);
+      rst.digKnown = true;
       intel = { kind: 'plan', pawnId: runner.id, x: runner.x, y: runner.y,
-        text: nameOf(runner) + ' has the tools to get through a wall and is waiting for a night' };
+        text: nameOf(runner) + ' has the tools to get through a wall' +
+              (rst.digProgress > 0 ? ' and is ' + Math.round(rst.digProgress * 100) + '% of the way through one'
+                                   : ' and is waiting for a night') };
     }
 
     log('intel', nameOf(informant) + ': ' + intel.text);
@@ -2093,8 +2114,13 @@
      work in daylight but only ever opens a door. */
   var TOOL_TARGET = { escapeDoor: 'door', escapeLock: 'door', escapeTunnel: 'wall' };
 
-  function shellPiece(map, pawn, want) {
+  function shellPiece(map, pawn, want, st) {
     if (!Regions) return null;
+    if (st && st.digTargetId) {
+      var held = map.thing(st.digTargetId);
+      if (held && held.spawned) return held;
+      st.digTargetId = 0;
+    }
     var rid = Regions.roomIdAt(map, pawn.x, pawn.y);
     if (!rid) return null;
     var best = null, bestD = Infinity;
@@ -2121,6 +2147,7 @@
       var dist = U.distSq(pawn.x, pawn.y, x, y);
       if (dist < bestD) { bestD = dist; best = b; }
     }
+    if (best && st) st.digTargetId = best.id;
     return best;
   }
 
@@ -2143,23 +2170,31 @@
     var tool = Contraband.enables(pawn, 'escapeTunnel') || Contraband.enables(pawn, 'escapeDoor') ||
                Contraband.enables(pawn, 'escapeLock');
     if (tool && pawn.prisoner && !pawn.downed && !watchedRoom(map, pawn)) {
-      var piece = shellPiece(map, pawn, TOOL_TARGET[ITEMS[tool].enables] || 'wall');
+      var piece = shellPiece(map, pawn, TOOL_TARGET[ITEMS[tool].enables] || 'wall', st);
       if (piece) {
-        var bite = U.randInt(6, 14) * (ITEMS[tool].enables === 'escapeTunnel' ? 1.6 : 1);
-        piece.hp = (piece.hp || (piece.def.hp || 100)) - bite;
+        /* The work is kept on the prisoner, not on the wall's hit points.
+           A scratched wall is a wall a colonist walks past and repairs, and
+           a tunnel the repair crew undoes every afternoon is not a tunnel.
+           Hidden progress is also the right fiction: nothing about it shows
+           until it opens, or until somebody pulls the panel off the wall
+           behind the bed. */
+        var per = ITEMS[tool].enables === 'escapeTunnel' ? 0.030 : 0.020;
+        per *= 0.6 + 0.04 * skill(pawn, 'mining') + 0.02 * skill(pawn, 'construction');
+        st.digProgress = (st.digProgress || 0) + per;
         pawn.prisoner.escapeWill = U.clamp01((pawn.prisoner.escapeWill || 0) + 0.06);
         /* Tools wear out on stone, which is why one spike is not a
            guaranteed escape and three of them are. */
-        if (U.chance(0.04)) {
+        if (U.chance(0.02)) {
           take(pawn, tool, 1);
           log('tool', nameOf(pawn) + ' wore out a ' + ITEMS[tool].label);
         }
-        if (piece.hp <= 0) {
+        if (st.digProgress >= 1) {
           var px = piece.x, py = piece.y;
           map.destroyThing(piece, 'broken out');
           if (map.markPathDirty) map.markPathDirty(px, py);
           if (Regions.markDirty) Regions.markDirty(map, px, py);
           take(pawn, tool, 1);
+          st.digTargetId = 0; st.digProgress = 0; st.digKnown = false;
           state.totals.breaches++;
           log('breach', nameOf(pawn) + ' broke through with a ' + ITEMS[tool].label);
           letter('A hole in the block',
@@ -2697,6 +2732,7 @@
     if (st.stashes.length) bits.push(st.stashes.length + ' stash(es)');
     if (st.dealer) bits.push('dealer, ' + Math.round(st.favours) + ' favours');
     if (st.gangName) bits.push(st.gangRank === 2 ? 'leads the ' + st.gangName : st.gangName);
+    if (st.digKnown && st.digProgress > 0) bits.push('digging, ' + Math.round(st.digProgress * 100) + '% through');
     if (st.informant) bits.push('informant (' + Math.round(st.exposure * 100) + '% exposed)');
     return bits.join(' - ');
   };
@@ -2717,7 +2753,8 @@
       informant: st.informant,
       exposure: Math.round(st.exposure * 100),
       debts: Object.keys(st.debts).length,
-      grudge: Math.round(st.grudge * 100)
+      grudge: Math.round(st.grudge * 100),
+      tunnel: st.digKnown ? Math.round((st.digProgress || 0) * 100) : null
     };
   };
 
@@ -2761,14 +2798,16 @@
     var list = inmates(map);
     if (!list.length) return out;
 
-    var guns = 0, blades = 0, tools = 0;
+    var guns = 0, blades = 0, tools = 0, digging = 0;
     for (var i = 0; i < list.length; i++) {
       if (Contraband.enables(list[i], 'gun')) guns++;
       if (Contraband.enables(list[i], 'violence')) blades++;
       var st = list[i].contraband;
       if (!st) continue;
       for (var id in st.holding) if (ITEMS[id] && ITEMS[id].tier === 'tool') tools++;
+      if (st.digKnown && st.digProgress > 0) digging++;
     }
+    if (digging) out.push({ label: digging + ' known tunnel(s) still being dug', severity: 'critical' });
     if (guns) out.push({ label: guns + ' firearm(s) inside the block', severity: 'critical' });
     if (blades > 2) out.push({ label: blades + ' prisoners are carrying blades', severity: 'high' });
     if (tools) out.push({ label: tools + ' escape tool(s) unaccounted for', severity: 'high' });
@@ -2850,6 +2889,20 @@
     });
     state.gangsTick = -1;
     return true;
+  };
+
+  /* Recompute everything derived, now. save.js restores the pawns and
+     this rebuilds the crews, the territory and the route readings from
+     them; a UI panel opening after a load wants the same call. */
+  Contraband.rebuild = function (map) {
+    map = map || (sys('Game') && sys('Game').map);
+    if (!map) return null;
+    state.gangsTick = -1;
+    state.routesTick = -1;
+    rebuildGangs(map);
+    refreshRoutes(map);
+    attachDetectors(map);
+    return state.gangs;
   };
 
   Contraband.reset = function () {

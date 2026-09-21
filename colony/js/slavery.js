@@ -84,6 +84,13 @@
   var DISPLAY_DAYS = 6;        /* a displayed body falls apart in the end */
   var ROT_NOTICE_TICKS = DAY;  /* how long a body lies before it is a slight */
 
+  /* A thought that describes how things are right now is restated on the
+     beat that found it and must outlive one beat and no more, or the
+     colony goes on resenting a gibbet that came down yesterday. */
+  var STANDING_BEAT = COLONY_BEAT * 3;
+  var STANDING_SCAN = SCAN_BEAT * 2;
+  var STANDING_RARE = RARE * 6;
+
   /* What a person is worth over a counter. Deliberately large: the
      point of the number is that the player can see what they are
      trading every decent faction's opinion for. */
@@ -91,6 +98,7 @@
 
   var SLAVE_FORBIDDEN_WORK = {
     warden: 1,      /* you do not put the property in charge of property */
+    guard: 1,       /* and prison.js's guard column is the same mistake  */
     doctor: 1,      /* nor hand it the scalpels                          */
     research: 1,
     hunt: 1,        /* hunting is a rifle with extra steps               */
@@ -100,8 +108,8 @@
   /* What canDo answers no to, beyond the work columns. */
   var SLAVE_FORBIDDEN_ACTIONS = {
     weapon: 1, equipWeapon: 1, draft: 1, lead: 1, leadership: 1, role: 1,
-    ritual: 1, trade: 1, negotiate: 1, warden: 1, doctor: 1, research: 1,
-    hunt: 1, arrest: 1, ownRoom: 1
+    ritual: 1, trade: 1, negotiate: 1, warden: 1, guard: 1, doctor: 1,
+    research: 1, hunt: 1, arrest: 1, ownRoom: 1
   };
 
   var Slavery = {};
@@ -211,10 +219,34 @@
 
   function ideo() { return sys('Ideology'); }
 
+  /* True only when the faith actually said something. An answer is not
+     an opinion: ideology.js hands back a record whenever it recognises
+     the action, including when every precept it consulted had a null
+     stage for the degree this colony holds - which is what its middle
+     degrees are, and what the default `corpses` degree is. Reading that
+     record as "ideology has spoken" deletes this file's own conscience
+     for those colonies, and a gibbet that costs nobody anything is free
+     suppression. So the record is inspected rather than counted. */
   function noteAction(pawn, action, opts) {
     var I = ideo();
     if (!I || !I.noteAction) return false;
-    return I.noteAction(pawn, action, opts) !== null;
+    var said = I.noteAction(pawn, action, opts);
+    var fired = said && said.thoughts;
+    for (var i = 0; fired && i < fired.length; i++) {
+      if (fired[i]) return true;
+    }
+    return false;
+  }
+
+  /* The options a restated condition is fired with. noStack stops the
+     same standing fact climbing to its stack limit one beat at a time,
+     the duration expires it shortly after the beat that would restate
+     it, and passive keeps a fact off the resentment ledger the way
+     ideology.js keeps its own observations off it. */
+  function standing(ticks, extra) {
+    var o = { noStack: true, passive: true, duration: ticks };
+    if (extra) for (var k in extra) o[k] = extra[k];
+    return o;
   }
 
   /* Does the colony's faith permit this at all - 'eatHumanMeat',
@@ -697,6 +729,20 @@
     return out;
   };
 
+  /* Everybody still wearing the collar. A rebel is counted by the fight
+     they are having, not by the suppression arithmetic: turning rebel
+     deletes the need, so suppressionOf reads them as perfectly cowed
+     and they would drag the colony's average up - and the crowd factor
+     with it - while they are outside with a knife. */
+  function heldSlaves(map) {
+    var all = Slavery.all(map), out = [];
+    for (var i = 0; i < all.length; i++) {
+      if (!all[i].slave.rebelling) out.push(all[i]);
+    }
+    return out;
+  }
+  Slavery.held = heldSlaves;
+
   Slavery.suppressionOf = function (pawn) {
     if (!pawn || !pawn.slave) return 1;
     var n = pawn.needs && pawn.needs.suppression;
@@ -711,19 +757,69 @@
   /* The work sheet a slave is allowed. Their own priorities are kept on
      the slave block so emancipation hands the colony a person with the
      skills they arrived with rather than a blank column. */
-  function restrictWork(pawn) {
+  function restrictWork(pawn, own) {
     var types = Defs.all('workType');
     var sheet = {};
     for (var i = 0; i < types.length; i++) {
       var id = types[i].id;
-      sheet[id] = SLAVE_FORBIDDEN_WORK[id] ? 0 : 3;
+      /* A column their own traits or backstory closed stays closed. A
+         collar does not teach anybody to cook, and reopening it would
+         hand the colony a slave who is better at a trade than the
+         person they were before you took them. */
+      sheet[id] = (SLAVE_FORBIDDEN_WORK[id] || (own && own[id] === 0)) ? 0 : 3;
     }
     /* Hauling and cleaning are what a slave is actually for, so they
        come off the bottom of the list. */
-    if (sheet.haul !== undefined && sheet.haul !== 0) sheet.haul = 2;
-    if (sheet.clean !== undefined && sheet.clean !== 0) sheet.clean = 2;
-    if (sheet.basic !== undefined && sheet.basic !== 0) sheet.basic = 2;
+    if (sheet.haul) sheet.haul = 2;
+    if (sheet.clean) sheet.clean = 2;
+    if (sheet.basic) sheet.basic = 2;
     pawn.workPriority = sheet;
+    return sheet;
+  }
+
+  /* ---------- the wardrobe ----------
+
+     policies.js auto-assigns every player-faction human the 'worker' or
+     the 'soldier' outfit, and neither of them lists the collar - on
+     purpose, so that nobody dresses up out of the stockpile. On a slave
+     that becomes a loop: the warden locks the collar on, the outfit
+     giver has them take it straight off, a hauler carries it back to
+     the pile, and the warden goes and fetches it again. Measured over
+     two days that was thirty-nine collar jobs, thirty-five drops and a
+     hauling storm on top. A slave does not choose their own clothes, so
+     their record is put on the outfit that forbids nothing, and put
+     back the way it was when the collar comes off. */
+  function seizeWardrobe(pawn, state) {
+    var Po = sys('Policies');
+    var rec = (Po && Po.policyOf) ? Po.policyOf(pawn) : null;
+    if (!rec) return;
+    state.outfitId = rec.outfitId || null;
+    state.autoDressed = !!rec.autoAssigned;
+    rec.outfitId = 'anything';
+    /* autoAssign only ever runs once and would otherwise put the
+       'worker' outfit straight back on the next policy beat. */
+    rec.autoAssigned = true;
+  }
+
+  function releaseWardrobe(pawn, state) {
+    var Po = sys('Policies');
+    var rec = (Po && Po.policyOf) ? Po.policyOf(pawn) : null;
+    if (!rec) return;
+    var want = state && state.outfitId;
+    if (want && Po.outfit && Po.outfit(want)) rec.outfitId = want;
+    else rec.outfitId = 'anything';
+    rec.autoAssigned = !!(state && state.autoDressed);
+  }
+
+  /* The column a freed slave gets back. Their own if it was kept, and a
+     plain open one otherwise - anything rather than handing the colony a
+     new member who is permanently barred from medicine because nobody
+     wrote down what they used to be allowed to do. */
+  function freeWorkSheet(st) {
+    if (st && st.freeWork) return st.freeWork;
+    var types = Defs.all('workType');
+    var sheet = {};
+    for (var i = 0; i < types.length; i++) sheet[types[i].id] = 3;
     return sheet;
   }
 
@@ -790,12 +886,19 @@
       fleeIdx: -1,
       terror: 0,
       bought: false,
+      /* Whose wardrobe this was before the collar. */
+      outfitId: null,
+      autoDressed: false,
       /* The column they had before anyone put a collar on them. */
       freeWork: st.workPriority || null
     };
 
     prisoner.prisoner = false;
     prisoner.enslaveDesignated = false;
+    /* A standing order to take the collar off somebody the colony has
+       only just put one on is how a warden ends up undoing the job the
+       warden before them did. */
+    prisoner.freeDesignated = false;
     prisoner.slave = state;
     prisoner.faction = 'player';
     prisoner.drafted = false;
@@ -811,7 +914,8 @@
       prisoner.ownedBedId = null;
     }
 
-    restrictWork(prisoner);
+    restrictWork(prisoner, state.freeWork);
+    seizeWardrobe(prisoner, state);
     if (prisoner.needs) prisoner.needs.suppression = 1;
     if (prisoner.equipment && prisoner.dropEquipment) prisoner.dropEquipment();
 
@@ -853,8 +957,13 @@
     var who = fullName(pawn);
 
     pawn.slave = false;
+    pawn.freeDesignated = false;
     pawn.faction = 'player';
-    pawn.workPriority = st.freeWork || pawn.workPriority || {};
+    /* Never `pawn.workPriority`: that is the restricted sheet, and
+       falling back to it would free somebody into a colony that still
+       will not let them near a patient. */
+    pawn.workPriority = freeWorkSheet(st);
+    releaseWardrobe(pawn, st);
     if (pawn.needs) delete pawn.needs.suppression;
 
     var collar = pawn.wearingSlot ? pawn.wearingSlot('neck') : null;
@@ -1038,7 +1147,7 @@
       think(c, 'slaveryBeating', { otherPawnId: slave.id });
     }
     /* Every other slave in the room heard it happen. */
-    var slaves = Slavery.all(map);
+    var slaves = heldSlaves(map);
     for (var k = 0; k < slaves.length; k++) {
       var s = slaves[k];
       if (s === slave || U.dist(s.x, s.y, slave.x, slave.y) > TERROR_RADIUS) continue;
@@ -1054,7 +1163,7 @@
 
   Slavery.noteExecution = function (map, victim) {
     var t = now();
-    var slaves = Slavery.all(map);
+    var slaves = heldSlaves(map);
     for (var i = 0; i < slaves.length; i++) {
       var s = slaves[i];
       if (victim && U.dist(s.x, s.y, victim.x, victim.y) > TERROR_RADIUS * 1.5) continue;
@@ -1066,7 +1175,13 @@
     var cells = P.all(map);
     for (var k = 0; k < cells.length; k++) {
       var st = cells[k].prisoner;
-      if (st) st.lastWatchedTick = t;
+      /* Not lastWatchedTick. That field means "somebody looked in on
+         them", and prisoners.js reads a stale one as the neglect that
+         opens a prison break - so stamping it here would quietly make
+         every killing in the cells count as a warden's rounds. What a
+         killing actually does is take the fight out of whoever heard
+         it, and escapeWill is the field that says so. */
+      if (st) st.escapeWill = Math.max(0, (st.escapeWill || 0) - 0.15);
     }
   };
 
@@ -1079,7 +1194,7 @@
      and the per-slave roll is this divided across the beat. */
   Slavery.rebellionRisk = function (map) {
     if (!map) return 0;
-    var slaves = Slavery.all(map);
+    var slaves = heldSlaves(map);
     if (!slaves.length) return 0;
 
     var total = 0, worst = 1;
@@ -1109,7 +1224,7 @@
   };
 
   Slavery.rebellionAlert = function (map) {
-    var slaves = Slavery.all(map);
+    var slaves = heldSlaves(map);
     if (!slaves.length) return null;
     var risk = Slavery.rebellionRisk(map);
     if (risk < 0.08) return null;
@@ -1204,6 +1319,22 @@
     pawn.ownedBedId = null;
   }
 
+  /* Drop the collar bookkeeping without any of the ceremony of
+     emancipation. The two callers are a rebel the colony has taken back
+     and a rebel walking off the map, and neither of them is a colonist
+     being thanked for their service. */
+  function clearSlave(pawn) {
+    var st = pawn.slave;
+    releaseWardrobe(pawn, st);
+    var collar = pawn.wearingSlot ? pawn.wearingSlot('neck') : null;
+    if (collar && collar.defId === 'slaveCollar' && pawn.removeApparel) {
+      pawn.removeApparel(collar);
+    }
+    pawn.slave = false;
+    pawn.freeDesignated = false;
+    if (pawn.needs) delete pawn.needs.suppression;
+  }
+
   Slavery.startRebellion = function (map, ringleader) {
     if (!map) return 0;
     var slaves = Slavery.all(map);
@@ -1269,7 +1400,17 @@
     var st = pawn.slave;
     if (!st || pawn.dead) return;
 
-    if (st.rebelling) { rebelTick(pawn, st); return; }
+    /* The rebellion can end with them back in the colony's hands: a
+       downed rebel is capturable, and prisoners.js will take them. Past
+       that moment they are a prisoner wearing a stale slave block, which
+       Slavery.enslave refuses to touch and rebelTick keeps walking at
+       the edge of the map. Clearing it is what lets a warden put the
+       collar back on. */
+    if (st.rebelling) {
+      if (pawn.prisoner || pawn.faction === 'player') { clearSlave(pawn); return; }
+      rebelTick(pawn, st);
+      return;
+    }
     if (pawn.carriedBy || pawn.downed) return;
 
     /* A slave never holds a weapon. Somebody who picked one up off the
@@ -1282,7 +1423,7 @@
     if ((t + pawn.id) % RARE !== 0) return;
 
     var map = pawn.map;
-    var slaveCount = Slavery.all(map).length;
+    var slaveCount = heldSlaves(map).length;
 
     terrorFor(pawn, st);
     var level = Slavery.suppressionOf(pawn);
@@ -1296,13 +1437,18 @@
     think(pawn, 'slaveryEnslavedSelf', {
       degree: recentlyBeaten ? 1 : 0, duration: DAY, noStack: true
     });
+    /* Restated every beat, so it is given a clock that outlives one beat
+       and nothing more - otherwise the fear of a gibbet lasts most of a
+       day after the gibbet comes down. */
     if (st.terror > 0.2) {
-      think(pawn, 'slaveryTerror', { degree: st.terror > 0.45 ? 1 : 0, noStack: true });
+      think(pawn, 'slaveryTerror', {
+        degree: st.terror > 0.45 ? 1 : 0, noStack: true, duration: STANDING_RARE
+      });
     }
     /* Decent treatment is a real lever and not a euphemism: a slave who
        is fed, rested and not in pain is a slave who is slower to run. */
     if (moodOf(pawn) > 0.62 && !recentlyBeaten) {
-      think(pawn, 'slaveryTreatedWell', { noStack: true });
+      think(pawn, 'slaveryTreatedWell', { noStack: true, duration: STANDING_RARE });
     }
 
     if (level > REBEL_AT) return;
@@ -1368,14 +1514,15 @@
      an ideoligion that approves turns the sign around through
      ideology.js rather than through anything here. */
   function ownershipMood(map) {
-    var slaves = Slavery.all(map);
+    var slaves = heldSlaves(map);
     if (!slaves.length) return;
     var degree = slaves.length >= 5 ? 2 : (slaves.length >= 2 ? 1 : 0);
     var list = witnesses(map);
     for (var i = 0; i < list.length; i++) {
       var c = list[i];
-      if (noteAction(c, 'slaveOwned', { scale: 1 + 0.15 * (slaves.length - 1) })) continue;
-      think(c, 'slaveryOwned', { degree: degree, duration: DAY, noStack: true });
+      if (noteAction(c, 'slaveOwned',
+            standing(STANDING_BEAT, { scale: 1 + 0.15 * (slaves.length - 1) }))) continue;
+      think(c, 'slaveryOwned', { degree: degree, duration: STANDING_BEAT, noStack: true });
     }
   }
 
@@ -1398,8 +1545,10 @@
         if (U.dist(c.x, c.y, live[g].x, live[g].y) <= TERROR_RADIUS) { seen = true; break; }
       }
       if (!seen) continue;
-      if (noteAction(c, 'corpseSeen', { scale: 1.5 })) continue;
-      think(c, 'slaveryCorpseDisplayed', { degree: live.length > 1 ? 1 : 0, noStack: true });
+      if (noteAction(c, 'corpseSeen', standing(STANDING_BEAT, { scale: 1.5 }))) continue;
+      think(c, 'slaveryCorpseDisplayed', {
+        degree: live.length > 1 ? 1 : 0, noStack: true, duration: STANDING_BEAT
+      });
     }
 
     /* The cells get the point too. */
@@ -1463,6 +1612,11 @@
     if (map.byDef) {
       graves = (map.byDef('grave') || []).concat(map.byDef('sarcophagus') || []);
     }
+    /* A colony loaded from disk has a yard full of graves that were
+       filled weeks ago. With no record of them yet, every one of them
+       would read as new and the whole colony would be quietly cheered
+       up by burials it did years before. The first scan only learns. */
+    var first = !_knownGraves;
     var fresh = [];
     var seen = Object.create(null);
     for (var i = 0; i < graves.length; i++) {
@@ -1473,7 +1627,7 @@
       fresh.push(g);
     }
     _knownGraves = seen;
-    if (!fresh.length) return;
+    if (first || !fresh.length) return;
 
     var list = witnesses(map);
     for (var k = 0; k < fresh.length; k++) {
@@ -1508,24 +1662,30 @@
         if (U.dist(p.x, p.y, lying[j].x, lying[j].y) <= 16) { near = true; break; }
       }
       if (!near) continue;
-      if (noteAction(p, 'corpseRotting', {})) continue;
-      think(p, 'slaveryLeftToRot', { noStack: true });
+      if (noteAction(p, 'corpseRotting', standing(STANDING_SCAN))) continue;
+      think(p, 'slaveryLeftToRot', { noStack: true, duration: STANDING_SCAN });
     }
   }
 
   /* Knowing the larder has people in it is its own small horror, and it
      is the thing that turns cannibalism from an event into a policy. */
   function larderMood(map) {
-    var stacks = map.byDef ? map.byDef('humanMeat') : null;
-    var meals = map.byDef ? map.byDef('mealSimpleHuman') : null;
-    var count = (stacks ? stacks.length : 0) + (meals ? meals.length : 0);
-    if (!count) return;
+    if (!map.byDef) return;
+    var found = 0;
+    for (var k in HUMAN_FOOD) {
+      var stacks = map.byDef(k);
+      for (var n = 0; n < stacks.length; n++) {
+        if (stacks[n].spawned) { found++; break; }
+      }
+      if (found) break;
+    }
+    if (!found) return;
     var list = witnesses(map);
     for (var i = 0; i < list.length; i++) {
       var c = list[i];
       if (faithApprovesCannibalism(c)) continue;
       if (hasTrait(c, 'cannibal')) continue;
-      think(c, 'slaveryKnowsHumanMeat', { noStack: true });
+      think(c, 'slaveryKnowsHumanMeat', { noStack: true, duration: STANDING_SCAN });
     }
   }
 
@@ -1548,6 +1708,13 @@
     var Pr = sys('Production');
     if (!N || !Pr) return;
     _hooked = true;
+
+    /* Ten files load after this one and any of them may register another
+       human kind. Saying it once at load would leave those kinds
+       butchering into generic meat, so the roster is restated once the
+       registry has stopped growing. The pass skips anything already
+       answered, so it costs one loop over the kind table. */
+    markHumanKinds();
 
     if (typeof N.eat === 'function' && !N.__slaveryEat) {
       var eat = N.eat;
@@ -1606,7 +1773,15 @@
     var stance = personalStance(pawn);
     if (stance === 'likes') return 2;
     if (stance === 'indifferent') return 1;
-    return faithApprovesCannibalism(pawn) ? 2 : 0;
+    var I = ideo();
+    var d = (I && I.precept) ? I.precept(pawn || null, 'cannibalism') : null;
+    if (!d) return 0;
+    if (d.id === 'preferred' || d.id === 'required') return 2;
+    /* "Acceptable" is a shrug, not an appetite. Reading it as the top
+       stage handed a mood BONUS to a colonist who had just eaten a
+       person because their faith merely declined to forbid it. */
+    if (d.id === 'acceptable') return 1;
+    return 0;
   }
 
   Slavery.noteAteHuman = function (pawn, def) {
@@ -1706,20 +1881,71 @@
     return partner.factionName || 'a trader';
   }
 
+  /* What is actually in their purse, read the three ways trade.js reads
+     it: a visiting trader keeps a number, an allied caravan met on the
+     road keeps a silver row in its items, and a settlement has a slice
+     of its wealth. An unknown shape means no purse, never an unlimited
+     one - the old Infinity was a silver press with a person in it, and
+     it paid full price out of a partner holding nothing. */
   function partnerSilver(partner) {
-    if (!partner) return Infinity;
-    if (typeof partner.silver === 'number') return partner.silver;
-    if (typeof partner.wealth === 'number') return Math.round(partner.wealth * 0.25);
-    return Infinity;
+    if (!partner) return 0;
+    if (typeof partner.silver === 'number') return Math.max(0, partner.silver);
+    if (partner.items) {
+      for (var i = 0; i < partner.items.length; i++) {
+        var row = partner.items[i];
+        if (row && row.defId === 'silver') return Math.max(0, row.count | 0);
+      }
+      return 0;
+    }
+    if (partner.wealth > 0) return Math.round(partner.wealth * 0.25);
+    return 0;
   }
 
   function payPartner(partner, amount) {
-    if (!partner) return;
+    if (!partner || !(amount > 0)) return;
     if (typeof partner.silver === 'number') {
       partner.silver = Math.max(0, partner.silver - amount);
-    } else if (typeof partner.wealth === 'number') {
-      partner.wealth = Math.max(0, partner.wealth - amount);
+      return;
     }
+    if (partner.items) {
+      for (var i = 0; i < partner.items.length; i++) {
+        var row = partner.items[i];
+        if (row && row.defId === 'silver') {
+          row.count = Math.max(0, (row.count | 0) - amount);
+          return;
+        }
+      }
+      return;
+    }
+    if (typeof partner.wealth === 'number') partner.wealth = Math.max(0, partner.wealth - amount);
+  }
+
+  /* Our side of the counter. Trade.negotiatorFor takes a caravan or a
+     map, and a visiting trader carries a `pawns` crew of its own - so
+     handing it the partner bargained the price with the BUYER's best
+     talker. Whatever it hands back is only taken if it is one of ours. */
+  function negotiatorFor(map) {
+    var Tr = sys('Trade');
+    var free = witnesses(map);
+    var pick = (Tr && Tr.negotiatorFor) ? Tr.negotiatorFor(map) : null;
+    if (pick && free.indexOf(pick) >= 0) return pick;
+    var best = null;
+    for (var i = 0; i < free.length; i++) {
+      if (!best || skillLevel(free[i], 'social') > skillLevel(best, 'social')) best = free[i];
+    }
+    return best;
+  }
+
+  /* One price, quoted and paid. canSell shows this and sell hands this
+     over, purse and all, so a float menu never promises silver the buyer
+     has not got. */
+  function offerFor(pawn, partner, map) {
+    var Tr = sys('Trade');
+    var spread = (Tr && typeof Tr.SELL_SPREAD === 'number') ? Tr.SELL_SPREAD : 0.6;
+    var social = skillLevel(negotiatorFor(map), 'social');
+    var price = Math.round(Slavery.valueOf(pawn) * spread * (1 + social * 0.012));
+    var purse = partnerSilver(partner);
+    return Math.min(price, Math.floor(purse));
   }
 
   function anyPartner() {
@@ -1739,6 +1965,9 @@
     if (!pawn || pawn.dead || !pawn.map) return { ok: false, reason: 'nobody to sell' };
     if (!isHumanPawn(pawn)) return { ok: false, reason: 'not a person' };
     if (!pawn.slave && !pawn.prisoner) return { ok: false, reason: 'not yours to sell' };
+    /* Somebody has them over their shoulder. Taking them off the map now
+       would leave the carrier walking to a prison bed holding nobody. */
+    if (pawn.carriedBy) return { ok: false, reason: 'somebody is carrying them' };
 
     partner = partner || anyPartner();
     if (!partner) return { ok: false, reason: 'nobody is buying' };
@@ -1748,29 +1977,16 @@
     var who = fullName(pawn);
     var buyerId = partnerFactionId(partner);
 
-    var price = Slavery.valueOf(pawn);
     /* The trader's spread and your negotiator's tongue both apply, the
        same way they would to a crate of steel. */
-    var spread = (Tr && typeof Tr.SELL_SPREAD === 'number') ? Tr.SELL_SPREAD : 0.6;
-    var negotiator = null;
-    if (Tr && Tr.negotiatorFor) negotiator = Tr.negotiatorFor(partner);
-    if (!negotiator) {
-      var free = witnesses(map);
-      for (var n = 0; n < free.length; n++) {
-        if (!negotiator || skillLevel(free[n], 'social') > skillLevel(negotiator, 'social')) {
-          negotiator = free[n];
-        }
-      }
-    }
-    price = Math.round(price * spread * (1 + skillLevel(negotiator, 'social') * 0.012));
-
-    var purse = partnerSilver(partner);
-    if (purse < price) price = Math.floor(purse);
+    var price = offerFor(pawn, partner, map);
     if (price < 1) return { ok: false, reason: partnerLabel(partner) + ' cannot pay for a person' };
 
     payPartner(partner, price);
     var centre = (Tr && Tr.colonyCentre) ? Tr.colonyCentre(map) : { x: map.w >> 1, y: map.h >> 1 };
-    if (map.addItem) map.addItem('silver', centre.x, centre.y, price);
+    /* Stamped `player` the way trade.js stamps what it buys, or the
+       colony's own silver arrives belonging to nobody. */
+    if (map.addItem) map.addItem('silver', centre.x, centre.y, price, { faction: 'player' });
 
     /* Off the map, in somebody's caravan. */
     var st = pawn.slave || pawn.prisoner;
@@ -1825,10 +2041,14 @@
   };
 
   Slavery.canSell = function (pawn) {
-    if (!pawn || pawn.dead) return { ok: false, reason: 'nobody to sell' };
+    if (!pawn || pawn.dead || !pawn.map) return { ok: false, reason: 'nobody to sell' };
     if (!pawn.slave && !pawn.prisoner) return { ok: false, reason: 'not yours to sell' };
-    if (!anyPartner()) return { ok: false, reason: 'nobody is buying' };
-    return { ok: true, price: Math.round(Slavery.valueOf(pawn) * 0.6) };
+    if (pawn.carriedBy) return { ok: false, reason: 'somebody is carrying them' };
+    var partner = anyPartner();
+    if (!partner) return { ok: false, reason: 'nobody is buying' };
+    var price = offerFor(pawn, partner, pawn.map);
+    if (price < 1) return { ok: false, reason: partnerLabel(partner) + ' cannot pay for a person' };
+    return { ok: true, price: price, partner: partnerLabel(partner) };
   };
 
   /* ============================================================
@@ -1965,7 +2185,7 @@
 
             /* Every slave in range gets the message immediately rather
                than on their own beat: that is what it is for. */
-            var slaves = Slavery.all(map);
+            var slaves = heldSlaves(map);
             for (var i = 0; i < slaves.length; i++) {
               if (U.dist(slaves[i].x, slaves[i].y, pole.x, pole.y) > TERROR_RADIUS) continue;
               Slavery.suppress(slaves[i], 0.20, 'terror');
@@ -2064,7 +2284,7 @@
             var who = fullName(pawn);
             var st = pawn.slave;
             if (st) {
-              pawn.slave = false;
+              clearSlave(pawn);
               var F = sys('Factions');
               if (F && F.adjustGoodwill && st.factionId && st.factionId !== 'player') {
                 F.adjustGoodwill(st.factionId, -4, who + ' escaped your collar');

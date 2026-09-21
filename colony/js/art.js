@@ -175,18 +175,6 @@
     return (rgbaMemo[k] = 'rgba(' + p[0] + ',' + p[1] + ',' + p[2] + ',' + a + ')');
   }
 
-  /* The colour that cancels `c` against `base`: as far from the field on
-     the other side, channel by channel. Ground is painted in pairs of
-     marks - one patch lifted, one dropped - and a pair painted `c` and
-     its opposite averages back to the field exactly, whatever hue `c`
-     carries. Without that, four soft patches of a warm second colour
-     leave every tile a slightly different shade, and a tile grid is
-     drawn across the field for free. */
-  function opposite(base, c) {
-    var b = parse(base), p = parse(c);
-    return toHex(2 * b[0] - p[0], 2 * b[1] - p[1], 2 * b[2] - p[2]);
-  }
-
   /* Pull a colour toward the grey of dead tissue and dry stone. Used by
      corpses and downed animals, which must not read as living ones. */
   function drained(c) { return mix(c, '#7a7068', 0.45); }
@@ -391,40 +379,6 @@
     g.restore();
   }
 
-  /* Draws the same mark at every wrap of the tile it can still reach, so
-     that nothing on the ground is ever cut off by the edge of its own
-     canvas.
-
-     This matters more than it sounds. A soft patch of tone is the one
-     mark on a ground tile big enough to change the tile's average
-     brightness, and a soft patch with one straight side IS a ruled line:
-     draw three of them clipped at the canvas edge and every tile of a
-     field ends up a slightly different shade, with a hard step between
-     neighbours, which is the quilt of squares that made a flat field of
-     earth look like graph paper. Drawn wrapped, a patch runs off one
-     side and back in the other, so the tile carries the same tone at
-     both ends of every edge and every tile of the terrain averages to
-     exactly the same colour.
-
-     `cx`/`cy` must already be inside the tile and `reach` is how far the
-     mark extends from them; marks wider than half a tile would overlap
-     their own wrap and are not allowed. Build time only - a sprite is
-     painted once - so the closure costs nothing per frame. */
-  function wrapped(g, cx, cy, reach, draw) {
-    for (var oy = -1; oy <= 1; oy++) {
-      var y = oy * PX;
-      if (cy + y + reach < 0 || cy + y - reach > PX) continue;
-      for (var ox = -1; ox <= 1; ox++) {
-        var x = ox * PX;
-        if (cx + x + reach < 0 || cx + x - reach > PX) continue;
-        g.save();
-        g.translate(x, y);
-        draw();
-        g.restore();
-      }
-    }
-  }
-
   /* ------------------------------------------------------------------
      Material grain
 
@@ -579,20 +533,12 @@
         it sits on. At a 32-pixel tile the old marks were smaller than a
         screen pixel, which is not texture, it is static.
 
-     2. EVERY TILE OF ONE TERRAIN IS THE SAME COLOUR. Exactly the same:
-        all four variants of soil measure the same mean brightness to
-        within a luma unit, because a tone step between two cells of one
-        terrain is a ruled line on the map. Nothing blends that seam -
-        render.js only tears a seam where the terrain changes - so a
-        step of even one per cent draws the tile grid across a whole
-        field, and Mach banding makes the eye find it before it finds a
-        colonist. A variant therefore moves the marks about and does
-        nothing else, and the wide, slow variation that keeps ground
-        worth looking at comes from render.js's wash over the chunk,
-        eleven tiles a cycle and interpolated, which has no edges in it
-        at all. Marks big enough to shift a tile's average - the soft
-        patches under every ground - are drawn wrapped, so not one of
-        them is cut off at the canvas edge.
+     2. VARIATION AT THE SCALE OF A FIELD. Art.terrainVariant hands the
+        renderer a variant whose high bit comes from smooth value noise
+        about seven tiles across, so neighbouring tiles usually agree and
+        the tone drifts across a patch instead of shouting from every
+        cell. The low bit is per-cell and only swaps the arrangement of
+        the marks, which is what stops a patch from tiling visibly.
 
      3. NO TILE HAS A STRAIGHT EDGE. Not one that art.js can see, at
         least: a tile sprite has no idea what its neighbours are, and a
@@ -621,55 +567,26 @@
     grain(g, rnd, 0, 0, PX, PX, alpha, 'overlay');
   }
 
-  /* A flat field with two or three very wide, very soft patches, and
-     the two rules that keep a field of it from turning into a quilt.
+  /* The variant's contribution to the field's tone, and it is deliberately
+     almost nothing - a step of about one and a half per cent. Two tiles
+     of one terrain never get a seam blended between them, so any tone
+     difference big enough to see would be a ruled line along a tile edge,
+     which is the fault this whole pass exists to remove. The slow, wide
+     variation that makes ground interesting belongs to the field, not to
+     the cell: render.js washes it over the chunk at eleven tiles a cycle.
+     What the variant is really for is moving the marks about. */
+  function toneOf(variant) {
+    return ((variant & 2) ? 0.014 : -0.014) + ((variant & 1) ? 0.005 : -0.005);
+  }
 
-     Every patch is wrapped, so none of them has a straight side at the
-     tile's edge; and they come in pairs of opposite sign, one lifted
-     and one dropped by the same amount, so however they land the tile
-     averages to the field's own colour. Between them those two rules
-     are why all four variants of a terrain now measure the same mean
-     brightness to within a luma unit, which is the difference between
-     ground and graph paper. The eye finds a one per cent step across a
-     ruled line instantly - Mach banding sharpens it - and two cells of
-     one terrain never get a seam blended between them, so every such
-     step is a line drawn on the map.
-
-     The slow, wide variation that makes ground worth looking at is not
-     the cell's job at all: render.js washes it across the chunk at
-     eleven tiles a cycle, interpolated, with no edge anywhere in it. */
+  /* A flat field with two or three very wide, very soft patches. Nothing
+     in it knows where the tile edge is, so it tiles against itself. */
   function groundBase(g, rnd, c1, c2, patches) {
     flatBase(g, c1);
-    var lit = shade(mix(c1, c2, 0.45), 0.05), dim = opposite(c1, lit);
-    /* Drawn two at a time, and the pair shares one radius and one alpha
-       so the light patch covers exactly as much ground as the dark one.
-       That is what makes the cancellation exact rather than approximate:
-       with independent radii the leftover was a luma unit, and a luma
-       unit stepped across a ruled tile edge is still a line. */
-    for (var i = 0; i < patches; i += 2) {
-      var r = rr(rnd, 18, PX / 2), a = rr(rnd, 0.1, 0.18);
-      wrapPatch(g, rnd() * PX, rnd() * PX, r, lit, a);
-      if (i + 1 < patches) wrapPatch(g, rnd() * PX, rnd() * PX, r, dim, a);
+    for (var i = 0; i < patches; i++) {
+      blob(g, rr(rnd, -8, PX + 8), rr(rnd, -8, PX + 8), rr(rnd, 26, 48),
+        rnd() < 0.5 ? c2 : shade(c1, -0.05), rr(rnd, 0.1, 0.2), 0.05);
     }
-  }
-
-  /* One wrapped soft patch. Split out because water, mud and marsh all
-     pool in the same way and all of them used to cut the pool off at
-     the tile edge. */
-  function wrapPatch(g, cx, cy, r, c, alpha, hard) {
-    if (r > PX / 2) r = PX / 2;
-    var h = hard === undefined ? 0.05 : hard;
-    wrapped(g, cx, cy, r, function () { blob(g, cx, cy, r, c, alpha, h); });
-  }
-
-  /* The squashed version, for a pool of standing water or a wet sheen. */
-  function wrapPatchEll(g, cx, cy, rx, ry, c, alpha, hard) {
-    if (rx > PX / 2) rx = PX / 2;
-    if (ry > PX / 2) ry = PX / 2;
-    var h = hard === undefined ? 0.2 : hard;
-    wrapped(g, cx, cy, rx > ry ? rx : ry, function () {
-      blobEll(g, cx, cy, rx, ry, c, alpha, h);
-    });
   }
 
   /* A pebble with the soft contact shadow that makes it sit on the
@@ -682,47 +599,20 @@
     blobEll(g, x - r * 0.26, y - r * 0.3, r * 0.5, r * 0.34, LIT, 0.11, 0.2);
   }
 
-  /* A clod of turned earth: a soft dark underside and a lit crown,
-     which is the whole trick for reading broken ground from directly
-     above. Wrapped, so a tile has no clean margin round it where no
-     clod was allowed to land - eight of those in a row is a grid. */
-  function clod(g, rnd, x, y, r, base, sign) {
-    var squash = rr(rnd, 0.72, 0.9), rot = rnd() * TAU;
-    var face = shade(base, sign * 0.03);
-    wrapped(g, x, y, r * 1.6, function () {
-      blobEll(g, x + 1.4, y + 1.6, r * 1.1, r * 0.82, DARK, 0.15, 0.3);
-      ell(g, x, y, r, r * squash, rot, face);
-      blobEll(g, x - r * 0.24, y - r * 0.3, r * 0.56, r * 0.34, LIT, 0.13, 0.25);
-    });
-  }
-
-  /* The same stone, drawn at every wrap it reaches, for ground that is
-     made of stones and would otherwise have a clean band around each
-     tile where none of them were allowed to land. */
-  function wrapPebble(g, rnd, x, y, r, c) {
-    var rot = rnd() * TAU, squash = rr(rnd, 0.72, 0.95);
-    wrapped(g, x, y, r * 1.6, function () {
-      blobEll(g, x + r * 0.3, y + r * 0.4, r * 1.15, r * 0.85, DARK, 0.16, 0.25);
-      ell(g, x, y, r, r * squash, rot, c);
-      blobEll(g, x - r * 0.26, y - r * 0.3, r * 0.5, r * 0.34, LIT, 0.11, 0.2);
-    });
-  }
-
   function paintSoil(g, rnd, c1, c2, rich, variant) {
-    var base = c1;
+    var base = shade(c1, toneOf(variant));
     groundBase(g, rnd, base, mix(c2, base, 0.55), 3);
     /* Clods: a soft dark underside and a lit crown, which is the whole
        trick for reading broken earth from directly above. Six of them,
        each three times the size the old ones were, shaded within six per
        cent of the field. */
-    /* In pairs, one face turned to the light and one away, sharing a
-       radius, for the same reason the tone patches are paired: six clods
-       that happened to fall bright would lift the whole tile. */
-    var n = rich ? 8 : 6;
-    for (var i = 0; i < n; i += 2) {
-      var r = rr(rnd, 4.5, 8.5);
-      clod(g, rnd, rr(rnd, 6, PX - 6), rr(rnd, 6, PX - 6), r, base, 1);
-      clod(g, rnd, rr(rnd, 6, PX - 6), rr(rnd, 6, PX - 6), r, base, -1);
+    var n = rich ? 7 : 6;
+    for (var i = 0; i < n; i++) {
+      var x = rr(rnd, 5, PX - 5), y = rr(rnd, 5, PX - 5), r = rr(rnd, 4.5, 8.5);
+      blobEll(g, x + 1.4, y + 1.6, r * 1.1, r * 0.82, DARK, 0.15, 0.3);
+      ell(g, x, y, r, r * rr(rnd, 0.72, 0.9), rnd() * TAU,
+        shade(base, rr(rnd, -0.06, 0.035)));
+      blobEll(g, x - r * 0.24, y - r * 0.3, r * 0.56, r * 0.34, LIT, 0.13, 0.25);
     }
     if (rich) {
       /* Two root threads, and they are the only thing telling rich soil
@@ -730,23 +620,20 @@
       for (var f = 0; f < 2; f++) {
         var fx = rr(rnd, 8, PX - 8), fy = rr(rnd, 8, PX - 8);
         whip(g, fx, fy, fx + rs(rnd, 12), fy + rs(rnd, 12), fx + rs(rnd, 22), fy + rs(rnd, 22),
-          rgba(shade(base, f ? -0.16 : 0.16), 0.22), 1.6);
+          rgba(shade(base, 0.16), 0.22), 1.6);
       }
     }
-    /* Two stones, the only thing on the tile allowed to be a different
-       material from the ground - one pale, one dark, because a single
-       pale stone on dark earth is enough to lift a whole tile of rich
-       soil a shade above its neighbour. */
-    var stone = mix('#8b8278', base, 0.62), dull = opposite(base, stone);
-    for (var s = 0; s < 2; s++) {
-      wrapPebble(g, rnd, rnd() * PX, rnd() * PX, rr(rnd, 2.6, 4.2),
-        s ? dull : stone);
+    /* One or two stones, the only thing on the tile allowed to be a
+       different material from the ground. */
+    for (var s = 0; s < (rich ? 1 : 2); s++) {
+      pebble(g, rnd, rr(rnd, 8, PX - 8), rr(rnd, 8, PX - 8), rr(rnd, 2.6, 4.2),
+        mix('#8b8278', base, 0.62));
     }
     tileGrain(g, rnd, 0.09);
   }
 
   function paintGrassTerrain(g, rnd, c1, c2, variant) {
-    var base = c1;
+    var base = shade(c1, toneOf(variant));
     groundBase(g, rnd, base, mix(c2, base, 0.5), 3);
     /* Three small clumps of blade catching the light, not a mat of a
        hundred and thirty of them. The eye has to have somewhere on a
@@ -765,7 +652,7 @@
   }
 
   function paintSand(g, rnd, c1, c2, variant) {
-    var base = c1;
+    var base = shade(c1, toneOf(variant));
     groundBase(g, rnd, base, mix(c2, base, 0.5), 2);
     /* Two wind ripples and that is the entire texture: sand is the
        flattest thing on the map and it should look it. Each one is a
@@ -785,50 +672,39 @@
   }
 
   function paintGravel(g, rnd, c1, c2, variant) {
-    var base = shade(c1, -0.1);
+    var base = shade(c1, toneOf(variant) - 0.1);
     groundBase(g, rnd, base, shade(base, 0.06), 3);
-    /* Eight stones, bigger than they were and tinted within a tenth of
-       the field they lie on, so the tile reads as grit rather than as a
-       bag of marbles. Each one is wrapped rather than clipped: a stone
-       chopped in half by the canvas edge is a straight line, and eight
-       tiles of them in a row is a drawn grid. */
-    var warm = mix(base, P.sand, 0.12);
-    var tones = [shade(base, 0.08), shade(base, -0.07), warm, opposite(base, warm)];
-    for (var i = 0; i < 8; i++) {
-      wrapPebble(g, rnd, rnd() * PX, rnd() * PX, rr(rnd, 4, 6.5), tones[i & 3]);
+    /* Twelve stones instead of forty-six, and each one is tinted toward
+       the field it lies on so the tile reads as grit rather than as a
+       bag of marbles. */
+    var tones = [shade(base, 0.12), shade(base, -0.09), mix(base, P.sand, 0.18)];
+    for (var i = 0; i < 12; i++) {
+      pebble(g, rnd, rr(rnd, -2, PX + 2), rr(rnd, -2, PX + 2), rr(rnd, 3, 5.5),
+        tones[(rnd() * 3) | 0]);
     }
-    tileGrain(g, rnd, 0.07);
+    tileGrain(g, rnd, 0.1);
   }
 
   function paintMud(g, rnd, c1, c2, variant) {
-    var base = c1;
+    var base = shade(c1, toneOf(variant));
     groundBase(g, rnd, base, mix(c2, base, 0.5), 4);
-    /* Four hollows of standing water, wrapped: the old ones were the
-       strongest mark on any ground tile in the game at four tenths
-       alpha, and they were cut off at the tile edge, which is why a mud
-       flat used to repeat its sheen square by square. */
-    for (var i = 0; i < 4; i += 2) {
-      var hr = rr(rnd, 10, 18), hy = rr(rnd, 6, 11);
-      wrapPatchEll(g, rnd() * PX, rnd() * PX, hr, hy, shade(base, -0.2), 0.3, 0.2);
-      wrapPatchEll(g, rnd() * PX, rnd() * PX, hr, hy, shade(base, 0.12), 0.3, 0.2);
+    for (var i = 0; i < 4; i++) {
+      blobEll(g, rr(rnd, 4, PX - 4), rr(rnd, 4, PX - 4), rr(rnd, 10, 18), rr(rnd, 6, 11),
+        shade(base, -0.2), 0.4, 0.2);
     }
     /* Wet sheen: standing water reflects the sky, so the highlights are
        cool and sit in the hollows rather than on the ridges. */
-    var sky = mix(P.sky, LIT, 0.25), sr = rr(rnd, 10, 16);
-    wrapPatchEll(g, rnd() * PX, rnd() * PX, sr, sr * 0.42, sky, 0.13, 0.1);
-    wrapPatchEll(g, rnd() * PX, rnd() * PX, sr, sr * 0.42,
-      opposite(base, sky), 0.13, 0.1);
+    var sx = rr(rnd, 12, PX - 12), sy = rr(rnd, 12, PX - 12), sr = rr(rnd, 10, 16);
+    blobEll(g, sx, sy, sr, sr * 0.42, mix(P.sky, LIT, 0.25), 0.13, 0.1);
     tileGrain(g, rnd, 0.08);
   }
 
   function paintMarsh(g, rnd, c1, c2, variant) {
-    var base = c1;
+    var base = shade(c1, toneOf(variant));
     groundBase(g, rnd, base, mix(c2, base, 0.5), 3);
-    var pool = mix(P.water, base, 0.4), dry = opposite(base, pool);
-    for (var i = 0; i < 4; i += 2) {
-      var pr = rr(rnd, 12, 20), py = rr(rnd, 8, 13);
-      wrapPatchEll(g, rnd() * PX, rnd() * PX, pr, py, pool, 0.36, 0.3);
-      wrapPatchEll(g, rnd() * PX, rnd() * PX, pr, py, dry, 0.2, 0.3);
+    for (var i = 0; i < 3; i++) {
+      blobEll(g, rr(rnd, 2, PX - 2), rr(rnd, 2, PX - 2), rr(rnd, 12, 20), rr(rnd, 8, 13),
+        mix(P.water, base, 0.4), 0.42, 0.3);
     }
     var reed = shade(base, 0.18);
     for (var k = 0; k < 8; k++) {
@@ -840,70 +716,62 @@
   }
 
   function paintWater(g, rnd, c1, c2, deep, variant) {
-    var base = c1;
+    var base = shade(c1, toneOf(variant) * 0.6);
     flatBase(g, base);
     /* Depth banding: four broad soft patches so the surface has somewhere
-       to shelve. Wrapped and paired light against dark, so a lake is one
-       body of water rather than a tray of blue tiles - clipped at the
-       edge, these were the worst quilt on the map, a fifty per cent
-       stronger step across a tile line than inside one.
-
-       A full-tile gradient used to stand in for sun dappling a sandy
-       bottom, pointing a different way in each variant. That is a tile
-       edge by construction: two neighbours lit from opposite quarters
-       meet in a hard line down the middle of the water. The dapple is
-       now made of the same wrapped patches, warmed toward sand. */
-    var shallower = shade(deep ? c2 : mix(c2, P.sand, 0.3), 0.06);
-    var deeper = opposite(base, shallower);
-    for (var i = 0; i < 4; i += 2) {
-      var pr = rr(rnd, 22, PX / 2), pa = rr(rnd, 0.14, 0.24);
-      wrapPatch(g, rnd() * PX, rnd() * PX, pr, deeper, pa);
-      wrapPatch(g, rnd() * PX, rnd() * PX, pr, shallower, pa);
+       to shelve, with no straight edge anywhere that could line up into a
+       grid across the map. */
+    for (var i = 0; i < 4; i++) {
+      blob(g, rr(rnd, -8, PX + 8), rr(rnd, -8, PX + 8), rr(rnd, 26, 46),
+        rnd() < 0.5 ? c2 : shade(base, deep ? -0.14 : 0.1), rr(rnd, 0.16, 0.3), 0.05);
+    }
+    if (!deep) {
+      /* Shallow water is lit from a different quarter in each variant.
+         Scattered across the map that reads as sun dappling a sandy
+         bottom; a fixed direction would read as a tile edge. */
+      var dirs = [[0, -1], [-1, 0], [1, 0], [0, 1]][variant & 3];
+      gradRect(g, 0, 0, PX, PX, linGrad(g,
+        PX / 2 - dirs[0] * PX / 2, PX / 2 - dirs[1] * PX / 2,
+        PX / 2 + dirs[0] * PX / 2, PX / 2 + dirs[1] * PX / 2,
+        [0, rgba(mix(c2, P.sand, 0.4), 0.22), 1, rgba(base, 0)]));
     }
     /* Four long, low-contrast caustics instead of eleven bright ones.
        Water still moves; it no longer sparkles like tinsel. */
-    var lit = mix(c2, LIT, deep ? 0.22 : 0.34), dim = opposite(base, lit);
+    var lit = mix(c2, LIT, deep ? 0.22 : 0.34);
     for (var k = 0; k < 4; k++) {
-      var x = rr(rnd, 2, PX - 2), y = rr(rnd, 2, PX - 2), cw = rr(rnd, 14, 26);
-      var ca = rr(rnd, 0.08, 0.15), ct = rr(rnd, 2.4, 4);
-      whip(g, x - cw, y, x, y + rs(rnd, 5), x + cw, y + rs(rnd, 3),
-        rgba((k & 1) ? dim : lit, ca), ct);
+      var x = rr(rnd, 2, PX - 2), y = rr(rnd, 2, PX - 2), w = rr(rnd, 14, 26);
+      whip(g, x - w, y, x, y + rs(rnd, 5), x + w, y + rs(rnd, 3),
+        rgba(lit, rr(rnd, 0.08, 0.15)), rr(rnd, 2.4, 4));
     }
-    /* One specular glint - the sun itself, not the sky - and the trough
-       beside it, so the glint does not lift the whole tile. */
-    var gr = rr(rnd, 7, 11), gy = rr(rnd, 2.2, 3.6);
-    wrapPatchEll(g, rnd() * PX, rnd() * PX, gr, gy, LIT, 0.18, 0.15);
-    wrapPatchEll(g, rnd() * PX, rnd() * PX, gr, gy, opposite(base, LIT), 0.18, 0.15);
+    /* One specular glint - the sun itself, not the sky. */
+    var gx = rr(rnd, 12, PX - 12), gy = rr(rnd, 12, PX - 12);
+    blobEll(g, gx, gy, rr(rnd, 7, 11), rr(rnd, 2.2, 3.6), LIT, 0.22, 0.15);
     tileGrain(g, rnd, 0.05);
   }
 
   function paintRockFloor(g, rnd, c1, c2, variant) {
-    var base = c1;
+    var base = shade(c1, toneOf(variant));
     flatBase(g, base);
-    /* Two broad facets, the way a mined-out floor breaks, and one crack.
-       That is all. The pair shares its alpha and its size and turns
-       opposite ways to the light, so a whole mined mountain is one grey
-       floor rather than a grid of grey squares - rock floor is the most
-       common terrain in a mountain base and the one the player stares
-       at longest. */
-    var span = rr(rnd, 20, 30), fa = rr(rnd, 0.16, 0.24);
+    /* Two broad facets at slightly different angles to the light, the way
+       a mined-out floor breaks, and one crack. That is all. */
     for (var i = 0; i < 2; i++) {
       var cx = rr(rnd, 8, PX - 8), cy = rr(rnd, 8, PX - 8), n = ri(rnd, 5, 7), pts = [];
+      var r0 = rr(rnd, 18, 30);
       for (var k = 0; k < n; k++) {
-        var a = (k / n) * TAU + rs(rnd, 0.3), rk = span * rr(rnd, 0.6, 1.15);
+        var a = (k / n) * TAU + rs(rnd, 0.3), rk = r0 * rr(rnd, 0.6, 1.15);
         pts.push(cx + Math.cos(a) * rk, cy + Math.sin(a) * rk);
       }
-      g.globalAlpha = fa;
-      poly(g, pts, shade(base, i ? -0.07 : 0.07));
+      g.globalAlpha = rr(rnd, 0.18, 0.3);
+      poly(g, pts, shade(base, rr(rnd, -0.08, 0.07)));
       g.globalAlpha = 1;
     }
     var x0 = rr(rnd, -2, PX + 2), y0 = rr(rnd, -2, PX + 2);
     var x1 = x0 + rs(rnd, 34), y1 = y0 + rs(rnd, 34);
     var mx = (x0 + x1) / 2 + rs(rnd, 9), my = (y0 + y1) / 2 + rs(rnd, 9);
-    whip(g, x0, y0, mx, my, x1, y1, rgba(shade(base, -0.24), 0.3), 2.2);
+    whip(g, x0, y0, mx, my, x1, y1, rgba(shade(base, -0.28), 0.4), 2.2);
     whip(g, x0 - 1.4, y0 - 1.4, mx - 1.4, my - 1.4, x1 - 1.4, y1 - 1.4,
-      rgba(shade(base, 0.18), 0.16), 1.4);
-    tileGrain(g, rnd, 0.06);
+      rgba(shade(base, 0.2), 0.2), 1.4);
+    tileGrain(g, rnd, 0.1);
   }
 
   /* ---------- built floors ----------
@@ -914,7 +782,7 @@
      everything else. */
 
   function paintWoodFloor(g, rnd, c1, c2, variant) {
-    var base = c1;
+    var base = shade(c1, toneOf(variant) * 0.5);
     var dark = shade(base, -0.3), seam = shade(base, -0.34);
     flatBase(g, dark);
     /* Two courses of board to the tile, thirty-two pixels each, so the
@@ -950,7 +818,7 @@
   }
 
   function paintStoneFloor(g, rnd, c1, c2, variant) {
-    var base = c1;
+    var base = shade(c1, toneOf(variant) * 0.5);
     var mortar = shade(mix(base, P.mortar, 0.42), -0.1);
     flatBase(g, mortar);
     /* Four cut slabs to the tile, inset by one pixel so the joints line
@@ -972,7 +840,7 @@
   }
 
   function paintConcrete(g, rnd, c1, c2, variant) {
-    var base = c1;
+    var base = shade(c1, toneOf(variant) * 0.5);
     flatBase(g, base);
     /* Float finish: broad, very soft patches where the trowel pulled the
        cream. The aggregate that used to speckle every square inch is now
@@ -992,7 +860,7 @@
   }
 
   function paintSteelFloor(g, rnd, c1, c2, variant) {
-    var base = c1;
+    var base = shade(c1, toneOf(variant) * 0.5);
     flatBase(g, shade(base, -0.4));
     rrect(g, 1, 1, PX - 2, PX - 2, 4, base);
     /* Brushed metal: a few fine directional lines, then one broad sweep
@@ -1015,7 +883,7 @@
   }
 
   function paintCarpet(g, rnd, c1, c2, variant) {
-    var base = c1;
+    var base = shade(c1, toneOf(variant) * 0.5);
     flatBase(g, shade(base, -0.12));
     /* Woven pile: short strokes whose direction alternates by cell, so
        the light catches every other tuft and the weave reads. The weave
@@ -2973,95 +2841,66 @@
     g.restore();
   }
 
-  /* Wild grass grows on nearly every cell mapgen touches. Measured on a
-     real frame at zoom 1, the tufts and bushes were three quarters of
-     all the high-frequency detail on screen: the ground underneath had
-     been quietened until it was calm, and then a carpet of little green
-     sprites was laid over the top of it, one to a cell, and the picture
-     was static again. So grass is painted as ground cover and not as a
-     plant - a soft low mass of colour with five or six blades standing
-     out of it, rather than a comb of eleven hard strokes.
-
-     Two things do the work. The mass is drawn first and carries almost
-     all the colour, so a field still reads green from across the map
-     without any edges in it; and the blades are wide, half-transparent
-     and tinted toward the earth they stand in, so they blur into that
-     mass the moment the tile is drawn smaller than a thumbnail instead
-     of dissolving into speckle. Crops and trees keep every edge they
-     had: those are things the player acts on. */
+  /* Wild grass grows on nearly every cell mapgen touches, so it is not a
+     thing the player has to notice - it is ground cover, and it belongs
+     with the terrain in the quiet half of the screen. Half the blades of
+     the old tuft, drawn wider, softer and a shade closer to the earth
+     under them, so a field of it reads as a green field rather than as a
+     thousand separate sprites. Crops and trees keep their definition;
+     they are things you act on. */
   function paintGrassPlant(g, rnd, def, stage, variant) {
     var c1 = def.color, c2 = def.color2 || shade(c1, 0.12);
     var tall = def.id === 'tallGrass';
     var cx = PX / 2 + ((variant & 1) ? 8 : -8) + rs(rnd, 4);
     var base = 50 + ((variant & 2) ? 5 : -5);
-    var spread = tall ? 22 : 18;
-    var h = (tall ? 26 : 17) * (0.5 + stage * 0.25);
-    blobEll(g, cx + 2, base + 2, spread, 6, DARK, 0.08, 0.2);
-    /* The mass, and the whole reason a field of grass no longer reads as
-       static. Wild grass covers over half of every map mapgen makes, so
-       it has to arrive as a wash of colour over the earth rather than as
-       a thousand separate dots on the tile grid. It is centred on the
-       tile and stops just short of every edge - the blades are what move
-       off centre - so it fades to nothing before the canvas ends. A
-       wash cut off at the canvas edge would be the one straight line in
-       a whole field of grass. */
-    blobEll(g, PX / 2, base - h * 0.22, PX / 2 - 2, h * 0.95,
-      mix(c1, c2, 0.4), 0.44, 0.05);
-    var tones = [c1, c2, shade(c1, -0.08), mix(c1, P.foliageLight, 0.14)];
-    var n = tall ? 6 : 5;
+    var spread = tall ? 20 : 16;
+    var h = (tall ? 30 : 19) * (0.5 + stage * 0.25);
+    blobEll(g, cx + 2, base + 3, spread, 5, DARK, 0.13, 0.2);
+    var tones = [c1, c2, shade(c1, -0.14), mix(c1, P.foliageLight, 0.28)];
+    var n = tall ? 11 : 8;
     for (var i = 0; i < n; i++) {
-      var x = cx + rs(rnd, spread * 0.8);
-      var y = base + rs(rnd, 4);
-      var bh = h * rr(rnd, 0.7, 1.1);
+      var x = cx + rs(rnd, spread);
+      var y = base + rs(rnd, 5);
+      var bh = h * rr(rnd, 0.6, 1.1);
       var lean = rs(rnd, bh * 0.45) + (variant - 1) * 2;
       whip(g, x, y, x + lean * 0.35, y - bh * 0.6, x + lean, y - bh,
-        rgba(tones[(rnd() * tones.length) | 0], 0.6), rr(rnd, 2.8, 4.2));
+        rgba(tones[(rnd() * tones.length) | 0], 0.88), rr(rnd, 2, 3.2));
+      if (bh > 16 && rnd() < 0.3) {
+        /* A seed head on the longest blades. */
+        ell(g, x + lean, y - bh, 1.8, 3.4, lean * 0.04, rgba(shade(c2, 0.14), 0.7));
+      }
+    }
+    for (var t = 0; t < 2; t++) {
+      var tx = cx + rs(rnd, spread);
+      whip(g, tx, base, tx + rs(rnd, 4), base - h * 0.5, tx + rs(rnd, 8), base - h * 0.95,
+        rgba(shade(c2, 0.22), 0.45), 1.4);
     }
   }
 
-  /* A bush the player can take something off - berries, herbal medicine
-     - is a thing to notice and keeps every edge it has. A plain wild
-     bush is scenery: mapgen puts one on a tenth of all cells, which on
-     a screen is several hundred of them, and several hundred crisp dark
-     green discs is the carpet that made the map read as static. Scrub
-     is therefore painted translucent and within a tenth of its own
-     colour, so it sits into the ground the way a real shrub does seen
-     from above, and a berry bush two cells away is still the brightest
-     thing in that patch of map. */
   function paintBush(g, rnd, def, stage, ripe) {
     var c1 = def.color, c2 = def.color2 || shade(c1, 0.15);
-    var scrub = !(def.plant && def.plant.harvestedThing);
     var s = [0.5, 0.78, 1][stage];
     var cx = PX / 2, cy = PX / 2 + 5, r = 22 * s;
-    blobEll(g, cx + 3, cy + r * 0.62, r * 0.95, r * 0.32, DARK, scrub ? 0.11 : 0.18, 0.25);
+    blobEll(g, cx + 3, cy + r * 0.62, r * 0.95, r * 0.32, DARK, 0.24, 0.25);
     /* Woody stems first, then three tones of foliage in clumps. */
-    for (var st = 0; st < 3; st++) {
+    for (var st = 0; st < 4; st++) {
       var ang = -Math.PI / 2 + rs(rnd, 1.1);
       stroke(g, [cx, cy + r * 0.5, cx + Math.cos(ang) * r * 0.5, cy + Math.sin(ang) * r * 0.5],
         shade(P.bark, -0.1), 2.6);
     }
-    var lift = scrub ? 0.08 : 0.16;
-    var tones = [shade(c1, -lift), c1, mix(c1, P.foliageLight, scrub ? 0.1 : 0.2)];
-    if (scrub) {
-      /* The soft body the hard clumps then sit inside, so the bush has
-         no cut edge against the earth. */
-      blobEll(g, cx, cy - r * 0.15, r * 1.1, r * 0.82, c1, 0.34, 0.15);
-      g.globalAlpha = 0.78;
-    }
+    var tones = [shade(c1, -0.22), c1, mix(c1, P.foliageLight, 0.3)];
     for (var layer = 0; layer < 3; layer++) {
       var n = 5 - layer, rr0 = r * (1 - layer * 0.16);
       for (var i = 0; i < n; i++) {
         var a2 = (i / n) * TAU + layer * 0.7;
         var bx = cx + Math.cos(a2) * rr0 * 0.42 - layer * 1.6;
         var by = cy + Math.sin(a2) * rr0 * 0.34 - layer * 3;
-        ell(g, bx, by, rr0 * 0.54, rr0 * 0.46, rs(rnd, 0.5), tones[layer]);
+        ell(g, bx, by, rr0 * 0.52, rr0 * 0.44, rs(rnd, 0.5), tones[layer]);
       }
     }
-    g.globalAlpha = 1;
-    /* A few leaves around the rim, enough to break the blob silhouette
-       and not enough to fringe it. */
-    for (var l = 0; l < (scrub ? 2 : 5); l++) {
-      var la = rnd() * TAU, ld = r * rr(rnd, 0.6, 0.95);
+    /* Individual leaves around the rim break the blob silhouette. */
+    for (var l = 0; l < 7; l++) {
+      var la = rnd() * TAU, ld = r * rr(rnd, 0.55, 0.95);
       leaf(g, cx + Math.cos(la) * ld * 0.8, cy + Math.sin(la) * ld * 0.6,
         r * 0.32, r * 0.13, la + Math.PI / 2,
         rnd() < 0.4 ? tones[2] : tones[1]);
@@ -4229,23 +4068,36 @@
     return Math.imul(h ^ (h >>> 13), 1274126177);
   }
 
-  /* Which of the four arrangements of marks this cell uses, and that is
-     all it decides. All four are the same colour to within half a luma
-     unit, so there is nothing here for a neighbour to disagree with and
-     both bits can come straight off the cell.
-
-     They used to come off value noise seven tiles across, so that a
-     patch of cells would share a tone. That was the wrong place to put
-     it twice over. It gave the tone a hard boundary - the lattice
-     changed between two cells and nothing blends a seam between two
-     cells of one terrain, so the map wore a grid of squares - and
-     within a patch it left only two arrangements in play, which laid
-     the clods out on a visible two-tile lattice. Field-scale variation
-     is real and wanted, but it belongs to render.js's wash across the
-     chunk: eleven tiles a cycle, interpolated, with no edge in it. */
-  Art.terrainVariant = function (x, y) {
+  function hash01(x, y) {
     var h = cellHash(x, y);
-    return ((h >>> 17) & 1) | ((h >>> 23) & 2);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+
+  /* Value noise on a coarse lattice: one sample every `cell` tiles,
+     smoothstepped between. This is the whole of point 2 at the top of
+     the terrain section - it is what turns the variant from per-cell
+     white noise into a field with patches in it. */
+  function patchNoise(x, y, cell) {
+    var fx = x / cell, fy = y / cell;
+    var ix = Math.floor(fx), iy = Math.floor(fy);
+    var tx = fx - ix, ty = fy - iy;
+    tx = tx * tx * (3 - 2 * tx);
+    ty = ty * ty * (3 - 2 * ty);
+    var a = hash01(ix, iy), b = hash01(ix + 1, iy);
+    var c = hash01(ix, iy + 1), d = hash01(ix + 1, iy + 1);
+    var top = a + (b - a) * tx, bot = c + (d - c) * tx;
+    return top + (bot - top) * ty;
+  }
+
+  /* Two bits with two different jobs. The high bit is the slow field -
+     seven tiles across, with a three-tile wobble on it - and decides the
+     tone, so a dozen neighbouring tiles agree and the ground reads as
+     patches rather than as a grid of arguing cells. The low bit is
+     per-cell and only swaps which arrangement of marks the tile uses,
+     which is what stops a patch from showing its own grid. */
+  Art.terrainVariant = function (x, y) {
+    var n = patchNoise(x, y, 7) * 0.68 + patchNoise(x + 131, y + 57, 3) * 0.32;
+    return (n > 0.5 ? 2 : 0) | ((cellHash(x, y) >>> 17) & 1);
   };
 
   /* ------------------------------------------------------------------

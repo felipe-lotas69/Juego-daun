@@ -170,6 +170,10 @@
   function isGood(def) {
     if (!def || def.category !== 'item') return false;
     if (!(def.marketValue > 0)) return false;
+    /* Silver is the unit every price is quoted in, not a thing that has
+       one. trade.js takes the same view, and a price table that offers to
+       sell you a silver for three silver is nonsense in both files. */
+    if (def.id === 'silver') return false;
     var c = categoryOf(def);
     return !!c && c !== 'corpses';
   }
@@ -187,12 +191,11 @@
       lastTick: 0,
       lastDay: -1,
       nextOfferTick: 0,
-      markets: {},          /* id -> {id, label, factionId, mult:{}, moved:{}} */
+      markets: {},          /* id -> {id, factionId, mult:{}}                 */
       history: {},          /* defId -> [price per day] */
-      historyDay0: 0,
       stock: null,          /* last colony sample: {defId: units}             */
-      stockValue: 0,
       partners: {},         /* partner key -> last seen {defId: units}        */
+      restock: {},          /* settlement key -> its lastRestockTick          */
       days: [],             /* rolling per-day books                          */
       today: null,
       offers: [],
@@ -202,6 +205,7 @@
       countedCorpses: [],
       silverSeen: undefined,
       silverBooked: 0,
+      goodsBooked: {},      /* defId -> units this file moved on purpose    */
       totals: { earned: 0, spent: 0, produced: 0, consumed: 0 }
     };
   }
@@ -525,7 +529,7 @@
       m = Economy.state.markets[id] = {
         id: id,
         factionId: id.indexOf('f:') === 0 ? id.slice(2) : null,
-        mult: {}, moved: {}
+        mult: {}
       };
     }
     return m;
@@ -544,12 +548,16 @@
     return Math.max(1, Math.round(VOLUME_SILVER / Math.max(0.5, baseValue(def))));
   }
 
+  /* Reading a price must not create a market. priceTable asks for every
+     good at every counter the player looks at, and a market conjured by
+     a glance would be an empty row in the save for every faction whose
+     goods anyone ever scrolled past. */
   Economy.multiplier = function (defId, opts) {
     opts = opts || {};
     var def = thingDef(defId);
     if (!def) return 1;
-    var m = market(marketIdFor(opts.faction, opts.settlement));
-    var v = m.mult[def.id];
+    var m = Economy.state.markets[marketIdFor(opts.faction, opts.settlement)];
+    var v = m ? m.mult[def.id] : undefined;
     return v === undefined ? 1 : v;
   };
 
@@ -566,7 +574,6 @@
     var push = U.clamp(ELASTICITY * units / volumeOf(def), -PUSH_CAP, PUSH_CAP);
     var next = push >= 0 ? cur / (1 + push) : cur * (1 - push);
     m.mult[def.id] = U.clamp(next, PRICE_FLOOR, PRICE_CEIL);
-    m.moved[def.id] = (m.moved[def.id] || 0) + units;
     return m.mult[def.id];
   };
 
@@ -581,12 +588,16 @@
     if (pull <= 0) return;
     var all = Economy.state.markets;
     for (var id in all) {
-      var mult = all[id].mult;
+      var mult = all[id].mult, live = false;
       for (var defId in mult) {
         var v = mult[defId] + (1 - mult[defId]) * pull;
         if (Math.abs(v - 1) < 0.005) delete mult[defId];
-        else mult[defId] = v;
+        else { mult[defId] = v; live = true; }
       }
+      /* A market with no opinion left is the same as no market, and
+         keeping the husk would mean a saved game and a reloaded one held
+         different objects for the same nation. */
+      if (!live) delete all[id];
     }
   }
 
@@ -641,11 +652,15 @@
     return Math.max(1, Math.round(v));
   };
 
-  /* The bare market price, for a graph or a comparison. */
+  /* The bare market price, for a graph or a comparison. The caller's
+     options object is copied rather than stamped with spread:false -
+     priceTable hands the same object to every row, and one of them
+     turning the spread off for all the others is a bug waiting. */
   Economy.marketPrice = function (defId, opts) {
-    opts = opts || {};
-    opts.spread = false;
-    return Economy.priceOf(defId, opts);
+    var copy = { spread: false };
+    for (var k in (opts || {})) copy[k] = opts[k];
+    copy.spread = false;
+    return Economy.priceOf(defId, copy);
   };
 
   /* What the same good fetches here versus there, which is the whole
@@ -1125,6 +1140,24 @@
     };
   };
 
+  /* Silver from somewhere that is not a counter. contraband.js calls this
+     when a confiscated stash is sold off, and anything else that turns a
+     thing into money should too: it puts the coins on the floor and books
+     them once, instead of letting the sampler guess at them next tick. */
+  Economy.addSilver = function (amount, note) {
+    var g = game();
+    amount = Math.round(amount || 0);
+    if (!g || !g.map || amount <= 0) return 0;
+    var at = dropCell(g.map);
+    if (!at) return 0;
+    var made = g.map.addItem('silver', at.x, at.y, amount, { faction: 'player' });
+    var paid = 0;
+    for (var i = 0; i < made.length; i++) paid += made[i].stack;
+    noteOwnSilver(paid);
+    Economy.book('trade', paid, note);
+    return paid;
+  };
+
   /* ============================================================
      PRICE HISTORY
 
@@ -1132,9 +1165,8 @@
      flat array so the UI can graph it without reshaping anything.
      ============================================================ */
 
-  function sampleHistory(day) {
+  function sampleHistory() {
     var st = Economy.state;
-    if (!st.history || !Object.keys(st.history).length) st.historyDay0 = day;
     var D = root.Defs;
     var items = (D && D.items) ? D.items() : [];
     for (var i = 0; i < items.length; i++) {
@@ -1198,13 +1230,15 @@
     return null;
   }
 
-  function watchPartner(key, list, opts) {
+  function watchPartner(key, list, opts, rebase) {
     if (!key) return 0;
     var st = Economy.state;
     var now = stockMap(list);
     var prev = st.partners[key];
     st.partners[key] = now;
-    if (!prev) return;
+    /* Nothing to compare against on the first look, and nothing worth
+       comparing when the whole shelf has been thrown out and rerolled. */
+    if (!prev || rebase) return 0;
 
     var id, moved = 0;
     for (id in now) {
@@ -1222,20 +1256,42 @@
   function watchCounters(g) {
     var W = sys('World');
     var T = sys('Trade');
-    var i;
+    var st = Economy.state;
+    var seen = {}, i, key;
 
     if (W && W.liveSettlements) {
       var list = W.liveSettlements();
       for (i = 0; i < list.length; i++) {
-        watchPartner(partnerKey(list[i]), list[i].stock, { settlement: list[i] });
+        var s = list[i];
+        key = partnerKey(s);
+        if (!key) continue;
+        seen[key] = true;
+        /* trade.js throws a settlement's whole shelf away every few days
+           and rolls a new one. That is a warehouse being refilled, not a
+           nation buying and selling, and reading it as trade would shove
+           every price in the market on a timer nobody can see. */
+        var at = s.lastRestockTick || 0;
+        var rebase = st.restock[key] !== at;
+        st.restock[key] = at;
+        watchPartner(key, s.stock, { settlement: s }, rebase);
       }
     }
     if (T && T.visitors) {
       for (i = 0; i < T.visitors.length; i++) {
         var v = T.visitors[i];
-        watchPartner(partnerKey(v), v.stock, { faction: v.factionId });
+        key = partnerKey(v);
+        if (!key) continue;
+        seen[key] = true;
+        watchPartner(key, v.stock, { faction: v.factionId }, false);
       }
     }
+
+    /* A visitor leaves and never comes back under the same id. Keeping
+       their last shelf would grow this map by one entry per caravan for
+       the life of the colony, and it is saved, so it would grow the save
+       file too. */
+    for (key in st.partners) if (!seen[key]) delete st.partners[key];
+    for (key in st.restock) if (!seen[key]) delete st.restock[key];
   }
 
   /* Silver moving in or out of the colony is money, and money always has
@@ -1546,17 +1602,21 @@
       "'s word. They stay for " + c.days + ' days.', { kind: 'neutral', x: pawn.x, y: pawn.y });
   }
 
+  /* The pack has to be at least as big as the cull it was written for,
+     with one spare: manhunterPack stops early when it runs out of room at
+     the edge it picked, and a contract that demands six kills off five
+     animals is a goodwill penalty with a countdown on it. */
   function releasePack(g, c) {
     var A = sys('Animals');
     if (!A || !A.manhunterPack || !g || !g.map) return;
-    A.manhunterPack(g.map, c.killKindId, Math.max(2, c.count - 1));
+    A.manhunterPack(g.map, c.killKindId, c.count + 1);
   }
 
   function callRaid(g, c) {
     var S = sys('Storyteller');
-    if (!S) return;
+    if (!S || !g || !S.schedule) return;
     var points = S.threatPoints ? S.threatPoints(g) : 120;
-    if (S.schedule) S.schedule('raidEnemy', U.randInt(6000, 30000), { points: points, drop: false });
+    S.schedule('raidEnemy', U.randInt(6000, 30000), { points: points, drop: false });
   }
 
   /* ---------- delivering ---------- */
@@ -1632,8 +1692,9 @@
     if (C && C.all && settlement) {
       for (var i = 0; i < C.all.length; i++) {
         var car = C.all[i];
-        if (!car || car.gone || car.tile !== settlement.tile) continue;
-        if (car.factionId && car.factionId !== 'player') continue;
+        /* caravan.js splices a finished party out of this list on its own
+           tick, so one can still be sitting here for the rest of ours. */
+        if (!car || car.state === 'done' || car.tile !== settlement.tile) continue;
         var have = C.countOf ? C.countOf(car, c.defId) : 0;
         if (have <= 0) continue;
         var n = Math.min(want, have);
@@ -1728,10 +1789,11 @@
         { kind: 'threat' });
     }
 
-    /* A sheltered refugee who was kept alive to the end goes home, so
-       the weeks of feeding them were a cost and not a free colonist.
-       One whose contract fell through has nowhere to be sent and stays
-       where they are, which is its own kind of answer. */
+    /* A sheltered refugee goes home whichever way the contract ended, so
+       the weeks of feeding them were a cost and not a free colonist. If
+       they could be kept by dropping the contract, dropping it would
+       always be the right move: a permanent pair of hands is worth far
+       more than the dozen goodwill it costs. */
     if (c.kind === 'shelter' && c.guestPawnId) releaseGuest(c, ok);
   }
 
@@ -1744,7 +1806,7 @@
   function releaseGuest(c, ok) {
     var g = game();
     var pawn = findPawn(g && g.map, c.guestPawnId);
-    if (!ok || !pawn || pawn.dead) return;
+    if (!pawn || pawn.dead) return;
     /* A refugee who is now the only person standing does not walk out
        into the snow to end the colony on a technicality. */
     var alive = g.map.colonists().filter(function (p) { return !p.dead; });
@@ -1752,8 +1814,32 @@
       msg(c.guestName + ' stayed: there is nobody else left here.', { type: 'info' });
       return;
     }
-    if (g.map.removePawn) g.map.removePawn(pawn);
-    msg(c.guestName + ' left with ' + c.factionName + "'s people.", { type: 'info' });
+    sendAway(g, pawn);
+    msg(ok ? c.guestName + ' left with ' + c.factionName + "'s people."
+           : c.factionName + ' sent for ' + c.guestName + '. They walked out.',
+      { type: 'info' });
+  }
+
+  /* Taking a pawn off the map is not one call. A bare removePawn leaves
+     their reservations held, their job half-run and the selection panel
+     pointing at somebody who is no longer here, and the colony quietly
+     stops hauling to the cells they had claimed. caravan.js does the same
+     unhooking when a party leaves; this is the small version of it. */
+  function sendAway(g, pawn) {
+    if (g.selection) U.remove(g.selection, pawn);
+    pawn.drafted = false;
+    pawn.draftTarget = null;
+    pawn.aimTarget = null;
+    if (pawn.jobQueue) pawn.jobQueue.length = 0;
+    var R = sys('Res');
+    if (R && R.releaseAll) R.releaseAll(pawn);
+    var C = sys('Combat');
+    if (C && C.clearStance) C.clearStance(pawn);
+    if (pawn.deSpawn) pawn.deSpawn();
+    else if (g.map.removePawn) g.map.removePawn(pawn);
+    pawn.map = null;
+    pawn.path = null;
+    pawn.pathIdx = 0;
   }
 
   function contractDone(g, c) {
@@ -1972,6 +2058,13 @@
     var g = gameArg(a, b);
     if (!g || !g.map) return;
 
+    /* The market is worth nothing if nobody quotes it. install() is
+       idempotent and trade.js is loaded by the time any tick runs, so the
+       first slow tick of a game is where the two files meet - the same
+       way policies.js installs itself from its own tick rather than
+       asking the integrator to remember. */
+    Economy.install();
+
     var before = Economy.state.lastTick;
     var st = syncGame(g);
     var elapsed = Math.max(0, g.tick - before);
@@ -1990,7 +2083,7 @@
     var day = dayNow();
     if (day !== st.lastDay) {
       st.lastDay = day;
-      sampleHistory(day);
+      sampleHistory();
     }
   };
 
@@ -2005,6 +2098,16 @@
 
   Economy.installed = false;
 
+  /* Which town a counter belongs to, or null for a caravan that walked to
+     us. A settlement has a tile on the world map; a visitor has a crew. */
+  function settlementPartner(partner) {
+    return (partner && partner.tile !== undefined && !partner.pawnIds) ? partner : null;
+  }
+
+  /* The town whose counter is being priced right now, set for the length
+     of one Trade.refresh and nothing longer. */
+  var _quoteFor = null;
+
   Economy.install = function () {
     var T = sys('Trade');
     if (!T || Economy.installed) return Economy.installed;
@@ -2014,11 +2117,25 @@
       opts = opts || {};
       return Economy.priceOf(defId, {
         buying: opts.buying, quality: opts.quality, traderKind: opts.traderKind,
-        faction: opts.faction, settlement: opts.settlement,
+        faction: opts.faction, settlement: opts.settlement || _quoteFor,
         socialSkill: opts.socialSkill, negotiator: opts.negotiator, goodwill: opts.goodwill
       });
     };
     T.priceOf.economyBase = basePrice;
+
+    /* Trade.refresh is where every row of a deal gets its price, and it
+       passes the civilization but not the town. Without this the world
+       screen promises a gradient - carry wood to the desert, it pays
+       double - that the counter itself never honours, because the counter
+       quoted a price with no town attached. */
+    var baseRefresh = T.refresh;
+    T.refresh = function (deal) {
+      var was = _quoteFor;
+      _quoteFor = settlementPartner(deal && deal.partner);
+      try { return baseRefresh.call(T, deal); }
+      finally { _quoteFor = was; }
+    };
+    T.refresh.economyBase = baseRefresh;
 
     var baseConfirm = T.confirm;
     T.confirm = function (deal) {
@@ -2053,8 +2170,7 @@
     if (!deal) return;
     basket = basket || deal.basket || {};
     var partner = deal.partner;
-    var settlement = (partner && partner.tile !== undefined && !partner.pawnIds) ? partner : null;
-    var opts = { faction: deal.factionId, settlement: settlement };
+    var opts = { faction: deal.factionId, settlement: settlementPartner(partner) };
 
     for (var id in basket) {
       var n = basket[id];
@@ -2083,10 +2199,14 @@
 
   Economy.save = function () {
     var st = Economy.state;
+    /* Written out at full precision on purpose. A market crawls home by
+       about a two-thousandth of its gap per economy tick, so rounding a
+       multiplier to three places on the way to disk would round that
+       step away and a reloaded market would never drift back to one. */
     var markets = {};
     for (var id in st.markets) {
       var m = st.markets[id], mult = {};
-      for (var d in m.mult) mult[d] = Math.round(m.mult[d] * 1000) / 1000;
+      for (var d in m.mult) mult[d] = m.mult[d];
       if (Object.keys(mult).length) markets[id] = { id: m.id, factionId: m.factionId, mult: mult };
     }
 
@@ -2096,10 +2216,14 @@
       nextOfferTick: st.nextOfferTick,
       markets: markets,
       history: st.history,
-      historyDay0: st.historyDay0,
       stock: st.stock,
       partners: st.partners,
+      restock: st.restock,
       silverSeen: st.silverSeen === undefined ? null : st.silverSeen,
+      /* Silver this file paid out and has not yet watched land. Losing it
+         over a save would have the sampler book a contract's payment a
+         second time as income the next time it looks at the pile. */
+      silverBooked: st.silverBooked || 0,
       days: st.days,
       today: st.today,
       offers: st.offers,
@@ -2119,11 +2243,12 @@
     st.lastTick = obj.lastTick || 0;
     st.lastDay = obj.lastDay === undefined ? -1 : obj.lastDay;
     st.nextOfferTick = obj.nextOfferTick || 0;
-    st.historyDay0 = obj.historyDay0 || 0;
     st.history = obj.history || {};
     st.stock = obj.stock || null;
     st.partners = obj.partners || {};
+    st.restock = obj.restock || {};
     st.silverSeen = obj.silverSeen === null ? undefined : obj.silverSeen;
+    st.silverBooked = obj.silverBooked || 0;
     st.days = obj.days || [];
     st.today = obj.today || null;
     st.nextOrderId = obj.nextOrderId || 1;

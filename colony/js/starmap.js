@@ -591,7 +591,8 @@
       var far = systems[systems.length - 1];
       for (var i = 0; i < planets.length; i++) {
         if (planets[i].typeId !== 'glitterworld') continue;
-        planets[i].distanceLy = Math.max(planets[i].distanceLy, far.distanceLy + 1.8);
+        planets[i].distanceLy = Math.round(
+          Math.max(planets[i].distanceLy, far.distanceLy + 1.8) * 10) / 10;
       }
 
       return { seed: seed >>> 0, systems: systems, planets: planets, byId: byId };
@@ -1055,6 +1056,11 @@
         if (live) continue;
         c.occupantId = 0;
       }
+      /* A casket somebody else is already walking towards is taken, even
+         though nobody is lying in it yet. Without this every colonist is
+         sent to the same nearest casket, all but one of them fails to
+         reserve it, and a crew of six boards one at a time. */
+      if (Res && Res.canReserve && !Res.canReserve(pawn, T.thing(c), 1)) continue;
       var d = U.distSq(pawn.x, pawn.y, c.x, c.y);
       if (d < bestD) { bestD = d; best = c; }
     }
@@ -1260,6 +1266,9 @@
   function siegeWave(game) {
     var S = sys('Storyteller'), I = sys('Incidents');
     if (!I) return;
+    /* The one knob that can switch the final siege off entirely, for a
+       player who wants the ending without the last stand. */
+    if (!(Starmap.policy.siegeScale > 0)) return;
     var base = (S && S.threatPoints) ? S.threatPoints(game) : 300;
     var scale = Starmap.policy.siegeScale * (0.85 + 0.32 * state.wave);
     var points = Math.max(280, Math.round(base * scale));
@@ -1283,11 +1292,22 @@
     var list = map.colonists ? map.colonists() : [];
     for (var i = 0; i < list.length; i++) {
       var pawn = list[i];
-      if (pawn.dead || pawn.downed || pawn.inCasketId) continue;
+      if (pawn.dead || pawn.downed) continue;
       if (Starmap.roleOf(pawn) !== 'board') continue;
       if (pawn.job && pawn.job.defId === 'starmapBoardShip') continue;
       if (pawn.mentalState) continue;
-      var casket = freeCasket(map, pawn);
+
+      /* A pawn can be flagged as aboard with no job driving it: the job
+         is scratch that save.js does not carry, so a game loaded in the
+         middle of a countdown has frozen colonists and no cryptosleep
+         toil holding them there. Re-issuing the job against the casket
+         they already occupy puts that right without waking anybody. */
+      var casket = pawn.inCasketId ? map.thing(pawn.inCasketId) : null;
+      if (casket && (!casket.spawned || casket.defId !== 'shipCasket')) {
+        Starmap.leaveCasket(pawn, 'casket gone');
+        casket = null;
+      }
+      if (!casket) casket = freeCasket(map, pawn);
       if (!casket) continue;
       if (!Res.canReserve(pawn, T.thing(casket), 1)) continue;
 
@@ -2056,6 +2076,20 @@
      is happening.
      ============================================================ */
 
+  /* Nothing calls Starmap.load from save.js, so a colony loaded in the
+     middle of an ignition comes back with the phase reset and colonists
+     still flagged as frozen. Opening every lid is the safe answer: a
+     colonist standing in an open casket can walk out of it, and one
+     still marked aboard when nothing is counting down cannot. */
+  function sweepCaskets(map) {
+    if (state.phase === 'countdown' || state.phase === 'voyage') return;
+    var caskets = map.byDef ? (map.byDef('shipCasket') || []) : [];
+    var i;
+    for (i = 0; i < caskets.length; i++) if (caskets[i].occupantId) caskets[i].occupantId = 0;
+    var col = map.colonists ? map.colonists() : [];
+    for (i = 0; i < col.length; i++) if (col[i].inCasketId) col[i].inCasketId = 0;
+  }
+
   Starmap.tickLaunch = function (game) {
     game = game || G();
     if (!game || !game.map) return;
@@ -2071,6 +2105,7 @@
 
     if (state.phase === 'countdown') tickCountdown(game);
     else if (state.phase === 'voyage') Starmap.arrive(game);
+    else sweepCaskets(game.map);
 
     tickPlanetRules(game);
     tickPlatform(game);

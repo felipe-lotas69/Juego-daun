@@ -51,6 +51,7 @@
     return v === undefined ? null : v;
   }
 
+  var EMPTY = [];                  /* shared, never written to */
   var TICKS_PER_DAY = 60000;
   var RARE = 250;                  /* the colony-wide rare-tick beat */
   var BEAT = 61;                   /* so this file's rare tick misses health.js's */
@@ -159,7 +160,10 @@
       nullifiedByTrait: ['psychopath']
     },
     weakFromBloodLoss: {
-      label: 'Weak from blood loss', durationDays: 0.4,
+      /* Short, because it is refreshed every rare tick for as long as
+         the blood loss lasts and the duration only decides how long it
+         lingers once they are making it back. */
+      label: 'Weak from blood loss', durationDays: 0.15,
       stages: [
         { label: 'A little light-headed', mood: -3 },
         { label: 'Weak from blood loss', mood: -7 },
@@ -232,6 +236,14 @@
   function stateIsEmpty(st) {
     if (!st) return true;
     if (st.donate || st.bleed > 0 || st.pallor > 0.01) return false;
+    /* This object is the only record that somebody gave blood recently,
+       so dropping it while the cooldown is still running hands them a
+       fresh needle as soon as their own count comes back up - which is
+       half a day, not the four days the cooldown promises. */
+    if (now() - st.lastDonateTick < DONATE_COOLDOWN) return false;
+    /* Same for the trail cursor. A bleeding pawn who loses it treats the
+       next cell as their first and drops a mark. */
+    if (st.cell >= 0) return false;
     var k;
     for (k in st.trend) return false;
     for (k in st.warned) return false;
@@ -576,8 +588,9 @@
          answers "does somebody need to do something", and being
          shortsighted since birth is not that question. */
       var worst = null;
-      for (var i = 0; i < h.hediffs.length; i++) {
-        var hd = h.hediffs[i];
+      var hds = h.hediffs || EMPTY;
+      for (var i = 0; i < hds.length; i++) {
+        var hd = hds[i];
         if (!hd.def || hd.def.benign || hd.def.painOffset < 0) continue;
         if (chronicHediff(hd.def)) continue;
         if (!worst || hd.severity > worst.severity) worst = hd;
@@ -586,7 +599,10 @@
       if (H && H.painLevel && H.painLevel(pawn) > 0.45) return 'in pain';
       var inj = H && H.worstInjury ? H.worstInjury(pawn) : null;
       if (inj) return inj.label;
-      if (worst) return worst.def.label;
+      /* Below this the status list does not show the hediff either, and
+         a headline reading 'blood loss' for a one per cent trace is an
+         emergency that is not there. */
+      if (worst && worst.severity >= 0.02) return worst.def.label;
     }
 
     var A = sys('Abilities');
@@ -606,14 +622,35 @@
 
   /* Every panel that shows a condition colours it from here, so a
      bleeding wound is the same red in the health tab, the colonist box
-     and the alert stack. Nothing in the world layer is pure black or
-     pure white and neither is this. */
+     and the alert stack.
+
+     These are styles.css's own tokens, not five colours picked to look
+     like them. The earlier values sat a few per cent off --good,
+     --warn and --dim, which is the worst place to be: a status row
+     drawn from here landed next to a label the stylesheet had already
+     coloured and the two greens, or the two oranges, read as a mistake
+     rather than as a pair.
+
+       good     --good  #7fae4f
+       none     --dim   #9aa2af
+       minor            #d8c56a   a muted gold, and deliberately NOT
+                                  --gold #ffc23c: that is the accent the
+                                  UI uses for selection and for money,
+                                  and a mild status must not shout with
+                                  the same voice.
+       major    --warn  #e0912a
+       critical --bad   #d4553f
+
+     Critical is --bad and not the deep #c0392b it used to be, because
+     that red is the hostile colour - raiders, enemy factions, the
+     damage bar - everywhere else in the game. A dying colonist painted
+     in the enemy's red is a sentence the player has to read twice. */
   var BAND_COLOUR = {
-    good: '#4fae5a',
-    none: '#8d94a1',
+    good: '#7fae4f',
+    none: '#9aa2af',
     minor: '#d8c56a',
-    major: '#e08a3c',
-    critical: '#c0392b'
+    major: '#e0912a',
+    critical: '#d4553f'
   };
   Statuses.COLOURS = BAND_COLOUR;
 
@@ -686,6 +723,26 @@
 
      Callers: anything that wants the complete picture multiplies its
      own base by these. They are all 1.0 for a pawn with nothing wrong.
+
+     THE RULE THAT STOPS THE DOUBLE HIT. As of this writing nothing
+     outside this file calls Drugs.moveFactor, Drugs.workFactor,
+     Drugs.accuracyFactor or Drugs.socialFactor - drugs.js's own header
+     names pawn.js, combat.js and social.js as its call sites and none
+     of them has one, so those multipliers currently reach the game
+     through nobody. Whoever wires them up should wire THESE, at one
+     site each:
+
+       Pawn.prototype.moveSpeedFactor  *= Statuses.moveFactor(pawn)
+       Pawn.prototype.workRate         *= Statuses.workFactor(pawn)
+       Combat.rangedHitChance          *= Statuses.accuracyFactor(pawn)
+       Social.interact                 *= Statuses.socialFactor(pawn)
+
+     and must not also call the Drugs.* version at the same site, which
+     is the one way a pawn ends up paying for the same drink twice.
+     Health.moveSpeedFactor/workSpeedFactor stay where they are: pawn.js
+     already multiplies them in, and every capMod - drugs.js's highs,
+     medicine.js's implants, this file's hypovolemia - arrives through
+     them.
      ================================================================== */
 
   function comfyRange(pawn) {
@@ -777,8 +834,15 @@
 
   var TRAIL_MIN_BLEED = 0.04;      /* below this a wound drips, it does not trail */
   var POOL_WET_TICKS = 9000;       /* about two and a half hours before it dries */
-  var POOL_SPREAD_MIN = 70;        /* a byte value worth creeping outward from */
-  var STAIN_CAP = 130;             /* what a dried pool settles down to */
+  /* A pool has to be genuinely heavy before it creeps, and when it
+     does it hands over enough to land as part of the same shape. The
+     old threshold let thin splashes seed neighbours at a byte value the
+     renderer draws at almost the same size as a full pool, so a fight
+     ended with far more inked cells than there was blood to fill them. */
+  var POOL_SPREAD_MIN = 110;       /* a byte value worth creeping outward from */
+  /* Half the renderer's alpha ramp, so a dried stain is visibly the
+     older thing in a room where something fresh has happened. */
+  var STAIN_CAP = 105;             /* what a dried pool settles down to */
   var MAX_POOLS = 360;
   var SPREAD_EVERY = 90;
 
@@ -791,6 +855,9 @@
     if (pools.length >= MAX_POOLS) {
       var old = pools.shift();
       if (old) { dryPool(map, old.i); delete poolAt[old.i]; }
+      /* Everything moved down one, so a cursor left where it was now
+         points past the pool it was going to look at next. */
+      if (_spreadCursor > 0) _spreadCursor--;
     }
     pools.push({ i: i, born: now() });
     poolAt[i] = now();
@@ -833,7 +900,13 @@
        marks all of them and marks them heavily. That difference is the
        whole readability of a trail: you can tell at a glance whether
        you are following somebody who is hurt or somebody who is dying. */
-    var chance = U.clamp01(0.25 + bleed * 1.6);
+    /* Capped short of certainty on purpose. render.js draws any
+       non-zero byte as a full-size pair of ellipses, so a run of marked
+       cells with no gaps in it is a stripe somebody painted rather than
+       something that dripped - and at a serious bleed rate the old
+       curve saturated at one and marked every cell the pawn crossed.
+       The gaps are what make it read as a trail. */
+    var chance = Math.min(0.80, 0.25 + bleed * 1.6);
     if (!U.chance(chance)) return;
     /* Marks vary in weight, because a trail of identical squares reads
        as a stripe painted on the floor rather than as something that
@@ -873,7 +946,7 @@
       var nx = map.xOf(pool.i) + dir[0], ny = map.yOf(pool.i) + dir[1];
       if (!map.inBounds(nx, ny) || !map.passable(nx, ny)) continue;
       var ni = map.idx(nx, ny);
-      var give = Math.min(18, v - 40);
+      var give = Math.min(34, v - 60);
       if (give <= 0) continue;
       if (map.blood[ni] >= v) continue;      /* blood does not flow uphill */
       map.blood[pool.i] = v - give;
@@ -902,12 +975,20 @@
      sets once.
      ================================================================== */
 
-  var DONATE_COST = 0.22;          /* fraction of total blood a unit costs */
+  /* What one pack holds, as a fraction of a body's blood: drawn out of
+     one colonist and put back into another. It is a single number on
+     purpose. Giving back more than it cost turns the colony's blood
+     into something you can farm - two donors who barely notice, and a
+     pawn who was nearly drained walks it off - which is the whole cost
+     of the system gone. */
+  var PACK_BLOOD = 0.24;
+  var DONATE_COST = PACK_BLOOD;
   var DONATE_WORK = 900;
   var DONATE_COOLDOWN = 4 * TICKS_PER_DAY;
   var TRANSFUSE_WORK = 600;
-  var TRANSFUSE_GIVES = 0.38;
+  var TRANSFUSE_GIVES = PACK_BLOOD;
   var TRANSFUSE_AT = 0.42;         /* blood loss that makes a transfusion worth a job */
+  var TRANSFUSE_AT_STABLE = 0.62;  /* ...when nothing is still going out */
 
   Statuses.blood = { target: 2 };  /* how many packs the colony tries to keep */
 
@@ -977,6 +1058,12 @@
     if (!h || h.dead) return false;
     if (h.bloodLoss < TRANSFUSE_AT) return false;
     var H = sys('Health');
+    /* A colonist who has stopped bleeding makes their own blood back
+       inside a day, so half the colony's stock is not worth spending on
+       somebody who is already winning. Past the stable threshold they
+       are close enough to the edge to be worth it either way. */
+    var stillGoing = H && H.bleedRate ? H.bleedRate(pawn) > 0.01 : true;
+    if (!stillGoing && h.bloodLoss < TRANSFUSE_AT_STABLE) return false;
     if (H && H.hasHediff && H.hasHediff(pawn, 'transfused')) {
       var hd = H.hediff(pawn, 'transfused');
       if (hd && hd.severity > 0.4) return false;   /* one is already working */
@@ -1096,7 +1183,7 @@
   function racesOn(pawn) {
     var out = [];
     var h = pawn && pawn.health;
-    if (!h || h.dead) return out;
+    if (!h || h.dead || !h.hediffs) return out;
     var H = sys('Health');
 
     var bleed = H && H.bleedRate ? H.bleedRate(pawn) : 0;
@@ -1169,10 +1256,11 @@
     }
   }
 
-  function clearWarnings(pawn) {
+  function clearWarnings(pawn, races) {
     var st = pawn.status;
     if (!st || !st.warned) return;
-    var races = racesOn(pawn), live = Object.create(null), i;
+    var live = Object.create(null), i;
+    if (!races) races = racesOn(pawn);
     for (i = 0; i < races.length; i++) live[races[i].key] = 1;
     for (var k in st.warned) if (!live[k]) delete st.warned[k];
   }
@@ -1473,7 +1561,14 @@
         var N = sys('Needs');
         if (N && N.addThought) {
           var degree = h.bloodLoss > 0.62 ? 2 : (h.bloodLoss > 0.42 ? 1 : 0);
-          N.addThought(pawn, 'weakFromBloodLoss', { degree: degree, situational: true });
+          /* Deliberately not `situational`. That flag belongs to
+             needs.js, which reconciles the situational entries against
+             its own table every rare tick and deletes anything fired
+             from out here within the minute - the thought flickered on
+             and off forever and never reached the mood. A short memory
+             refreshed on this beat is the same effect by honest means,
+             and noStack stops the refresh stacking it to the ceiling. */
+          N.addThought(pawn, 'weakFromBloodLoss', { degree: degree, noStack: true });
         }
       }
     }
@@ -1486,7 +1581,7 @@
         var band = bandFor(races[i].daysLeft);
         if (band) escalate(pawn, races[i], band);
       }
-      clearWarnings(pawn);
+      clearWarnings(pawn, races);
     }
 
     /* Record where every lethal condition stood, so next time round the
@@ -1503,6 +1598,11 @@
     } else if (st && st.trend) {
       st.trend = {};
     }
+
+    /* Once every wound has closed there is no trail to continue, so the
+       cursor is released and the state is allowed to go with it. */
+    st = pawn.status;
+    if (st && (!h || !h.injuries || !h.injuries.length)) st.cell = -1;
 
     /* A pawn with nothing left to remember stops costing a rare tick
        and a line in the save file. */

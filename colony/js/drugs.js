@@ -658,8 +658,14 @@
       capMods: { consciousness: -0.55, moving: -0.45, breathing: -0.40 },
       deathCause: 'a drug overdose'
     },
+    /* Benign is stated rather than inferred: statuses.js reads a
+       negative painOffset as "this is a good thing", and a
+       prophylactic has no painOffset at all, so without this the one
+       hediff in the file that is unambiguously good news was listed
+       as a condition to worry about. */
     penoxycylineProtection: {
-      id: 'penoxycylineProtection', label: 'penoxycyline', driven: true, capMods: {}
+      id: 'penoxycylineProtection', label: 'penoxycyline', driven: true, benign: true,
+      capMods: {}
     },
     painkillerRelief: {
       id: 'painkillerRelief', label: 'painkillers', driven: true, painOffset: -0.42,
@@ -696,7 +702,14 @@
   (function registerHediffs() {
     if (!Health || !Health.HEDIFFS) return;
     Object.keys(HEDIFFS).forEach(function (id) {
-      if (!Health.HEDIFFS[id]) Health.HEDIFFS[id] = HEDIFFS[id];
+      if (Health.HEDIFFS[id]) return;
+      /* statuses.js names the file each row on the health panel came
+         from, and it decides that by reading isDrugHigh off the def.
+         Without the flag every one of these eighteen was credited to
+         health.js, which is the one thing the readout is there to get
+         right. */
+      HEDIFFS[id].isDrugHigh = true;
+      Health.HEDIFFS[id] = HEDIFFS[id];
     });
   })();
 
@@ -915,6 +928,31 @@
     return false;
   };
 
+  /* Is this body getting what it is asking for? biotech.js's chemical
+     dependency gene asks this every 6000 ticks and moods the colonist
+     down when the answer is no; with nothing here to answer it the
+     gene simply complained forever, whatever the colonist had just
+     swallowed. Satisfied means a live high that is not a medical one,
+     or an addiction that has been fed inside its own cycle. */
+  Drugs.isSatisfied = function (pawn) {
+    var st = pawn && pawn.drugs;
+    if (!st) return false;
+    var t = now(), k, rec;
+    for (k in st.hi) {
+      rec = st.hi[k];
+      if (!rec || rec.pending || rec.end <= t || t < rec.start) continue;
+      var drug = rec.drug && DRUGS[rec.drug];
+      if (drug && !drug.medical) return true;
+    }
+    for (k in st.add) {
+      rec = st.add[k];
+      var cd = CHEMS[k];
+      if (!rec || !cd) continue;
+      if ((t - rec.lastDose) / DAY < cd.needDays) return true;
+    }
+    return false;
+  };
+
   /* ==================================================================
      5. TAKING A DOSE
 
@@ -940,20 +978,30 @@
     var t = now();
     var prior = st.hi[drug.high];
     /* A second dose on top of a first does not restart the clock, it
-       deepens what is already there and pushes the end out. */
+       deepens what is already there and pushes the end out. Keeping the
+       original start is the whole of that promise: writing `start: t`
+       instead replayed the onset ramp from zero, so the curve - which
+       is what drunkenness, the stagger and the aim penalty all read -
+       collapsed to nothing the instant a second drink went down and a
+       colonist drinking steadily was never measurably drunk at all.
+       Worse, the blackout that is supposed to put a binger on the floor
+       could never trigger, so a drug binge drank itself past the
+       overdose ceiling and died instead of passing out. */
     var peak = drug.peak;
+    var start = t;
     var end = t + Math.round(drug.highDays * DAY);
-    if (prior && prior.end > t) {
+    if (prior && prior.end > t && prior.start <= t && !prior.pending) {
       peak = Math.min(1, Math.max(prior.peak, peak) + peak * 0.35);
       end = Math.max(prior.end, end);
+      start = prior.start;
     }
     /* Onset is in ticks, not a fraction of the curve, because how fast a
        drug hits has nothing to do with how long it lasts: an injector
        lands in three seconds and a bottle of beer takes a quarter hour,
        and both wear off over hours. */
-    var onset = Math.min(drug.onset || DEFAULT_ONSET, (end - t) * 0.4);
+    var onset = Math.min(drug.onset || DEFAULT_ONSET, (end - start) * 0.4);
     st.hi[drug.high] = {
-      peak: peak, start: t, end: end, drug: drugId, flat: !!drug.flat,
+      peak: peak, start: start, end: end, drug: drugId, flat: !!drug.flat,
       onset: Math.max(1, Math.round(onset))
     };
   }
@@ -962,6 +1010,12 @@
     var a = drug.after;
     if (!a || !U.chance(a.chance === undefined ? 1 : a.chance)) return;
     var t = now();
+    /* Drinking through a hangover pushes the next one out past the end
+       of this drink. The old record is overwritten, so the hediff it
+       was driving has to go with it - left behind it froze at whatever
+       severity the last rare tick set and sat there until the new
+       after-effect finally came due. */
+    clearHediff(pawn, a.hediff);
     var begin = t + Math.round((drug.highDays || 0.3) * DAY);
     st.hi[a.hediff] = {
       peak: a.severity, start: begin, end: begin + Math.round(a.days * DAY),
@@ -1123,7 +1177,11 @@
       }
     }
 
-    addOverdose(pawn, st, drug);
+    noteDoseToday(st);
+    addOverdose(pawn, st, drug, drugId);
+    /* A fatal dose is the end of the story: a corpse has no faith to
+       offend and nobody watches it take anything. */
+    if (pawn.dead) return true;
 
     var I = sys('Ideology');
     if (I && I.noteAction) I.noteAction(pawn, 'tookDrug');
@@ -1145,19 +1203,22 @@
   var OD_WARN = 0.50;
   var OD_DECAY_PER_DAY = 1.15;
 
-  function addOverdose(pawn, st, drug) {
+  function addOverdose(pawn, st, drug, drugId) {
     var gain = drug.od || 0;
     if (!(gain > 0)) return;
-    /* Coming down hard on top of an existing high is what kills - and
-       only that. Counting every live record here charged the stacking
-       penalty for a hangover, for a chemical crash, and worst of all
-       for the five-day penoxycyline and the painkiller, so a colonist
-       on a prophylactic was a third closer to a fatal dose of beer for
-       a week because of a pill that does nothing you can feel. */
+    /* Mixing is what kills, so this counts other drugs' live highs and
+       nothing else. Counting every record charged the penalty for a
+       hangover, for a chemical crash, for the painkiller, and worst of
+       all for the five-day penoxycyline - a colonist on a prophylactic
+       was a third closer to a fatal dose of beer for a week because of
+       a pill that does nothing you can feel. The dose being taken is
+       skipped too: startHigh has already filed it, and counting it
+       made every single dose in the game 35 per cent heavier than the
+       number in the drug table says. */
     var stacked = 1;
     for (var k in st.hi) {
       var h = st.hi[k];
-      if (!h || h.pending || h.end <= now()) continue;
+      if (!h || h.pending || h.end <= now() || h.drug === drugId) continue;
       var hd = h.drug && DRUGS[h.drug];
       if (!hd || hd.medical) continue;
       stacked += 0.35;
@@ -1334,12 +1395,24 @@
     st.worstWd = worst;
     st.worstChem = worstChem;
     if (worst > 0) rollBinge(pawn, st, worst);
-    if (worst >= 0.55) noteFriendsInWithdrawal(pawn);
+
+    /* Once per descent, not once every rare tick. Firing on every beat
+       past the mark refreshed the thought 240 times a day and pinned it
+       at its stack limit for as long as the withdrawal lasted, so
+       everyone who liked the addict carried the full penalty for days
+       and it never decayed. The flag lets go well below the mark it
+       takes to set, so one colonist hovering on the line cannot make it
+       flicker. */
+    if (worst >= 0.55) {
+      if (!st.friendsTold) { st.friendsTold = 1; noteFriendsInWithdrawal(pawn); }
+    } else if (worst < 0.35) {
+      st.friendsTold = 0;
+    }
   }
 
   /* Once per colonist in deep withdrawal, the people who care about them
-     feel it. Cheap because it only fires past a high water mark and
-     only on a rare tick. */
+     feel it. Cheap because it only fires on the way past a high water
+     mark and only on a rare tick. */
   function noteFriendsInWithdrawal(pawn) {
     var S = sys('Social'), N = sys('Needs');
     if (!N || !N.addThought || !S || !S.opinionOf || !pawn.map) return;
@@ -1360,11 +1433,15 @@
     if (pawn.faction !== 'player') return;
 
     /* A colonist in a good mood white-knuckles it; one already on the
-       edge does not. The base is per rare tick, so roughly a coin flip
-       over a full day at the deepest end of a bad mood. */
+       edge does not. The base is per rare tick and there are 240 of
+       those in a day, so this is about one break every other day at
+       the deepest end of a bad mood. The old 0.010 read like a small
+       number and was not: it fired ten separate breaks, with ten
+       letters, across a single four-day withdrawal, which is noise
+       rather than the story the break is there to tell. */
     var N = sys('Needs');
     var mood = (N && N.mood) ? N.mood(pawn) : 0.6;
-    var p = 0.010 * wd * wd * (1.6 - mood);
+    var p = 0.0018 * wd * wd * (1.6 - mood);
     if (hasTrait(pawn, 'ironWilled')) p *= 0.4;
     if (hasTrait(pawn, 'volatile')) p *= 1.8;
     if (!U.chance(U.clamp(p, 0, 0.06))) return;
@@ -1403,9 +1480,21 @@
                                      chance to take a neighbouring cell instead
                                      of the pathed one.
 
-     Until pawn.js and combat.js are wired, Drugs.tickPawn still makes a
-     drunk stagger by itself (see stumble, below), so the effect is
-     visible in the game as it stands.
+     Measured, as of this review: NONE of those call sites exists yet.
+     pawn.js's moveSpeedFactor and workRate multiply the kind, the
+     traits and Health only; combat.js and social.js do not mention this
+     file. statuses.js does wrap all four of them into Statuses.move/
+     work/accuracy/socialFactor, but nothing calls those either, so the
+     boosts are exported and unread. The one upside is that there is
+     provably no double application today: each of these numbers has
+     exactly zero owners, and whoever wires them should wire the
+     Statuses wrappers rather than these directly, so the temperature
+     and suppression drags land with them.
+
+     Until then, Drugs.tickPawn still makes a drunk stagger by itself
+     (see stumble, below), and the capacity penalties in section 2 do
+     all their own work through health.js, so a drunk colonist is
+     visibly drunk in the game as it stands.
      ================================================================== */
 
   /* Read the curve, not the hediff. The hediff is only resampled on the
@@ -1518,13 +1607,20 @@
     return !!(Health && Health.hasHediff && Health.hasHediff(pawn, 'penoxycylineProtection'));
   };
 
+  /* What a prophylactic stops is something you catch: anything the body
+     has to build an immunity against. Food poisoning is a bad meal
+     rather than an infection and is left alone, and so - deliberately -
+     is a wound infection: it grows in a cut nobody dressed, and a pill
+     that made untended wounds safe for five days would cost 24 silver
+     and buy the colony its way out of needing a doctor at all. */
   function shrugOffDisease(pawn) {
     var h = pawn && pawn.health;
     if (!h || !h.hediffs || !Health || !Health.removeHediff) return 0;
     var cleared = 0;
     for (var i = h.hediffs.length - 1; i >= 0; i--) {
       var hd = h.hediffs[i];
-      if (!hd.def || !hd.def.isDisease || hd.severity >= 0.5) continue;
+      if (!hd.def || !hd.def.isDisease || !hd.def.immunizable) continue;
+      if (hd.id === 'infection' || hd.severity >= 0.5) continue;
       Health.removeHediff(pawn, hd.id);
       cleared++;
     }
@@ -1558,7 +1654,7 @@
      colony that drinks itself to death the first time morale dips.
      ================================================================== */
 
-  Drugs.policy = {
+  var POLICY_DEFAULTS = Object.freeze({
     allowRecreational: true,     /* beer, joints, tea for a low mood     */
     allowHard: false,            /* flake, yayo without being told       */
     allowPainkillers: true,
@@ -1567,7 +1663,15 @@
     moodThreshold: 0.34,
     minJoyBefore: 0.45,          /* do not drink for fun with joy this high */
     dosesPerDay: 3               /* a ceiling per colonist, whatever else */
-  };
+  });
+
+  function defaultPolicy() {
+    var out = {}, k;
+    for (k in POLICY_DEFAULTS) out[k] = POLICY_DEFAULTS[k];
+    return out;
+  }
+
+  Drugs.policy = defaultPolicy();
 
   function policyFor(pawn) {
     var st = ensure(pawn);
@@ -1721,7 +1825,14 @@
     if (registered) return false;
     var Jobs = sys('Jobs'), Toils = sys('Toils'), T = sys('T'), Path = sys('Path');
     var WorkGivers = sys('WorkGivers');
-    if (!Jobs || !Jobs.register || !Toils || !T) return false;
+    /* WorkGivers is part of the gate, not an afterthought: the flag is
+       set once and never reconsidered, so registering the jobs on a
+       tick where workgivers.js happened not to be loaded would have
+       left the self-medication giver missing for the rest of the game
+       with nothing to say so. */
+    if (!Jobs || !Jobs.register || !Toils || !T || !WorkGivers || !WorkGivers.register) {
+      return false;
+    }
     registered = true;
 
     var PE = (Path && Path.PE) || { ON_CELL: 0, TOUCH: 1, ADJACENT: 2, INTERACTION: 3 };
@@ -1747,8 +1858,10 @@
               var held = p.carried;
               var id = held.defId;
               if (!DRUGS[id]) return 'fail';
+              /* The daily ceiling is counted inside Drugs.ingest, not
+                 here: a binge and a contraband deal are doses too, and
+                 a ceiling only this job respected was not one. */
               Drugs.ingest(p, id, held);
-              noteDoseToday(ensure(p));
               return 'done';
             }
           })
@@ -1814,14 +1927,20 @@
             }
             if (!pawn.carried) pawn.carried = part;
             s.target = 0;
-            s.chew = 90;
+            /* A binger swallows at the same speed as anybody else. The
+               flat ninety ticks this used to take meant eight bottles
+               of beer went down in twelve seconds, which outran both
+               the blackout that is meant to put a drunk on the floor
+               and the overdose warning the player is meant to see, so
+               a beer binge ended in a funeral every time. */
+            s.chew = (DRUGS[part.defId] && DRUGS[part.defId].ingestTicks) || 240;
             return 'stay';
           }
         })];
       }
     });
 
-    if (WorkGivers && WorkGivers.register && !WorkGivers.get('drugsSelfMedicate')) {
+    if (!WorkGivers.get('drugsSelfMedicate')) {
       WorkGivers.register({
         id: 'drugsSelfMedicate', workType: 'basic', order: 85,
         label: 'take a drug',
@@ -1830,7 +1949,15 @@
           if (!want || !want.defIds || !want.defIds.length) return null;
           var thing = Drugs.findPreferred(pawn, want.defIds, { radius: 60 });
           if (!thing) return null;
-          var job = Jobs.make('takeDrug', T.thing(thing), null, { count: 1 });
+          /* Claim it the way every other giver in the game does. This
+             file already refused to hand out somebody else's claimed
+             stack in findDrug but never made one of its own, so two
+             colonists in withdrawal walked to the same beer and the
+             slower one arrived at an empty floor and failed the job. */
+          var Res = sys('Res');
+          var target = T.thing(thing);
+          if (Res && Res.reserve && !Res.reserve(pawn, target, 1)) return null;
+          var job = Jobs.make('takeDrug', target, null, { count: 1 });
           job.state.drugId = thing.defId;
           job.state.reason = want.reason;
           return job;
@@ -1952,8 +2079,13 @@
     if (Health && Health.hasHediff && Health.hasHediff(pawn, 'alcoholBlackout')) {
       return 'passed out drunk';
     }
-    if (st.worstWd >= 0.85) return 'severe ' + (CHEMS[st.worstChem] || {}).label + ' withdrawal';
-    if (st.worstWd > 0.1) return (CHEMS[st.worstChem] || {}).label + ' withdrawal';
+    /* worstWd and worstChem are both written on the same rare tick, but
+       a save restored between the two, or a habit cured a moment ago,
+       can leave the depth without the name. "severe undefined
+       withdrawal" is worse than no line at all. */
+    var wdName = CHEMS[st.worstChem] && CHEMS[st.worstChem].label;
+    if (wdName && st.worstWd >= 0.85) return 'severe ' + wdName + ' withdrawal';
+    if (wdName && st.worstWd > 0.1) return wdName + ' withdrawal';
     if (drunk > 0.55) return 'very drunk';
     if (drunk > 0.1) return 'drunk';
     for (var id in st.hi) {
@@ -1998,9 +2130,9 @@
     if (!registered) registerBehaviour();
     if (!pawn || pawn.dead || !isPerson(pawn)) return;
     var st = pawn.drugs;
-    /* A pawn who has never touched anything costs one property read a
-       tick and nothing else; the state object is not created until the
-       first dose. */
+    /* A pawn with no state at all costs one property read a tick and
+       nothing else. That is rarer than it looks - see the note on the
+       rare-tick gate below - so there is a second, cheap gate there. */
     if (!st) return;
 
     /* Per-tick: only the stagger, and only while actually walking. */
@@ -2009,6 +2141,20 @@
     }
 
     if (((now() + pawn.id + Drugs._beat) % RARE) !== 0) return;
+
+    /* policies.js hands every colonist a drug policy on its own slow
+       tick, and setPolicy has to build the state object to hang it on,
+       so in practice every colonist in the game carries one of these
+       from the first day whether or not they ever touch a drug. The
+       cheap read above therefore never fires, and without this second
+       gate the whole rare-tick body - four loops and a hediff sweep -
+       ran for every colonist forever to do nothing. A policy on its
+       own is a player setting, not chemistry. */
+    if (!hasChemistry(st)) {
+      if (st._drunk) st._drunk = 0;
+      if (!st.policy) pawn.drugs = null;
+      return;
+    }
 
     var days = RARE / DAY;
     applyHighs(pawn, st);
@@ -2040,18 +2186,20 @@
 
     /* Nothing left to remember: drop the state so a colonist who dried
        out twenty days ago stops costing a rare tick and a save line. */
-    if (isClean(st)) pawn.drugs = null;
+    if (!st.policy && !hasChemistry(st)) pawn.drugs = null;
   };
 
-  function isClean(st) {
-    /* A policy the player set by hand is a decision, not residue. */
-    if (st.policy) return false;
-    if (st.od > 0.01) return false;
-    if (now() < st.restHoldUntil || now() < st.painUntil) return false;
-    for (var k in st.add) if (st.add[k]) return false;
-    for (k in st.tol) if (st.tol[k] > 0.005) return false;
-    for (k in st.hi) if (st.hi[k]) return false;
-    return true;
+  /* Is there any chemistry left in this body - anything that a rare
+     tick could change? A policy is deliberately not part of the answer:
+     it is a player setting that happens to be stored here. */
+  function hasChemistry(st) {
+    if (st.od > 0.01) return true;
+    var t = now();
+    if (t < st.restHoldUntil || t < st.painUntil) return true;
+    for (var k in st.add) if (st.add[k]) return true;
+    for (k in st.tol) if (st.tol[k] > 0.005) return true;
+    for (k in st.hi) if (st.hi[k]) return true;
+    return false;
   }
 
   /* Staggering the rare tick: everything else in the game offsets by
@@ -2095,12 +2243,13 @@
     return true;
   };
 
+  /* Every field, not the four booleans: a loaded save can move the
+     thresholds and the daily ceiling too, and a new colony that kept
+     the last one's numbers would be a bug nobody could see. */
   Drugs.reset = function () {
-    Drugs.policy.allowRecreational = true;
-    Drugs.policy.allowHard = false;
-    Drugs.policy.allowPainkillers = true;
-    Drugs.policy.feedAddictions = true;
+    for (var k in POLICY_DEFAULTS) Drugs.policy[k] = POLICY_DEFAULTS[k];
     Drugs.alerts = [];
+    _readoutTick = -99999;
   };
 
   /* If jobs.js and workgivers.js are already loaded when this file is

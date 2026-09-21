@@ -197,7 +197,8 @@
         'and it is also the first place a shakedown looks.',
       sprite: 'dresser', color: '#7d6a4f', color2: '#a98f68',
       hp: 80, mass: 20, fillPercent: 0.5, beauty: 2, flammable: true,
-      stuffable: true, buildCost: { wood: 25 }, workToBuild: 340, buildCategory: 'furniture'
+      stuffable: true, buildCost: { wood: 25 }, workToBuild: 340, buildCategory: 'furniture',
+      building: bld({})
     },
 
     prisonShower: {
@@ -217,6 +218,7 @@
       sprite: 'table', color: '#8a6134', color2: '#c9b48a',
       size: S21, hp: 130, mass: 50, fillPercent: 0.5, beauty: 2, flammable: true,
       buildCost: { wood: 35, steel: 10 }, workToBuild: 720, buildCategory: 'furniture',
+      researchPrerequisite: 'penology',
       building: bld({ interactionOffset: { dx: 0, dy: 1 } })
     },
 
@@ -228,7 +230,8 @@
         'hold it through their shift, which is how a corridor gets watched.',
       sprite: 'spot', color: '#4a7fd4', color2: '#e8e2d4',
       hp: 40, mass: 5, passable: true, pathCost: 0, fillPercent: 0, beauty: 0,
-      buildCost: { steel: 10 }, workToBuild: 220, buildCategory: 'security'
+      buildCost: { steel: 10 }, workToBuild: 220, buildCategory: 'security',
+      building: bld({})
     },
 
     metalDetector: {
@@ -238,6 +241,7 @@
       sprite: 'trap', color: '#8f97a3', color2: '#ffc23c',
       hp: 120, mass: 40, passable: true, pathCost: 12, fillPercent: 0.2, beauty: -1,
       buildCost: { steel: 35, components: 2 }, workToBuild: 900, buildCategory: 'security',
+      researchPrerequisite: 'penology',
       building: bld({ powerConsumed: 55 })
     },
 
@@ -248,6 +252,7 @@
       sprite: 'lamp', color: '#6e7480', color2: '#c0392b',
       hp: 70, mass: 10, fillPercent: 0.25, beauty: -2,
       buildCost: { steel: 20, components: 3 }, workToBuild: 780, buildCategory: 'security',
+      researchPrerequisite: 'surveillance',
       building: bld({ powerConsumed: 30 })
     },
 
@@ -258,6 +263,7 @@
       sprite: 'research', color: '#5a5f6b', color2: '#4a7fd4',
       size: S21, hp: 180, mass: 70, fillPercent: 0.5, beauty: 0,
       buildCost: { steel: 45, components: 6 }, workToBuild: 1500, buildCategory: 'security',
+      researchPrerequisite: 'surveillance',
       building: bld({ powerConsumed: 140, interactionOffset: { dx: 0, dy: 1 } })
     },
 
@@ -432,7 +438,7 @@
 
   function freshState() {
     return {
-      nextId: 1,
+      nextId: 2,
       blocks: [
         { id: 1, label: 'A Block', categories: ['minimum', 'medium'], regimeId: null, color: '#4a7fd4' }
       ],
@@ -480,6 +486,9 @@
     Prison.state = freshState();
     _roster.length = 0;
     _cellCache = null;
+    _tickSeen = -1;
+    _deskTick = -1;
+    _deskValue = 0;
     return Prison;
   };
 
@@ -492,8 +501,22 @@
   var _cellCache = null;
   var _tickSeen = -1;
   var _driverInstalled = false;
+  var _deskTick = -1, _deskValue = 0;
 
   function nextId() { return Prison.state.nextId++; }
+
+  /* An id no block already answers to. A save written by an older
+     build, or a hand-edited one, can leave the counter behind the
+     list; this is cheap and it only ever runs when a block is made. */
+  function freeBlockId() {
+    var list = Prison.state.blocks, id;
+    for (;;) {
+      id = nextId();
+      var taken = false;
+      for (var i = 0; i < list.length; i++) if (list[i].id === id) { taken = true; break; }
+      if (!taken) return id;
+    }
+  }
 
   /* ---------- small shared helpers ---------- */
 
@@ -613,6 +636,13 @@
       needs: { hygiene: 0.8, exercise: 0.7, privacy: 0.6, safety: 0.8, family: 0.6, freedom: 0.5 },
       activity: 'lockup',
       activityTick: 0,
+      wasEscaping: false,
+      previousBedId: 0,
+      compliance: 0,
+      escortTicks: 0,
+      lastDetectorTick: 0,
+      lastPawnBeat: -1,
+      solitaryWanted: false,
       intakeDone: false,
       intakeTick: 0,
       misconducts: 0,
@@ -691,7 +721,7 @@
 
   Prison.addBlock = function (label, categories, color) {
     var block = {
-      id: nextId(),
+      id: freeBlockId(),
       label: label || ('Block ' + (Prison.state.blocks.length + 1)),
       categories: (categories && categories.length) ? categories.slice() : ['medium'],
       regimeId: null,
@@ -1067,19 +1097,27 @@
   Prison.autoAssign = function (pawn) {
     if (!pawn || !pawn.map) return null;
     var map = pawn.map, ps = stateOf(pawn);
-    var cells = Prison.cells(map), best = null, bestScore = -1e9, fallback = null;
+    var cells = Prison.cells(map), best = null, bestScore = -1e9, fallback = null, marooned = null;
 
     for (var i = 0; i < cells.length; i++) {
       var c = cells[i];
       if (c.solitary) continue;
       if (c.assigned >= Math.min(c.capacity, Math.max(1, Prison.state.policy.maxPerCell))) continue;
-      if (!reachable(map, pawn, c.x, c.y)) continue;
       var block = Prison.block(c.blockId);
       var fits = !block || block.categories.indexOf(ps.category) >= 0;
       var score = c.grade.score - (c.holding ? 30 : 0) - (c.capacity > 1 ? 6 : 0);
+      /* A bunk they cannot walk to today is still a bunk with their name
+         on it: a gate jammed shut, a corridor full of a riot, a wall the
+         player is halfway through building. Leaving them with nothing
+         instead would make the prison forget them for good. */
+      if (!reachable(map, pawn, c.x, c.y)) {
+        if (fits && (!marooned || score > marooned.score)) marooned = { cell: c, score: score };
+        continue;
+      }
       if (!fits) { if (!fallback || score > fallback.score) fallback = { cell: c, score: score }; continue; }
       if (score > bestScore) { bestScore = score; best = c; }
     }
+    if (!best && !fallback && marooned) best = marooned.cell;
     if (!best && fallback) best = fallback.cell;
     if (!best) {
       Prison.lastRefusal = cells.length
@@ -1410,14 +1448,19 @@
     var facilities = Prison.facilities(map);
     var problems = [];
     if (!counts.sleep) problems.push('no sleep hours at all');
-    if (counts.sleep < 5) problems.push('only ' + counts.sleep + ' hours of sleep');
+    else if (counts.sleep < 7) problems.push('only ' + counts.sleep + ' hours of sleep a day');
     if (!counts.eat) problems.push('no meal hours');
     if (!counts.shower) problems.push('no shower hours');
     else if (!facilities.showers) problems.push('shower hours but no shower block built');
     if (!counts.yard) problems.push('no yard hours');
     else if (!facilities.yard) problems.push('yard hours but no yard marked');
-    if (counts.visit && !facilities.booths) problems.push('visiting hours but no visitor booth');
+    if (!counts.visit) problems.push('no visiting hours');
+    else if (!facilities.booths) problems.push('visiting hours but no visitor booth');
     if (counts.work && !facilities.workshop) problems.push('work hours but no prison workshop');
+    if (!Prison.state.policy.mealsInCell) {
+      if (!facilities.canteen) problems.push('meals are not served in cells and no canteen is marked');
+      else if (!Prison.canteenStocked(map)) problems.push('the canteen has no food in it');
+    }
     if (counts.programme && !facilities.programmes) problems.push('programme hours with nothing to run');
     if (counts.lockup >= 16) problems.push('locked up ' + counts.lockup + ' hours a day');
     return { counts: counts, problems: problems, facilities: facilities };
@@ -1509,6 +1552,21 @@
   Prison.canteenCells = function (map) { return areaCellsValid(map, 'canteen'); };
 
   Prison.areaCells = function (map, name) { return areaCellsValid(map, name); };
+
+  /* Is there anything to eat in the mess hall. Haulers will carry loose
+     meals off to the nearest stockpile, so a canteen that is not also a
+     stockpile empties itself overnight and the block starves at
+     breakfast. The audit says so before that happens. */
+  Prison.canteenStocked = function (map) {
+    var area = areaCellsValid(map, 'canteen');
+    for (var i = 0; i < area.length; i++) {
+      var items = map.items(map.xOf(area[i]), map.yOf(area[i]));
+      for (var k = 0; k < items.length; k++) {
+        if (items[k].def && items[k].def.nutrition > 0) return true;
+      }
+    }
+    return false;
+  };
 
   /* Somewhere in a painted area a given prisoner can actually get to. */
   function areaTargetFor(pawn, name) {
@@ -1863,9 +1921,9 @@
     return best;
   };
 
-  /* 0 when no desk is manned, 1 for one watcher, up to 1.3 for two. */
-  var _deskTick = -1, _deskValue = 0;
-
+  /* 0 when no desk is manned, 1 for one watcher, up to 1.3 for two.
+     coverageAt asks several times per prisoner per beat, so the answer
+     is worked out once a tick and handed back after that. */
   Prison.deskManned = function (map) {
     var t = now();
     if (_deskTick === t) return _deskValue;
@@ -1954,6 +2012,8 @@
      lock is enforced where the prisoner's foot lands: a path that is
      about to step onto a door they are not allowed through is cut, and
      they stand there. Cheap - one grid read per moving prisoner. */
+  var DOOR_FORCE_BEAT = 20;
+
   function enforceDoors(pawn) {
     if (!pawn.path || pawn.pathIdx >= pawn.path.length) return false;
     var map = pawn.map;
@@ -1963,6 +2023,26 @@
     var door = map.things.get(bid);
     if (!isDoorThing(door)) return false;
     if (Prison.doorAllows(door, pawn)) return false;
+
+    /* Somebody who has already decided to leave does not turn round at a
+       locked door; they work on it. A cell door goes in minutes, a
+       prison gate takes long enough for a guard to arrive, and that is
+       the whole point of paying for the gate. */
+    var ps = pawn.prisonState;
+    var forcing = (pawn.prisoner && pawn.prisoner.escaping) || (ps && ps.rioting);
+    if (forcing) {
+      if (now() % DOOR_FORCE_BEAT !== 0) return true;
+      var dmg = 4 + skillOf(pawn, 'melee') * 0.6;
+      door.hp = (door.hp === undefined ? door.def.hp : door.hp) - dmg;
+      if (door.hp <= 0) {
+        Prison.log('escape', fullName(pawn) + ' broke through a ' + door.def.label + '.',
+          { pawn: pawn, blockId: ps ? ps.blockId : 0, severity: 'warn' });
+        map.destroyThing(door, 'forced by a prisoner');
+        return false;
+      }
+      return true;
+    }
+
     if (pawn.stopPath) pawn.stopPath();
     var J = sys('Jobs');
     if (pawn.job && J && J.end && pawn.job.defId !== 'layDown') J.end(pawn, 'interrupted');
@@ -2129,14 +2209,18 @@
   };
 
   Prison.sendToSolitary = function (pawn, hours, reason) {
-    if (!isPrisoner(pawn)) return false;
+    if (!isPrisoner(pawn) || !pawn.map) return false;
     var map = pawn.map;
     var free = null, spare = null, cells = Prison.solitaryCells(map), occupied = 0, unreachable = 0;
     for (var i = 0; i < cells.length; i++) {
       var c = cells[i];
-      var taken = false;
-      for (var k = 0; k < c.occupants.length; k++) {
+      var taken = false, k;
+      for (k = 0; k < c.occupants.length; k++) {
         if (c.occupants[k] !== pawn && c.occupants[k].prisoner) taken = true;
+      }
+      for (k = 0; k < c.beds.length; k++) {
+        var owner = c.beds[k].ownerId;
+        if (owner && owner !== pawn.id && livingOwner(map, owner)) taken = true;
       }
       if (taken) { occupied++; continue; }
       if (!reachable(map, pawn, c.x, c.y)) { unreachable++; if (!spare) spare = c; continue; }
@@ -2162,6 +2246,12 @@
     ps.previousBedId = pawn.ownedBedId || 0;
     Prison.state.stats.solitaryTerms++;
     Prison.assignCell(pawn, free.beds[0], { force: true, allowMixing: true });
+
+    var J = sys('Jobs');
+    if (pawn.job && J && J.end) J.end(pawn, 'interrupted');
+    if (pawn.stopPath) pawn.stopPath();
+    ps.escortTicks = 0;
+    if (pawn.prisoner) pawn.prisoner.confineCool = 0;
 
     Prison.log('discipline',
       fullName(pawn) + ' sent to solitary for ' + Math.round(ticks / HOUR) + ' hours - ' + ps.solitaryReason + '.',
@@ -2191,7 +2281,16 @@
       if (st) st.resistance += 1.5 * (days - 1.5);
       ps.misconducts++;
     }
-    if (Prison.state.policy.autoAssignCells) Prison.autoAssign(pawn);
+    var back = null;
+    if (ps.previousBedId && pawn.map) {
+      var old = pawn.map.thing(ps.previousBedId);
+      if (old && old.spawned !== false && old.forPrisoners &&
+          (!old.ownerId || old.ownerId === pawn.id)) {
+        back = Prison.assignCell(pawn, old, { force: true, allowMixing: true });
+      }
+    }
+    ps.previousBedId = 0;
+    if (!back && Prison.state.policy.autoAssignCells) Prison.autoAssign(pawn);
     Prison.log('discipline',
       fullName(pawn) + (early ? ' let out of solitary early' : ' finished their time in solitary') +
       ' after ' + U.fmt(days * 24, 1) + ' hours.',
@@ -2309,7 +2408,8 @@
   };
 
   Prison.toolNear = function (pawn) {
-    var map = pawn.map;
+    var map = pawn && pawn.map;
+    if (!map) return null;
     var cells = U.cellsInRadius(pawn.x, pawn.y, 3);
     for (var i = 0; i < cells.length; i++) {
       var cx = cells[i][0], cy = cells[i][1];
@@ -2325,7 +2425,8 @@
   };
 
   Prison.weakWallNear = function (pawn) {
-    var map = pawn.map;
+    var map = pawn && pawn.map;
+    if (!map) return null;
     var cell = Prison.cellOf(pawn);
     var cells = cell && cell.room ? cell.room.cells : null;
     if (!cells) return null;
@@ -2495,7 +2596,7 @@
      so the warden work giver that chases escapees still works. */
   Prison.beginEscape = function (pawn, reason, targetIdx) {
     var st = pawn && pawn.prisoner;
-    if (!st || st.escaping) return false;
+    if (!st || st.escaping || !pawn.map) return false;
     var map = pawn.map, ps = stateOf(pawn);
 
     var idx = targetIdx;
@@ -3218,6 +3319,7 @@
               /* Somebody from home is an argument for giving up. */
               var st = pawn.prisoner;
               if (st && st.resistance > 0) st.resistance = Math.max(0, st.resistance - 0.4);
+              Prison.afterVisit(pawn);
               return 'done';
             }
             return 'stay';
@@ -3236,6 +3338,14 @@
             needGain(pawn, 'privacy', -0.0003);
             needGain(pawn, 'freedom', 0.0004);
             var N = sys('Needs');
+            /* A mess hall is only a mess hall if there is food in it.
+               Stocking the canteen is the player's half of the bargain,
+               and a block that eats for itself is a block the wardens
+               are not queueing to spoon-feed. */
+            if (s.ticks % 120 === 0 && N && N.eat && pawn.needs && pawn.needs.food < 0.9) {
+              var eaten = eatFromMess(pawn, N);
+              if (eaten) s.ate = (s.ate || 0) + 1;
+            }
             if (s.ticks % 300 === 0 && N && N.gainJoy) N.gainJoy(pawn, 0.0004, 'social');
             return s.ticks >= 700 ? 'done' : 'stay';
           }, { name: 'mess' })
@@ -3426,6 +3536,93 @@
     });
   }
 
+  /* The nearest edible thing standing in the painted canteen. Nothing
+     outside it counts, so a prisoner never helps themselves from the
+     colony's larder on the way past. */
+  Prison.messFood = function (pawn) {
+    var map = pawn && pawn.map;
+    if (!map) return null;
+    var area = areaCellsValid(map, 'canteen');
+    var best = null, bestD = 1e9;
+    for (var i = 0; i < area.length; i++) {
+      var x = map.xOf(area[i]), y = map.yOf(area[i]);
+      var items = map.items(x, y);
+      for (var k = 0; k < items.length; k++) {
+        var t = items[k];
+        if (!t.def || !(t.def.nutrition > 0)) continue;
+        if (t.def.foodType === 'kibble') continue;
+        var d = U.distSq(pawn.x, pawn.y, x, y);
+        if (d >= bestD) continue;
+        if (!reachable(map, pawn, x, y)) continue;
+        best = t; bestD = d;
+        break;
+      }
+    }
+    return best;
+  };
+
+  /* Food lying within arm's reach of where they are sitting. */
+  function eatFromMess(pawn, N) {
+    var map = pawn.map;
+    var cells = U.cellsInRadius(pawn.x, pawn.y, 3);
+    var area = areaCellsValid(map, 'canteen');
+    for (var i = 0; i < cells.length; i++) {
+      var x = cells[i][0], y = cells[i][1];
+      if (!map.inBounds(x, y)) continue;
+      if (area.length && area.indexOf(map.idx(x, y)) < 0) continue;
+      var items = map.items(x, y);
+      for (var k = 0; k < items.length; k++) {
+        var t = items[k];
+        if (!t.def || !(t.def.nutrition > 0)) continue;
+        if (t.def.foodType === 'kibble' && !pawn.isAnimal) continue;
+        if (N.eat(pawn, t)) return true;
+      }
+    }
+    return false;
+  }
+
+  /* The other half of a visit. Everything that comes into a prison
+     comes in through a visitor, which is why searching after visiting
+     hours is a policy and not a nicety: leave it off and the block is
+     quietly armed by the people who love them. */
+  Prison.afterVisit = function (pawn) {
+    var ps = stateOf(pawn);
+    if (!ps) return false;
+
+    /* Whatever they were handed. contraband.js prices this properly
+       when it is loaded; on its own this file settles for the thing a
+       riot would otherwise have had to improvise. */
+    var smuggled = false;
+    var chance = 0.28 - Prison.coverageAt(pawn.map, pawn.x, pawn.y) * 0.2;
+    if (U.chance(U.clamp01(chance))) {
+      var C = sys('Contraband');
+      if (C && C.smuggleIn) smuggled = !!C.smuggleIn(pawn, 'a visitor');
+      else {
+        var map = pawn.map;
+        var made = map.addItem(U.pick(['knife', 'club']), pawn.x, pawn.y, 1);
+        var item = made && made.length ? made[0] : null;
+        if (item && typeof pawn.addToInventory === 'function') {
+          if (map.despawnThing) map.despawnThing(item);
+          pawn.addToInventory(item);
+          smuggled = true;
+        } else if (item) {
+          map.destroyThing(item, 'smuggling failed');
+        }
+      }
+      if (smuggled) {
+        ps.plan.score = U.clamp(ps.plan.score + 0.12, 0, 2);
+        Prison.log('contraband',
+          'Something came in through the visitor booth with ' + fullName(pawn) + '.',
+          { pawn: pawn, blockId: ps.blockId, severity: 'note' });
+      }
+    }
+
+    /* Due a search whether or not anything got through - that is what
+       makes the policy a trade rather than an oracle. */
+    if (Prison.state.policy.searchOnReturn) ps.lastSearchTick = 0;
+    return smuggled;
+  };
+
   /* A guard standing somewhere useful notices things: a prisoner out
      of place, a cell that has not been tossed in a week, a tunnel. */
   function watchFromHere(pawn) {
@@ -3567,6 +3764,7 @@
           /* Worth searching: just back from somewhere, or already on
              the book. */
           var due = ps.activity === 'yard' || ps.activity === 'work' ||
+                    ps.activity === 'visit' || !ps.lastSearchTick ||
                     ps.misconducts > 0 || ps.category === 'maximum';
           if (!due) continue;
           if (!Res.canReserve(pawn, T.pawn(p), 1)) continue;
@@ -3623,16 +3821,33 @@
 
   var IDLE_JOBS = { wander: 1, joyIdle: 1, goto: 1, wait: 1 };
 
+  /* The jobs this file gives a prisoner. Named rather than matched on a
+     prefix, because prisoners.js calls its own escape job
+     `prisonerEscape` and authorising that would be helping them. */
+  var REGIME_JOBS = {
+    prisonShower: 1, prisonYard: 1, prisonWork: 1, prisonVisit: 1, prisonMess: 1
+  };
+
   function jobIsPrison(job) {
-    return !!(job && job.defId && job.defId.length > 6 && job.defId.slice(0, 6) === 'prison');
+    return !!(job && REGIME_JOBS[job.defId]);
   }
 
+  /* What a prisoner is doing that the regime may interrupt. `layDown`
+     matters more than the idle jobs do: prisoners.js walks a confined
+     prisoner back to their bunk and lies them on it whenever they have
+     nothing else on, so without this the regime could never take the
+     pawn back and every hour of it would silently be lockup. Somebody
+     actually asleep is left alone; rest is a need like any other. */
   function canGiveJob(pawn) {
     if (pawn.downed || pawn.dead) return false;
     if (pawn.mentalState) return false;
+    if (pawn.prisoner && pawn.prisoner.escaping) return false;
     if (!pawn.job) return true;
     if (jobIsPrison(pawn.job)) return false;
-    return !!IDLE_JOBS[pawn.job.defId];
+    if (IDLE_JOBS[pawn.job.defId]) return true;
+    if (pawn.job.defId !== 'layDown') return false;
+    var s = pawn.job.state;
+    return !(s && s.asleep);
   }
 
   function startRegimeJob(pawn, ps, activity) {
@@ -3640,17 +3855,29 @@
     if (!J || !canGiveJob(pawn)) return false;
     var target;
 
+    /* Authorise before the job starts, not after: the driver paths out
+       of the cell on this same tick and prisoners.js's confinement
+       check runs later in it. A window that opened a tick late would
+       cancel every errand on its first step. */
+    function launch(job) {
+      authorise(pawn, 150);
+      if (J.start(pawn, job)) return true;
+      if (pawn.prisoner) pawn.prisoner.confineCool = 0;
+      ps.escortTicks = 0;
+      return false;
+    }
+
     if (activity === 'shower') {
       if (ps.needs.hygiene > 0.9) return false;
       target = nearestUsable(pawn, 'prisonShower');
       if (!target) return false;
-      return J.start(pawn, J.make('prisonShower', T.thing(target)));
+      return launch(J.make('prisonShower', T.thing(target)));
     }
     if (activity === 'visit') {
       if (ps.needs.family > 0.9) return false;
       target = nearestUsable(pawn, 'visitorBooth');
       if (!target) return false;
-      return J.start(pawn, J.make('prisonVisit', T.thing(target)));
+      return launch(J.make('prisonVisit', T.thing(target)));
     }
     if (activity === 'yard') {
       var G = root.Game;
@@ -3660,25 +3887,29 @@
       }
       var yard = areaTargetFor(pawn, 'yard');
       if (!yard) return false;
-      return J.start(pawn, J.make('prisonYard', T.cell(yard.x, yard.y), T.cell(yard.x, yard.y)));
+      return launch(J.make('prisonYard', T.cell(yard.x, yard.y), T.cell(yard.x, yard.y)));
     }
     if (activity === 'work') {
       var shop = areaTargetFor(pawn, 'workshop');
       if (!shop) return false;
-      return J.start(pawn, J.make('prisonWork', T.cell(shop.x, shop.y)));
+      return launch(J.make('prisonWork', T.cell(shop.x, shop.y)));
     }
     if (activity === 'eat') {
-      if (!Prison.state.policy.mealsInCell) {
-        var mess = areaTargetFor(pawn, 'canteen');
-        if (mess) return J.start(pawn, J.make('prisonMess', T.cell(mess.x, mess.y)));
-      }
+      if (Prison.state.policy.mealsInCell) return false;
+      /* Aim at the food itself. Parking a hungry prisoner on the far
+         side of the mess hall from the meal stack is the difference
+         between a canteen and a room with a table in it. */
+      var food = Prison.messFood(pawn);
+      if (food) return launch(J.make('prisonMess', T.cell(food.x, food.y)));
+      var mess = areaTargetFor(pawn, 'canteen');
+      if (mess) return launch(J.make('prisonMess', T.cell(mess.x, mess.y)));
       return false;
     }
     if (activity === 'programme') {
       var R = sys('Reform');
       if (R && R.tryAttend) return !!R.tryAttend(pawn);
       var free = areaTargetFor(pawn, 'yard');
-      if (free) return J.start(pawn, J.make('prisonYard', T.cell(free.x, free.y), T.cell(free.x, free.y)));
+      if (free) return launch(J.make('prisonYard', T.cell(free.x, free.y), T.cell(free.x, free.y)));
       return false;
     }
     if (activity === 'free') {
@@ -3687,11 +3918,49 @@
          already does for anyone with nothing on. */
       var open = areaTargetFor(pawn, 'yard');
       if (open && U.chance(0.5)) {
-        return J.start(pawn, J.make('prisonYard', T.cell(open.x, open.y), T.cell(open.x, open.y)));
+        return launch(J.make('prisonYard', T.cell(open.x, open.y), T.cell(open.x, open.y)));
       }
       return false;
     }
     return false;                    /* sleep, lockup and solitary need no job */
+  }
+
+  /* Sleep is the one activity the regime has to run itself.
+     prisoners.js lies a confined prisoner on their bunk AWAKE - that is
+     what its `layDown` with `asleep: false` means, and it is the right
+     answer for somebody who simply has nothing on. It is the wrong
+     answer at two in the morning: rest keeps falling, and four nights
+     of it is a block of exhausted people who collapse through the
+     working day and then riot. A sleep hour in the regime has to put
+     them under, and exhaustion has to be able to overrule any hour. */
+  var EXHAUSTED = 0.24;
+
+  function bunkOf(pawn) {
+    var map = pawn.map;
+    var bed = pawn.ownedBedId ? map.thing(pawn.ownedBedId) : null;
+    if (bed && bed.spawned !== false && bed.forPrisoners) return bed;
+    return null;
+  }
+
+  function alreadyAsleep(pawn) {
+    if (pawn.asleep) return true;
+    var job = pawn.job;
+    return !!(job && (job.defId === 'sleep' ||
+      (job.defId === 'layDown' && job.state && job.state.asleep)));
+  }
+
+  function startSleep(pawn) {
+    if (alreadyAsleep(pawn)) return true;
+    var J = sys('Jobs');
+    if (!J) return false;
+    var bed = bunkOf(pawn);
+    if (pawn.job && pawn.job.defId !== 'layDown' && !IDLE_JOBS[pawn.job.defId]) {
+      if (!jobIsPrison(pawn.job)) return false;
+    }
+    if (pawn.job && J.end) J.end(pawn, 'interrupted');
+    authorise(pawn, 60);
+    return J.start(pawn, J.make('layDown', bed ? T.thing(bed) : null, null,
+      { state: { asleep: true } }));
   }
 
   /* The activity that could not happen, and why - this is the sentence
@@ -3705,7 +3974,7 @@
     else if (activity === 'work' && !f.workshop) why = 'no prison workshop marked out';
     else if (activity === 'visit' && !f.booths.length) why = 'no visitor booth built';
     else if (activity === 'programme' && !f.programmes) why = 'no programme to attend';
-    ps.note = why;
+    if (why) ps.note = why;
     return why;
   }
 
@@ -3718,6 +3987,19 @@
        locks, the detectors, and the authorisation window that keeps
        prisoners.js from dragging them off a scheduled errand. */
     if (ps.escortTicks > 0) ps.escortTicks--;
+
+    /* A run that ended with them back inside is a run the prison won.
+       prisoners.js clears the flag when a warden carries them home or
+       when the attempt times out, and this is where that is noticed. */
+    if (ps.wasEscaping && !pawn.prisoner.escaping) {
+      ps.wasEscaping = false;
+      Prison.state.stats.escapesFoiled++;
+      Prison.log('escape', fullName(pawn) + ' was brought back in.',
+        { pawn: pawn, blockId: ps.blockId, severity: 'warn' });
+      Prison.noteMisconduct(pawn, 'tried to escape', 2);
+    } else if (pawn.prisoner.escaping) {
+      ps.wasEscaping = true;
+    }
     if (jobIsPrison(pawn.job)) authorise(pawn, 40);
     enforceDoors(pawn);
     if (ps.solitaryLeft > 0) {
@@ -3740,18 +4022,46 @@
     var activity = Prison.activityOf(pawn);
     ps.activity = activity;
     ps.activityTick = t;
+    ps.note = '';
+
+    var tired = pawn.needs && pawn.needs.rest < EXHAUSTED;
+
+    /* Nobody sleeps through starving, and the regime does not get to
+       schedule somebody to death. A prisoner below the hunger line is
+       sent to the mess whatever the hour says, as long as there is a
+       mess with food in it and they are not being punished. */
+    if (activity !== 'solitary' && pawn.needs && pawn.needs.food < 0.35 &&
+        !Prison.state.policy.mealsInCell && !Prison.state.lockdown.on &&
+        Prison.messFood(pawn)) {
+      activity = 'eat';
+      ps.activity = 'eat';
+      ps.note = 'hungry';
+      tired = false;            /* eat first, then sleep it off */
+    }
 
     if (activity === 'sleep' || activity === 'lockup' || activity === 'solitary') {
       /* prisoners.js already walks them back to their bunk; all this
-         has to do is not fight it. */
-      ps.note = '';
+         has to do is not fight it - and take back an errand the regime
+         handed out before the hour, or before the punishment, changed. */
+      if (jobIsPrison(pawn.job)) {
+        var J2 = sys('Jobs');
+        if (J2 && J2.end) J2.end(pawn, 'interrupted');
+        ps.escortTicks = 0;
+      }
+      if (activity === 'sleep' || tired || (pawn.needs && pawn.needs.rest < 0.75)) {
+        startSleep(pawn);
+      }
       if (activity !== 'solitary' && cell && cell.occupants.length <= cell.capacity) {
         gainNeed(ps, 'privacy', 0.02);
       }
+    } else if (tired) {
+      /* Too far gone to be marched anywhere. A regime that does this
+         every day is a regime with too few sleep hours in it, and the
+         inspect panel says so in as many words. */
+      ps.note = 'too exhausted for ' + (ACTIVITY_LABEL[activity] || activity).toLowerCase();
+      startSleep(pawn);
     } else if (!startRegimeJob(pawn, ps, activity)) {
       noteUnservedActivity(ps, activity, pawn.map);
-    } else {
-      ps.note = '';
     }
 
     applyNeedThoughts(pawn, ps, cell);
@@ -3792,7 +4102,7 @@
   function sweepDeaths(map) {
     for (var i = _roster.length - 1; i >= 0; i--) {
       var p = _roster[i];
-      if (!p || !p.prisoner) { _roster.splice(i, 1); continue; }
+      if (!p || !p.prisoner || !p.map) { _roster.splice(i, 1); continue; }
       if (!p.dead) continue;
       Prison.recordDeath(p, null);
       _roster.splice(i, 1);
@@ -3837,7 +4147,7 @@
     if (!Prison.state.policy.autoAssignCells) return;
     for (var i = 0; i < _roster.length; i++) {
       var p = _roster[i];
-      if (!p.prisonState || p.dead) continue;
+      if (!p.prisonState || p.dead || !p.map) continue;
       if (p.prisoner && p.prisoner.escaping) continue;
       if (p.prisonState.solitaryLeft > 0) continue;
       /* A bunk that is not a prisoner bunk is not theirs: think.js will
@@ -3865,7 +4175,8 @@
     if (!Prison.state.policy.autoClassify) return;
     for (var i = 0; i < _roster.length; i++) {
       var p = _roster[i];
-      if (!p.prisonState || p.prisonState.categorySetByPlayer) continue;
+      if (!p.prisonState || p.dead || !p.map) continue;
+      if (p.prisonState.categorySetByPlayer) continue;
       var want = Prison.classifyRaw(p).category;
       if (want !== p.prisonState.category) Prison.setCategory(p, want, false);
     }
@@ -4161,8 +4472,11 @@
     var fresh = freshState();
     if (!obj || typeof obj !== 'object') { Prison.state = fresh; _roster.length = 0; return false; }
     var s = fresh, k;
-    s.nextId = obj.nextId || 1;
+    s.nextId = obj.nextId || 2;
     if (Array.isArray(obj.blocks) && obj.blocks.length) s.blocks = obj.blocks;
+    for (var b = 0; b < s.blocks.length; b++) {
+      if (s.blocks[b].id >= s.nextId) s.nextId = s.blocks[b].id + 1;
+    }
     if (obj.regimes) {
       for (k in obj.regimes) {
         if (Array.isArray(obj.regimes[k]) && obj.regimes[k].length === 24) s.regimes[k] = obj.regimes[k];
@@ -4185,6 +4499,8 @@
     _roster.length = 0;
     _cellCache = null;
     _tickSeen = -1;
+    _deskTick = -1;
+    _deskValue = 0;
     return true;
   };
 

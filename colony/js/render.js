@@ -181,32 +181,74 @@
      ever a few tile sizes, so each one is filtered once, well, at the
      size it is being shown at, and drawn one-to-one from then on. The
      per-size maps are weak, so dropping one releases every canvas in it
-     and an art file that rebuilds its own cache is not pinned by this. */
+     and an art file that rebuilds its own cache is not pinned by this.
+
+     A sprite is also kept in a handful of poses. A plant sits on the tile
+     grid and there is no hiding that, but a thousand identical discs at
+     a perfect sixteen-pixel pitch read as woven cloth rather than as
+     scrub - which, once the ground itself went quiet, was most of what
+     was left of "too many pixels". Four sizes and a mirror give any
+     field eight faces, each one still a single one-to-one blit, and only
+     the callers that want the scatter ask for a pose other than nought. */
   var scaleCaches = new Map(), scaleOrder = [];
 
-  function atScreenScale(art) {
-    /* Upscaling is cheap and there is nothing to precompute for it. */
+  /* Pose 0 is the sprite exactly as authored and is what everything that
+     stands on its own - a pawn, a wall, an item - is drawn with. */
+  var POSES = 8;
+  var POSE_K = [1, 1, 0.8, 0.8, 0.92, 0.92, 1.16, 1.16];
+  var POSE_FLIP = [0, 1, 0, 1, 0, 1, 0, 1];
+  /* The bag for the size on screen now, so the commonest call in the
+     file - once for every sprite in the world, several thousand a frame
+     at the widest zoom - is an array index and a weak lookup rather than
+     a hash of the tile size first. It is re-resolved the first time a
+     sprite is asked for at a new tile size. */
+  var poseTs = -1, poseBags = null;
+
+  function atScreenScale(art, pose) {
+    /* Upscaling is cheap and there is nothing to precompute for it, and
+       a cache of 144px canvases in eight poses is a great deal of memory
+       for a view that is already showing very few tiles. At that size
+       the caller gets the nudge and no pose, which is plenty: a view
+       zoomed that far in is not showing enough tiles to read as rows. */
     if (TS >= ART_PX) return null;
-    var byTs = scaleCaches.get(TS);
-    if (!byTs) {
-      byTs = new WeakMap();
-      scaleCaches.set(TS, byTs);
-      scaleOrder.push(TS);
-      while (scaleOrder.length > 4) scaleCaches.delete(scaleOrder.shift());
+    var byTs = poseBags;
+    if (poseTs !== TS) {
+      byTs = scaleCaches.get(TS);
+      if (!byTs) {
+        byTs = new Array(POSES);
+        scaleCaches.set(TS, byTs);
+        scaleOrder.push(TS);
+        while (scaleOrder.length > 4) {
+          var gone = scaleOrder.shift();
+          scaleCaches.delete(gone);
+          if (poseTs === gone) poseTs = -1;
+        }
+      }
+      poseTs = TS; poseBags = byTs;
     }
-    var s = byTs.get(art);
+    var p = pose > 0 ? pose : 0;
+    var bag = byTs[p] || (byTs[p] = new WeakMap());
+    var s = bag.get(art);
     if (s) return s;
-    var u = TS / ART_PX;
-    var w = Math.max(1, Math.round(art.width * u)), h = Math.max(1, Math.round(art.height * u));
+    var u = TS / ART_PX, k = POSE_K[p], aw = art.width, ah = art.height;
+    var w = Math.max(1, Math.round(aw * u * k)), h = Math.max(1, Math.round(ah * u * k));
     s = document.createElement('canvas');
     s.width = w; s.height = h;
     var g = s.getContext('2d');
     g.imageSmoothingEnabled = true;
     if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high';
+    if (POSE_FLIP[p]) { g.translate(w, 0); g.scale(-1, 1); }
     g.drawImage(art, 0, 0, w, h);
-    s.dx = Math.round((art.ox || 0) * u);
-    s.dy = Math.round((art.oy || 0) * u);
-    byTs.set(art, s);
+    /* A mirrored sprite is mirrored about the middle of its tile, not
+       about its own left edge, or a tree would jump half a tile sideways
+       when it happened to be drawn the other way round. A resized one
+       keeps its middle and its footing: centred across, standing on the
+       same line down. */
+    var ox = art.ox || 0, oy = art.oy || 0;
+    if (POSE_FLIP[p]) ox = ART_PX - ox - aw;
+    s.dx = Math.round(u * (ox + aw * (1 - k) * 0.5));
+    s.dy = Math.round(u * (oy + ah * (1 - k)));
+    bag.set(art, s);
     return s;
   }
 
@@ -215,7 +257,7 @@
      sprite carries ox/oy in authored pixels, so one blit honours all of
      them and nothing has to know which sprite is which size. */
   function blitAt(art, px, py) {
-    var s = atScreenScale(art);
+    var s = atScreenScale(art, 0);
     if (s) {
       ctx.drawImage(s, Math.round(px) + s.dx, Math.round(py) + s.dy);
       return;
@@ -224,6 +266,23 @@
     ctx.drawImage(art,
       Math.round(px + (art.ox || 0) * u), Math.round(py + (art.oy || 0) * u),
       art.width * u, art.height * u);
+  }
+
+  /* Ground clutter, drawn off the lattice. The pose and the nudge both
+     come from the cell, so a bush keeps the same face and the same spot
+     for the whole session and nothing crawls between frames. The nudge
+     is a third of a tile at most: a field where every cell holds
+     something needs that much to stop reading as rows, and it is still
+     small enough that the tile a plant belongs to is never in doubt. */
+  function blitScattered(art, px, py, h) {
+    var jx = ((((h >>> 5) & 31) - 15.5) / 31) * TS * 0.66;
+    var jy = ((((h >>> 13) & 31) - 15.5) / 31) * TS * 0.66;
+    var s = atScreenScale(art, (h % 4) * 2 + ((h >>> 11) & 1));
+    if (s) {
+      ctx.drawImage(s, Math.round(px + jx) + s.dx, Math.round(py + jy) + s.dy);
+      return;
+    }
+    blitAt(art, px + jx, py + jy);
   }
 
   function blit(art, tx, ty) { blitAt(art, originX + tx * TS, originY + ty * TS); }
@@ -287,12 +346,19 @@
     return (h ^ (h >>> 16)) >>> 0;
   }
 
+  /* Room ids climb for the whole life of a colony and every one of them
+     that is ever looked at under an overlay would otherwise sit in here
+     forever. Oldest out once there are more than a view's worth. */
   var idColors = new Map();
   function idColor(id, sat, light) {
     var key = id * 10000 + sat * 100 + light;
     var c = idColors.get(key);
     if (c) return c;
     c = 'hsl(' + (tileHash(id, id * 7 + 3) % 360) + ',' + sat + '%,' + light + '%)';
+    if (idColors.size >= 1024) {
+      var first = idColors.keys().next();
+      if (!first.done) idColors.delete(first.value);
+    }
     idColors.set(key, c);
     return c;
   }
@@ -329,6 +395,7 @@
       scaledArt = new WeakMap();
       scaleCaches.clear();
       scaleOrder.length = 0;
+      poseTs = -1; poseBags = null;
       chunks = null;
       chunkOwner = null;
     }
@@ -533,16 +600,25 @@
      and still read as green against brown, because the eye compares hue
      first and brightness second. So the colours are split into
      chromaticity - each channel over the sum, the part that survives a
-     change in light - and plain brightness, and the hue term is given
-     the weight it deserves. Near nought for two shades of one earth,
-     a quarter and up where the ground changes kind. */
+     change in light - and plain brightness, and each is given the weight
+     it deserves.
+
+     Brightness is scaled against a quarter of the full black-to-white
+     range rather than the whole of it, because that is about how much of
+     it two neighbouring grounds ever use. Soil and rich soil are the
+     same hue and the commonest boundary on the map, and they differ by a
+     quarter of their own lightness; against the full range that came out
+     at 0.09, under the threshold, and the whole field wore dark brown
+     rectangles with a three-pixel fringe. Against a quarter of it the
+     pair reads as a change of kind, which is what the eye already
+     thought. Two greys that differ by two units out of 765 still do not. */
   function terrainContrast(a, b) {
     if (!a || !b || a.length < 7 || b.length < 7 || a.charAt(0) !== '#' || b.charAt(0) !== '#') return 0.5;
     var ar = hexChannel(a, 0), ag = hexChannel(a, 1), ab = hexChannel(a, 2);
     var br = hexChannel(b, 0), bg = hexChannel(b, 1), bb = hexChannel(b, 2);
     var asum = ar + ag + ab || 1, bsum = br + bg + bb || 1;
     var dr = ar / asum - br / bsum, dg = ag / asum - bg / bsum;
-    return Math.sqrt(dr * dr + dg * dg) * 3 + Math.abs(asum - bsum) / 765;
+    return Math.sqrt(dr * dr + dg * dg) * 3 + Math.abs(asum - bsum) / 400;
   }
 
   /* art.js cuts two widths of stencil and leaves the choice here, which
@@ -578,8 +654,13 @@
     if (v !== undefined) return v;
     var A = root.Art;
     if (!artOff.edge && A && A.terrainRank) {
-      try { return (ranks[i] = A.terrainRank(def)); }
-      catch (e) { artOff.edge = true; warnOnce('Art.terrainRank', e); }
+      try {
+        /* A rank that is not a number would be cached as undefined,
+           re-asked every cell of every repaint, and compared as false -
+           which quietly spills every neighbour over every other. */
+        var r = A.terrainRank(def);
+        if (typeof r === 'number' && r === r) return (ranks[i] = r);
+      } catch (e) { artOff.edge = true; warnOnce('Art.terrainRank', e); }
     }
     v = def.buildCategory === 'floor' ? 12 : RANK[def.id];
     if (v === undefined) v = def.terrainCategory === 'water' ? 8 : 2;
@@ -664,7 +745,13 @@
     var d;
     for (d = 0; d < 4; d++) if (bits & (1 << d)) maskBand(g, rnd, d, reach);
     for (d = 4; d < 8; d++) if (bits & (1 << d)) maskCorner(g, rnd, d, reach);
-    if (masks.size > 400) masks.clear();
+    /* Oldest one out rather than the lot: a full clear on a busy
+       shoreline throws away work that is about to be asked for again,
+       and every one of these costs a handful of gradients to redraw. */
+    if (masks.size >= 512) {
+      var first = masks.keys().next();
+      if (!first.done) masks.delete(first.value);
+    }
     masks.set(key, c);
     return c;
   }
@@ -732,6 +819,19 @@
   /* One scratch tile, reused: the neighbour's ground goes in, the stencil
      cuts it, and what is left is stamped into the chunk. Only the
      fallback path needs it; art.js hands back the cut tile already. */
+  /* art.js authors the stencils; this file only has to ask for the right
+     one. A miss is an ordinary answer - not every arrangement of bits is
+     a shape art.js draws - and the caller falls back to the stencil
+     below rather than leaving the seam unpainted. */
+  function artMask(bits, variant, reach) {
+    var A = root.Art;
+    if (artOff.edge || !A || !A.terrainEdge) return null;
+    try {
+      var c = A.terrainEdge(bits, variant | (reach << 2));
+      return (c && c.width) ? c : null;
+    } catch (e) { artOff.edge = true; warnOnce('Art.terrainEdge', e); return null; }
+  }
+
   function localBlend(def, bits, variant, reach) {
     if (!seamCanvas) {
       seamCanvas = document.createElement('canvas');
@@ -753,7 +853,17 @@
       sg.fillRect(0, 0, EDGE_PX, EDGE_PX);
     }
     sg.globalCompositeOperation = 'destination-in';
-    sg.drawImage(localMask(bits, variant, reach), 0, 0, EDGE_PX, EDGE_PX);
+    /* Prefer art.js's shape - it is the one the shoreline was designed
+       with - but cut it here, at cache resolution, so the scaled stencil
+       is filtered once per shape and the cut itself is three one-to-one
+       blits. */
+    var mask = artMask(bits, variant, reach);
+    if (mask) {
+      var mc = atCachePx(mask);
+      sg.drawImage(mc, 0, 0, EDGE_PX, EDGE_PX);
+    } else {
+      sg.drawImage(localMask(bits, variant, reach), 0, 0, EDGE_PX, EDGE_PX);
+    }
     sg.globalCompositeOperation = 'source-over';
     return seamCanvas;
   }
@@ -762,17 +872,20 @@
     bits = tidyBits(bits);
     if (!bits) return;
     var A = root.Art, variant = terrainVariant(x, y), reach = seamReach(hereDef, def);
-    if (!artOff.edge && A && A.terrainBlend) {
+    /* Art.terrainBlend hands back the neighbour's ground already cut to
+       the seam and cached, which is one blit instead of three - but it
+       reads the width off the def unless the packed variant is over
+       three, so the narrow bank this file asks for between two shades of
+       one earth never reaches it. Where the two would disagree, the cut
+       is done here instead; where they agree, the fast path stands. */
+    if (!artOff.edge && A && A.terrainBlend && (reach === 1 || def.buildCategory === 'floor')) {
       try {
-        /* The neighbour's ground already cut to the seam and cached, so a
-           seam costs one blit. Bit 2 of the variant is how art.js lets
-           the caller pick the width instead of guessing from the def. */
         var bl = A.terrainBlend(def, bits, variant | (reach << 2));
         if (bl && bl.width) {
           var sc = atCachePx(bl);
           g.drawImage(sc, dx + sc.dx, dy + sc.dy);
+          return;
         }
-        return;
       } catch (e) { artOff.edge = true; warnOnce('Art.terrainBlend', e); }
     }
     g.drawImage(localBlend(def, bits, variant, reach), dx, dy, CACHE_PX, CACHE_PX);
@@ -1245,11 +1358,16 @@
   function drawPlant(t, px, py, x, y) {
     var def = defOf(t);
     if (!def) return;
+    var h = tileHash(x, y);
     var art = artThing(def, t);
     if (art) {
       /* The sprite already encodes growth stage, ripeness and blight, and
-         a tree comes back oversized with the offset to match. */
-      blitAt(art, px, py);
+         a tree comes back oversized with the offset to match. What it
+         cannot know is that it is one of several thousand on a perfect
+         grid, so the scatter is applied here. A sown crop is left alone:
+         a field the player planted in rows is meant to look planted. */
+      if (t.sown || (def.plant && def.plant.sowable)) blitAt(art, px, py);
+      else blitScattered(art, px, py, h);
       return;
     }
     /* Flat-colour stand-in: grow the shape with the plant and jitter it a
@@ -1259,7 +1377,6 @@
     var rng = (pd && pd.visualSizeRange) || ONE_SIZE_RANGE;
     var s = rng[0] + (rng[1] - rng[0]) * (growth < 0 ? 0 : (growth > 1 ? 1 : growth));
     var size = Math.max(3, Math.round(TS * s));
-    var h = tileHash(x, y);
     var ox = px + ((TS - size) >> 1) + ((h % 3) - 1) * pixelScale;
     var oy = py + ((TS - size) >> 1) + (((h >>> 3) % 3) - 1) * pixelScale;
     if (t.blighted) ctx.globalAlpha = 0.75;
@@ -1664,8 +1781,11 @@
 
   var lightGrid = null, lightOwner = null, lightFrame = -999, powerOff = false;
   var lightB = [0, 0, 0, 0];
-  var darkLUT = null, tintRamp = null, tintKey = -1;
+  var lightStamp = 0, lightDay = -1;
+  var darkLUT = null;
   var glowSprite = null;
+  var veil = null, veilCtx = null, veilImg = null, veilW = 0, veilH = 0;
+  var veilStamp = -1, veilKey = -1;
 
   function buildDarkLUT() {
     darkLUT = new Uint8Array(256);
@@ -1675,29 +1795,6 @@
     }
   }
 
-  function tintFor(day) {
-    /* Night is the blue of the palette; daytime gloom indoors is a
-       neutral shadow. One ramp covers both, mixed by how bright it is
-       outside, and is rebuilt only when that brightness really changes.
-       The ground is quieter than it was, so the veil had to come down
-       with it: at full strength this now keeps about half the colour
-       underneath, which reads as night without reading as a closed lid,
-       and the gamma above keeps a half-lit room from falling straight
-       off into soup. */
-    var key = Math.round(day * 24);
-    if (tintRamp && tintKey === key) return tintRamp;
-    tintKey = key;
-    var t = key / 24;
-    var r = Math.round(14 + (20 - 14) * t);
-    var g = Math.round(20 + (24 - 20) * t);
-    var b = Math.round(48 + (33 - 48) * t);
-    tintRamp = new Array(DARK_STEPS + 1);
-    for (var i = 0; i <= DARK_STEPS; i++) {
-      tintRamp[i] = 'rgba(' + r + ',' + g + ',' + b + ',' + (MAX_DARK * i / DARK_STEPS).toFixed(3) + ')';
-    }
-    return tintRamp;
-  }
-
   function updateLightGrid(map, day) {
     if (!lightGrid || lightOwner !== map || lightGrid.length !== map.size) {
       lightGrid = new Uint8Array(map.size);
@@ -1705,16 +1802,24 @@
       lightFrame = -999;
     }
     var moved = lightB[0] !== b0x || lightB[1] !== b0y || lightB[2] !== b1x || lightB[3] !== b1y;
-    if (!moved && frameCount - lightFrame < 5) return;
+    if (!moved && frameCount - lightFrame < 5 && lightDay === day) return;
     lightFrame = frameCount;
+    lightDay = day;
+    lightStamp++;
     lightB[0] = b0x; lightB[1] = b0y; lightB[2] = b1x; lightB[3] = b1y;
 
     var P = root.Power;
     var useLightAt = !powerOff && !!(P && P.lightAt);
     var roof = map.roof, w = map.w;
-    for (var y = b0y; y <= b1y; y++) {
+    /* One cell past the view on every side, because the veil is drawn as
+       a bitmap one pixel to the tile and its outermost pixels are half
+       off screen; without them the smoothing would find nothing out
+       there and fade the edge of the world into daylight. */
+    var y0 = b0y > 0 ? b0y - 1 : 0, y1 = b1y < map.h - 1 ? b1y + 1 : map.h - 1;
+    var x0 = b0x > 0 ? b0x - 1 : 0, x1 = b1x < map.w - 1 ? b1x + 1 : map.w - 1;
+    for (var y = y0; y <= y1; y++) {
       var base = y * w;
-      for (var x = b0x; x <= b1x; x++) {
+      for (var x = x0; x <= x1; x++) {
         var l;
         if (useLightAt) {
           try {
@@ -1752,28 +1857,64 @@
     return c;
   }
 
+  /* Night, and the gloom under a roof, used to go down as one filled
+     rectangle per tile. That is what put a pixel-perfect staircase along
+     the edge of every mountain and a hard square around every lamp: the
+     ground underneath had been taught to wander across its boundaries
+     and then the darkness on top drew the grid back on in ink.
+
+     So the veil is built the way the wash across a chunk is built - one
+     pixel to the tile, in a bitmap a hundred pixels across, drawn back
+     up over the view and interpolated on the way. A roof edge arrives as
+     a gradient half a tile wide, lamplight pools instead of tiling, and
+     the whole layer costs one drawImage and a few thousand byte writes
+     rather than a few thousand fills. The colour is the same in every
+     pixel and only the alpha moves, so nothing can fringe. */
   function drawLight(map) {
     var day = (root.Game && Game.daylight) ? Game.daylight() : 1;
     updateLightGrid(map, day);
     if (!darkLUT) buildDarkLUT();
-    var ramp = tintFor(day);
     var w = map.w;
-
-    /* Equal-darkness cells along a row collapse into one rect, so a lit
-       room or an open field costs a handful of fills instead of hundreds. */
-    for (var y = b0y; y <= b1y; y++) {
-      var base = y * w, py = originY + y * TS;
-      var runQ = -1, runStart = b0x;
-      for (var x = b0x; x <= b1x + 1; x++) {
-        var q = x > b1x ? -1 : darkLUT[lightGrid[base + x]];
-        if (q !== runQ) {
-          if (runQ > 0) {
-            ctx.fillStyle = ramp[runQ];
-            ctx.fillRect(originX + runStart * TS, py, (x - runStart) * TS, TS);
-          }
-          runQ = q; runStart = x;
-        }
+    var n = b1x - b0x + 3, m = b1y - b0y + 3;
+    if (n > 2 && m > 2) {
+      if (!veil) { veil = document.createElement('canvas'); veilCtx = veil.getContext('2d'); }
+      if (veilW !== n || veilH !== m) {
+        veil.width = n; veil.height = m;
+        veilW = n; veilH = m;
+        veilImg = veilCtx.createImageData(n, m);
+        veilStamp = -1;
       }
+      /* Night is the blue of the palette, daytime gloom indoors a
+         neutral shadow, and one colour covers both mixed by how bright
+         it is outside. The ground is quieter than it was, so at full
+         strength this keeps about half the colour underneath: night
+         reads as night without reading as a closed lid, and the gamma in
+         the lookup keeps a half-lit room from falling off into soup. */
+      var key = Math.round(day * 24);
+      if (veilStamp !== lightStamp || veilKey !== key) {
+        veilStamp = lightStamp; veilKey = key;
+        var t = key / 24;
+        var cr = Math.round(14 + 6 * t), cg = Math.round(20 + 4 * t), cb = Math.round(48 - 15 * t);
+        var step = 255 * MAX_DARK / DARK_STEPS;
+        var d = veilImg.data;
+        for (var j = 0; j < m; j++) {
+          var sy = b0y - 1 + j;
+          sy = sy < 0 ? 0 : (sy > map.h - 1 ? map.h - 1 : sy);
+          var srow = sy * w, drow = j * n * 4;
+          for (var i = 0; i < n; i++) {
+            var sx = b0x - 1 + i;
+            sx = sx < 0 ? 0 : (sx > map.w - 1 ? map.w - 1 : sx);
+            var q = drow + i * 4;
+            d[q] = cr; d[q + 1] = cg; d[q + 2] = cb;
+            d[q + 3] = (darkLUT[lightGrid[srow + sx]] * step) | 0;
+          }
+        }
+        veilCtx.putImageData(veilImg, 0, 0);
+      }
+      /* Pixel i holds tile b0x - 1 + i, so the bitmap is laid down one
+         tile back from the view and the browser's bilinear lands each
+         pixel's centre on its tile's centre. */
+      ctx.drawImage(veil, originX + (b0x - 1) * TS, originY + (b0y - 1) * TS, n * TS, m * TS);
     }
 
     if (fireList.length) {

@@ -15,8 +15,8 @@
 
    Nothing here edits a file it does not own. Content goes in
    through Defs.add and Health.HEDIFFS, the cast job through
-   Jobs.register, the AI level through the Think.LEVELS array that
-   think.js already exports, and the six places the engine offers no
+   Jobs.register, the AI levels through the Think.LEVELS array that
+   think.js already exports, and the eleven places the engine offers no
    hook at all are reached by keeping and calling the original
    function. Every chain is idempotent and every one of them bails
    in a single property read when the pawn has no ability state,
@@ -1202,7 +1202,7 @@
   /* ============================================================
      11. THE CHAINS
 
-     Six functions in five files have no extension point and none of
+     Eleven functions in seven files have no extension point and none of
      those files may be edited from here, so each original is kept and
      called. Any other expansion that chains the same function
      composes with this one, and every addition bails on a single
@@ -1524,6 +1524,10 @@
       hostileOk: spec.hostileOk !== undefined ? !!spec.hostileOk : !!extra.hostileOk,
       needsLineOfSight: extra.needsLineOfSight !== false,
       aiPriority: extra.aiPriority === undefined ? 4 : extra.aiPriority,
+      /* A foreign set lands on the calm think rung unless its translate
+         asks otherwise: the owner knows which of its casts are worth
+         stepping over a bleeding colonist for, and this file does not. */
+      reflex: !!extra.reflex,
 
       /* The delegations. Each one is optional: a set that gives no
          `ready` is simply always ready once known, which is the right
@@ -1570,9 +1574,19 @@
      13. SAVE
 
      Per-pawn state rides along inside the pawn blob because it is a
-     plain object on the pawn, so nothing here is needed to keep a
-     colonist's abilities across a load. What is saved is the handful
-     of module-level numbers that are not on any pawn.
+     plain object on the pawn: save.js copies a pawn's own fields with
+     plainOwn and hands them back with clone, so known, cooldowns,
+     masteries, timers and a live inspiration all survive a round trip
+     with no help from this file. Checked field by field.
+
+     save() and load() below are NOT called by save.js - its module list
+     is fixed and names research, power, story, world, factions,
+     caravans and trade, and adding Abilities to it means editing
+     save.js. Nothing is lost by that: the only module-level state here
+     is the chain bookkeeping, the chains live on other modules'
+     objects and survive a load in the same process, and tickPawn
+     re-checks them anyway. They are kept as the hook save.js would
+     call if that line is ever added.
      ============================================================ */
 
   Abilities.save = function () {
@@ -1710,6 +1724,10 @@
            source: 'psycast',
            specs: Royalty.psycasts(),
            translate: function (s) {
+             // `reflex: true` would put a cast on the think rung above
+             // emergency care and food. Left off, psycasts sit on the calm
+             // rung, above work: the player casts them from the order menu
+             // and the AI only reaches for one when it has nothing better.
              return { targetKind: s.target, castTicks: s.castTicks, range: s.range,
                       icon: 'psycast', aiPriority: 3 };
            },

@@ -72,11 +72,11 @@
      reads as a bug even when the arithmetic is right. */
   var STARVE_PER_DAY = 0.18;
   var STARVE_SLACK = 1.35;          /* headroom before anything starts to die    */
-  var MIGRATE_CHECK_DAYS = 1.0;
-
   var GRAZE_DECAY_PER_DAY = 0.055;  /* how fast bare ground stops being bare     */
   var GRAZE_PER_UNIT_DAY = 0.070;   /* pressure one body-size unit lays on a patch */
   var GRAZE_BARE = 0.55;            /* above this the ground starts going bare   */
+  var BROWSE_PER_UNIT_DAY = 0.10;   /* a browser leans on saplings, not on grass */
+  var BROWSE_BLOCKS = 0.40;         /* above this nothing young survives the herd */
   var REGROW_TRIES = 22;            /* patches examined per regrowth pass        */
   var SEED_RADIUS = 9;              /* how far a mature tree will seed a clearing */
 
@@ -88,11 +88,16 @@
   var SOIL_DRAG = 0.33;             /* growth per day lost on wholly dead soil   */
   var SOIL_EXHAUSTED = 0.55;        /* below this the player should be told      */
 
-  var FISH_PER_WATER = 0.115;       /* stock a water cell supports               */
-  var FISH_GROW_PER_DAY = 0.16;
+  /* A stock unit is a shoal, not a fish: the yield in raw fish and the
+     cost in stock are set separately so a good day's fishing is worth
+     the walk without a colony emptying a river between breakfast and
+     lunch. Peak sustainable yield is cap/4 x FISH_GROW_PER_DAY units a
+     day, which on a normal river is about two colonists' food. */
+  var FISH_PER_WATER = 0.16;        /* stock a water cell supports               */
+  var FISH_GROW_PER_DAY = 0.18;
   var FISH_DRIFT_PER_DAY = 0.09;    /* recruitment from upstream, so 0 recovers  */
-  var FISH_WORK = 900;
-  var FISH_BASE_YIELD = 13;
+  var FISH_WORK = 1100;
+  var FISH_BASE_YIELD = 9;
   var FISH_SPOT_TTL = 12000;
   var FISH_RANGE = 46;
 
@@ -193,115 +198,114 @@
 
   Defs.add('pawnKind', {
 
-    /* --- pests and small things that boom --- */
+    /* --- pests and small things that boom in summer --- */
     gopher: beast({
-      label: 'gopher', description: 'A burrowing rodent with a talent for finding the one ' +
-        'crop you were counting on. Harmless, numerous, and expensive.',
-      combatPower: 8, sprite: 'hare',
+      label: 'gopher', sprite: 'hare', combatPower: 8,
+      description: 'A burrowing rodent with a talent for finding the one crop you were ' +
+        'counting on. Harmless, numerous, and expensive.',
       baseHealthScale: 0.2, healthScale: 0.2, baseBodySize: 0.18, bodySize: 0.18, drawSize: 0.6,
-      moveSpeed: 4.2, baseHungerRate: 1.0, hungerRateFactor: 0.5,
-      lifeExpectancyYears: 4, ageRange: [0.2, 3], wildness: 0.4, packSize: [2, 5],
+      moveSpeed: 4.2, baseHungerRate: 1.0, hungerRateFactor: 0.5, wildness: 0.4,
+      lifeExpectancyYears: 4, ageRange: [0.2, 3], packSize: [2, 5],
       meleeDamage: 2, meleeCooldownTicks: 150, meleeSkill: 0,
-      butcherProducts: { meatRaw: 8 },
-      color: '#9a7a52', color2: '#cbb894', comfyTempMin: -18, comfyTempMax: 42
+      butcherProducts: { meatRaw: 8 }, color: '#9a7a52', color2: '#cbb894',
+      comfyTempMin: -18, comfyTempMax: 42
     }),
     marmot: beast({
-      label: 'marmot', description: 'A fat hillside rodent that spends the summer eating and ' +
-        'the winter asleep. Three of them are a stew.',
-      combatPower: 12, sprite: 'hare',
+      label: 'marmot', sprite: 'hare', combatPower: 12,
+      description: 'A fat hillside rodent that spends the summer eating and the winter ' +
+        'asleep. Three of them are a stew.',
       baseHealthScale: 0.32, healthScale: 0.32, baseBodySize: 0.3, bodySize: 0.3, drawSize: 0.75,
-      moveSpeed: 4.0, baseHungerRate: 1.0, hungerRateFactor: 0.6,
-      lifeExpectancyYears: 7, ageRange: [0.3, 6], wildness: 0.35, packSize: [2, 6],
+      moveSpeed: 4.0, baseHungerRate: 1.0, hungerRateFactor: 0.6, wildness: 0.35,
+      lifeExpectancyYears: 7, ageRange: [0.3, 6], packSize: [2, 6],
       meleeDamage: 3, meleeCooldownTicks: 140, meleeSkill: 1,
-      butcherProducts: { meatRaw: 16, leather: 6 }, leatherAmount: 6,
-      color: '#a8854f', color2: '#ddcfae', nuzzles: true, comfyTempMin: -35, comfyTempMax: 34
+      butcherProducts: { meatRaw: 16, leather: 6 }, leatherAmount: 6, nuzzles: true,
+      color: '#a8854f', color2: '#ddcfae', comfyTempMin: -35, comfyTempMax: 34
     }),
     locustSwarm: beast({
-      label: 'locust swarm', description: 'Not one insect but a column of them. It eats a ' +
-        'standing field down to stubble in an afternoon and then moves on.',
-      combatPower: 18, sprite: 'boomrat',
+      label: 'locust swarm', sprite: 'boomrat', combatPower: 18,
+      description: 'Not one insect but a column of them. It eats a standing field down to ' +
+        'stubble in an afternoon and then moves on.',
       baseHealthScale: 0.18, healthScale: 0.18, baseBodySize: 0.12, bodySize: 0.12, drawSize: 0.85,
-      moveSpeed: 4.8, baseHungerRate: 2.6, hungerRateFactor: 1.6,
-      lifeExpectancyYears: 1, ageRange: [0.1, 0.9], wildness: 1, packSize: [5, 9],
-      meleeDamage: 2, meleeDamageType: 'bite', meleeCooldownTicks: 90, meleeSkill: 0,
-      butcherProducts: null, breeds: false,
-      color: '#7a6a2e', color2: '#c8b858',
-      comfyTempMin: 2, comfyTempMax: 50
+      moveSpeed: 4.8, baseHungerRate: 2.6, hungerRateFactor: 1.6, wildness: 1,
+      lifeExpectancyYears: 1, ageRange: [0.1, 0.9], packSize: [5, 9],
+      meleeDamage: 2, meleeCooldownTicks: 90, meleeSkill: 0, breeds: false,
+      /* Stated outright rather than scaled off body size: a swarm is a
+         column of insects and there is no hide on it. */
+      butcherProducts: { meatRaw: 3 }, leatherAmount: 0,
+      color: '#7a6a2e', color2: '#c8b858', comfyTempMin: 2, comfyTempMax: 50
     }),
 
     /* --- grazers and browsers --- */
     gazelle: beast({
-      label: 'gazelle', description: 'Built entirely out of running away. Worth an arrow if ' +
-        'you can land one before the herd is a dust cloud on the ridge.',
-      combatPower: 30, sprite: 'deer',
+      label: 'gazelle', sprite: 'deer', combatPower: 30,
+      description: 'Built entirely out of running away. Worth an arrow if you can land one ' +
+        'before the herd is a dust cloud on the ridge.',
       baseHealthScale: 0.7, healthScale: 0.7, baseBodySize: 0.55, bodySize: 0.55, drawSize: 1.15,
-      moveSpeed: 6.4, baseHungerRate: 1.4, lifeExpectancyYears: 9, ageRange: [0.4, 8],
-      wildness: 0.78, packSize: [4, 8],
+      moveSpeed: 6.4, baseHungerRate: 1.4, wildness: 0.78,
+      lifeExpectancyYears: 9, ageRange: [0.4, 8], packSize: [4, 8],
       meleeDamage: 5, meleeCooldownTicks: 130,
       butcherProducts: { meatRaw: 40, leather: 22 }, leatherAmount: 22,
       color: '#c19a5e', color2: '#efe3c8', comfyTempMin: -10, comfyTempMax: 48
     }),
     elk: beast({
-      label: 'elk', description: 'A browser the size of a horse. It lives off saplings and ' +
-        'bark, which means a wood full of elk is a wood that never grows back.',
-      combatPower: 85, sprite: 'deer',
+      label: 'elk', sprite: 'deer', combatPower: 85,
+      description: 'A browser the size of a horse. It lives off saplings and bark, which ' +
+        'means a wood full of elk is a wood that never grows back.',
       baseHealthScale: 1.5, healthScale: 1.5, baseBodySize: 1.4, bodySize: 1.4, drawSize: 1.7,
-      moveSpeed: 5.0, baseHungerRate: 1.9, hungerRateFactor: 1.2,
-      lifeExpectancyYears: 16, ageRange: [0.8, 14], wildness: 0.8,
-      trainability: 'intermediate', packSize: [3, 6],
+      moveSpeed: 5.0, baseHungerRate: 1.9, hungerRateFactor: 1.2, wildness: 0.8,
+      lifeExpectancyYears: 16, ageRange: [0.8, 14], trainability: 'intermediate', packSize: [3, 6],
       meleeDamage: 13, meleeDamageType: 'blunt', meleeCooldownTicks: 130, meleeSkill: 3,
-      butcherProducts: { meatRaw: 105, leather: 48 }, leatherAmount: 48,
-      color: '#6f4f2e', color2: '#c2ac8a', revengeChance: 0.06, comfyTempMin: -40, comfyTempMax: 32
-    }),
-    bison: beast({
-      label: 'bison', description: 'Two tonnes of grazing inertia. A herd of them will flatten ' +
-        'a pasture and anybody standing in it.',
-      combatPower: 190, sprite: 'muffalo',
-      baseHealthScale: 2.1, healthScale: 2.1, baseBodySize: 2.4, bodySize: 2.4, drawSize: 2.0,
-      moveSpeed: 3.6, baseHungerRate: 2.4, hungerRateFactor: 1.5,
-      lifeExpectancyYears: 22, ageRange: [1, 20], wildness: 0.82,
-      trainability: 'intermediate', packSize: [4, 8],
-      meleeDamage: 16, meleeDamageType: 'blunt', meleeCooldownTicks: 150, meleeSkill: 4,
-      butcherProducts: { meatRaw: 175, leather: 75 }, leatherAmount: 75,
-      color: '#4b3a2a', color2: '#7a6245',
-      revengeChance: 0.09, manhunterChance: 0.03, comfyTempMin: -45, comfyTempMax: 34
+      butcherProducts: { meatRaw: 105, leather: 48 }, leatherAmount: 48, revengeChance: 0.06,
+      color: '#6f4f2e', color2: '#c2ac8a', comfyTempMin: -40, comfyTempMax: 32
     }),
     ibex: beast({
-      label: 'ibex', description: 'A cliff goat that browses whatever the herd below cannot ' +
-        'reach. Sure-footed, foul-tempered and very hard to sneak up on.',
-      combatPower: 45, sprite: 'deer',
+      label: 'ibex', sprite: 'deer', combatPower: 45,
+      description: 'A cliff goat that browses whatever the herd below cannot reach. ' +
+        'Sure-footed, foul-tempered and very hard to sneak up on.',
       baseHealthScale: 0.85, healthScale: 0.85, baseBodySize: 0.7, bodySize: 0.7, drawSize: 1.2,
-      moveSpeed: 5.2, baseHungerRate: 1.4, lifeExpectancyYears: 14, ageRange: [0.6, 12],
-      wildness: 0.85, trainability: 'intermediate', packSize: [2, 5],
+      moveSpeed: 5.2, baseHungerRate: 1.4, wildness: 0.85,
+      lifeExpectancyYears: 14, ageRange: [0.6, 12], trainability: 'intermediate', packSize: [2, 5],
       meleeDamage: 9, meleeDamageType: 'blunt', meleeCooldownTicks: 120, meleeSkill: 4,
-      butcherProducts: { meatRaw: 52, leather: 26 }, leatherAmount: 26,
-      color: '#8a7b5e', color2: '#d6cbb0', revengeChance: 0.1, comfyTempMin: -40, comfyTempMax: 34
+      butcherProducts: { meatRaw: 52, leather: 26 }, leatherAmount: 26, revengeChance: 0.1,
+      color: '#8a7b5e', color2: '#d6cbb0', comfyTempMin: -40, comfyTempMax: 34
+    }),
+    bison: beast({
+      label: 'bison', sprite: 'muffalo', combatPower: 190,
+      description: 'Two tonnes of grazing inertia. A herd of them will flatten a pasture ' +
+        'and anybody standing in it.',
+      baseHealthScale: 2.1, healthScale: 2.1, baseBodySize: 2.4, bodySize: 2.4, drawSize: 2.0,
+      moveSpeed: 3.6, baseHungerRate: 2.4, hungerRateFactor: 1.5, wildness: 0.82,
+      lifeExpectancyYears: 22, ageRange: [1, 20], trainability: 'intermediate', packSize: [4, 8],
+      meleeDamage: 16, meleeDamageType: 'blunt', meleeCooldownTicks: 150, meleeSkill: 4,
+      butcherProducts: { meatRaw: 175, leather: 75 }, leatherAmount: 75,
+      revengeChance: 0.09, manhunterChance: 0.03,
+      color: '#4b3a2a', color2: '#7a6245', comfyTempMin: -45, comfyTempMax: 34
     }),
 
-    /* --- livestock worth the trouble of taming --- */
+    /* --- livestock worth the trouble of taming.
+       A kind may state its own produce table and training.js takes it,
+       so milk and wool arrive without touching that file. --- */
     highlandCow: beast({
-      label: 'highland cow', description: 'Slow, shaggy and patient. Two of them in a pen is ' +
-        'a colony that never runs out of milk again.',
-      combatPower: 110, sprite: 'muffalo',
+      label: 'highland cow', sprite: 'muffalo', combatPower: 110,
+      description: 'Slow, shaggy and patient. Two of them in a pen is a colony that never ' +
+        'runs out of milk again.',
       baseHealthScale: 1.7, healthScale: 1.7, baseBodySize: 1.7, bodySize: 1.7, drawSize: 1.75,
-      moveSpeed: 3.2, baseHungerRate: 2.1, hungerRateFactor: 1.35,
-      lifeExpectancyYears: 20, ageRange: [1, 17], wildness: 0.45,
-      trainability: 'intermediate', packSize: [2, 4],
+      moveSpeed: 3.2, baseHungerRate: 2.1, hungerRateFactor: 1.35, wildness: 0.45,
+      lifeExpectancyYears: 20, ageRange: [1, 17], trainability: 'intermediate', packSize: [2, 4],
       meleeDamage: 10, meleeDamageType: 'blunt', meleeCooldownTicks: 150, meleeSkill: 2,
-      butcherProducts: { meatRaw: 130, leather: 58 }, leatherAmount: 58,
+      butcherProducts: { meatRaw: 130, leather: 58 }, leatherAmount: 58, nuzzles: true,
       color: '#7d4a28', color2: '#c98f4e', comfyTempMin: -40, comfyTempMax: 30,
-      nuzzles: true,
       produce: {
         milk: { item: 'milk', amount: 14, days: 0.9, femaleOnly: true, work: 300, verb: 'milk' }
       }
     }),
     alpaca: beast({
-      label: 'alpaca', description: 'A fleece on legs with an opinion about being touched. ' +
-        'Shears well, milks poorly, and spits at anyone who forgets which.',
-      combatPower: 55, sprite: 'muffalo',
+      label: 'alpaca', sprite: 'muffalo', combatPower: 55,
+      description: 'A fleece on legs with an opinion about being touched. Shears well, milks ' +
+        'poorly, and spits at anyone who forgets which.',
       baseHealthScale: 0.9, healthScale: 0.9, baseBodySize: 0.9, bodySize: 0.9, drawSize: 1.3,
-      moveSpeed: 4.0, baseHungerRate: 1.5, lifeExpectancyYears: 16, ageRange: [0.8, 14],
-      wildness: 0.5, trainability: 'intermediate', packSize: [3, 6],
+      moveSpeed: 4.0, baseHungerRate: 1.5, wildness: 0.5,
+      lifeExpectancyYears: 16, ageRange: [0.8, 14], trainability: 'intermediate', packSize: [3, 6],
       meleeDamage: 6, meleeDamageType: 'blunt', meleeCooldownTicks: 140, meleeSkill: 2,
       butcherProducts: { meatRaw: 60, leather: 30 }, leatherAmount: 30,
       color: '#c9b79a', color2: '#efe6d5', comfyTempMin: -35, comfyTempMax: 32,
@@ -311,13 +315,13 @@
       }
     }),
     dromedary: beast({
-      label: 'dromedary', description: 'The reason a caravan can cross forty tiles of nothing. ' +
-        'Carries a colonist\'s bodyweight in trade goods and complains the entire way.',
-      combatPower: 120, sprite: 'muffalo',
+      label: 'dromedary', sprite: 'muffalo', combatPower: 120,
+      description: 'The reason a caravan can cross forty tiles of nothing. Carries a ' +
+        'colonist\'s bodyweight in trade goods and complains the entire way.',
       baseHealthScale: 1.6, healthScale: 1.6, baseBodySize: 2.0, bodySize: 2.0, drawSize: 1.8,
-      moveSpeed: 4.0, baseHungerRate: 1.6, hungerRateFactor: 0.9,
-      lifeExpectancyYears: 24, ageRange: [1, 20], wildness: 0.55,
-      trainability: 'intermediate', packAnimal: true, packSize: [2, 5],
+      moveSpeed: 4.0, baseHungerRate: 1.6, hungerRateFactor: 0.9, wildness: 0.55,
+      lifeExpectancyYears: 24, ageRange: [1, 20], trainability: 'intermediate',
+      packAnimal: true, packSize: [2, 5],
       meleeDamage: 11, meleeDamageType: 'blunt', meleeCooldownTicks: 145, meleeSkill: 3,
       butcherProducts: { meatRaw: 145, leather: 62 }, leatherAmount: 62,
       color: '#c2a273', color2: '#e8d9ba', comfyTempMin: -12, comfyTempMax: 52,
@@ -328,147 +332,137 @@
 
     /* --- birds --- */
     grouse: beast({
-      label: 'grouse', description: 'A ground bird that would rather freeze than fly. Easy ' +
-        'hunting, and about one meal on the bone.',
-      combatPower: 8, body: 'bird', sprite: 'chicken',
+      label: 'grouse', body: 'bird', sprite: 'chicken', combatPower: 8,
+      description: 'A ground bird that would rather freeze than fly. Easy hunting, and ' +
+        'about one meal on the bone.',
       baseHealthScale: 0.22, healthScale: 0.22, baseBodySize: 0.2, bodySize: 0.2, drawSize: 0.65,
-      moveSpeed: 4.4, baseHungerRate: 0.9, hungerRateFactor: 0.5,
-      lifeExpectancyYears: 5, ageRange: [0.3, 4], wildness: 0.5, packSize: [3, 7],
+      moveSpeed: 4.4, baseHungerRate: 0.9, hungerRateFactor: 0.5, wildness: 0.5,
+      lifeExpectancyYears: 5, ageRange: [0.3, 4], packSize: [3, 7], diet: 'omnivore',
       meleeDamage: 2, meleeDamageType: 'blunt', meleeCooldownTicks: 140, meleeSkill: 0,
       butcherProducts: { meatRaw: 11 },
-      color: '#8c7248', color2: '#cbb387', diet: 'omnivore', comfyTempMin: -40, comfyTempMax: 36
+      color: '#8c7248', color2: '#cbb387', comfyTempMin: -40, comfyTempMax: 36
     }),
     heron: beast({
-      label: 'heron', description: 'Stands in the shallows all day doing nothing, then does ' +
-        'one thing very fast. It is competition, and it is winning.',
-      combatPower: 16, body: 'bird', sprite: 'chicken',
+      label: 'heron', body: 'bird', sprite: 'chicken', combatPower: 16,
+      description: 'Stands in the shallows all day doing nothing, then does one thing very ' +
+        'fast. It is competition, and it is winning.',
       baseHealthScale: 0.3, healthScale: 0.3, baseBodySize: 0.35, bodySize: 0.35, drawSize: 0.95,
-      moveSpeed: 4.6, baseHungerRate: 1.2, lifeExpectancyYears: 12, ageRange: [0.5, 10],
-      wildness: 0.8, packSize: [1, 2],
+      moveSpeed: 4.6, baseHungerRate: 1.2, wildness: 0.8,
+      lifeExpectancyYears: 12, ageRange: [0.5, 10], packSize: [1, 2],
+      diet: 'carnivore', grazer: false,
       meleeDamage: 5, meleeDamageType: 'stab', meleeCooldownTicks: 110, meleeSkill: 3,
       butcherProducts: { meatRaw: 18, leather: 5 }, leatherAmount: 5,
-      color: '#9aa7ad', color2: '#e3e7e8', diet: 'carnivore', grazer: false,
-      comfyTempMin: -12, comfyTempMax: 42
+      color: '#9aa7ad', color2: '#e3e7e8', comfyTempMin: -12, comfyTempMax: 42
     }),
     vulture: beast({
-      label: 'vulture', description: 'Arrives the day after something dies and leaves the day ' +
-        'after that. A sky full of them is a report on how your week went.',
-      combatPower: 24, body: 'bird', sprite: 'chicken',
+      label: 'vulture', body: 'bird', sprite: 'chicken', combatPower: 24,
+      description: 'Arrives the day after something dies and leaves the day after that. ' +
+        'A sky full of them is a report on how your week went.',
       baseHealthScale: 0.38, healthScale: 0.38, baseBodySize: 0.4, bodySize: 0.4, drawSize: 1.0,
-      moveSpeed: 5.0, baseHungerRate: 1.1, lifeExpectancyYears: 18, ageRange: [0.6, 15],
-      wildness: 0.88, packSize: [2, 5],
-      meleeDamage: 6, meleeDamageType: 'bite', meleeCooldownTicks: 110, meleeSkill: 3,
+      moveSpeed: 5.0, baseHungerRate: 1.1, wildness: 0.88,
+      lifeExpectancyYears: 18, ageRange: [0.6, 15], packSize: [2, 5],
+      diet: 'carnivore', grazer: false, revengeChance: 0.06,
+      meleeDamage: 6, meleeCooldownTicks: 110, meleeSkill: 3,
       butcherProducts: { meatRaw: 20, leather: 8 }, leatherAmount: 8,
-      color: '#4a423c', color2: '#b5a08a', diet: 'carnivore', grazer: false,
-      revengeChance: 0.06, comfyTempMin: -20, comfyTempMax: 48
+      color: '#4a423c', color2: '#b5a08a', comfyTempMin: -20, comfyTempMax: 48
     }),
 
     /* --- predators, in order of how much trouble they are --- */
     jackal: beast({
-      label: 'jackal', description: 'Half scavenger, half thief. Will not fight a colonist and ' +
-        'will absolutely empty an unroofed meat store.',
-      combatPower: 45, sprite: 'wolf',
+      label: 'jackal', sprite: 'wolf', combatPower: 45,
+      description: 'Half scavenger, half thief. Will not fight a colonist and will absolutely ' +
+        'empty an unroofed meat store.',
       baseHealthScale: 0.5, healthScale: 0.5, baseBodySize: 0.45, bodySize: 0.45, drawSize: 1.0,
-      moveSpeed: 5.6, baseHungerRate: 1.4, lifeExpectancyYears: 11, ageRange: [0.5, 9],
-      wildness: 0.85, trainability: 'advanced', packSize: [2, 4], nocturnal: true,
-      predator: true, diet: 'carnivore', grazer: false,
-      meleeDamage: 8, meleeDamageType: 'bite', meleeCooldownTicks: 95, meleeSkill: 5,
+      moveSpeed: 5.6, baseHungerRate: 1.4, wildness: 0.85,
+      lifeExpectancyYears: 11, ageRange: [0.5, 9], trainability: 'advanced',
+      packSize: [2, 4], nocturnal: true, predator: true, diet: 'carnivore', grazer: false,
+      meleeDamage: 8, meleeCooldownTicks: 95, meleeSkill: 5,
       butcherProducts: { meatRaw: 32, leather: 20 }, leatherAmount: 20,
-      color: '#a07b4c', color2: '#d9c39c',
-      revengeChance: 0.06, manhunterOnTameFail: 0.05, comfyTempMin: -20, comfyTempMax: 48
+      revengeChance: 0.06, manhunterOnTameFail: 0.05,
+      color: '#a07b4c', color2: '#d9c39c', comfyTempMin: -20, comfyTempMax: 48
     }),
     lynx: beast({
-      label: 'lynx', description: 'Takes hares, birds and anything sleeping outside. Rarely ' +
-        'seen, which is not the same as rarely present.',
-      combatPower: 70, sprite: 'wolf',
+      label: 'lynx', sprite: 'wolf', combatPower: 70,
+      description: 'Takes hares, birds and anything sleeping outside. Rarely seen, which is ' +
+        'not the same as rarely present.',
       baseHealthScale: 0.65, healthScale: 0.65, baseBodySize: 0.6, bodySize: 0.6, drawSize: 1.05,
-      moveSpeed: 5.6, baseHungerRate: 1.5, lifeExpectancyYears: 14, ageRange: [0.5, 12],
-      wildness: 0.92, trainability: 'advanced', packSize: [1, 2], nocturnal: true,
-      predator: true, diet: 'carnivore', grazer: false,
-      meleeDamage: 11, meleeDamageType: 'bite', meleeCooldownTicks: 95, meleeSkill: 7,
+      moveSpeed: 5.6, baseHungerRate: 1.5, wildness: 0.92,
+      lifeExpectancyYears: 14, ageRange: [0.5, 12], trainability: 'advanced',
+      packSize: [1, 2], nocturnal: true, predator: true, diet: 'carnivore', grazer: false,
+      meleeDamage: 11, meleeCooldownTicks: 95, meleeSkill: 7,
       butcherProducts: { meatRaw: 44, leather: 28 }, leatherAmount: 28,
-      color: '#9c8a6a', color2: '#e0d5bd',
       revengeChance: 0.08, manhunterOnTameFail: 0.09, manhunterChance: 0.05,
-      comfyTempMin: -45, comfyTempMax: 36
+      color: '#9c8a6a', color2: '#e0d5bd', comfyTempMin: -45, comfyTempMax: 36
     }),
     panther: beast({
-      label: 'panther', description: 'The big cat. It will not attack a group and it will take ' +
-        'anyone working alone at the far end of the map.',
-      combatPower: 140, sprite: 'wolf',
+      label: 'panther', sprite: 'wolf', combatPower: 140,
+      description: 'The big cat. It will not attack a group and it will take anyone working ' +
+        'alone at the far end of the map.',
       baseHealthScale: 1.1, healthScale: 1.1, baseBodySize: 1.1, bodySize: 1.1, drawSize: 1.35,
-      moveSpeed: 6.0, baseHungerRate: 1.8, hungerRateFactor: 1.1,
-      lifeExpectancyYears: 16, ageRange: [0.8, 14], wildness: 0.95,
-      trainability: 'advanced', packSize: [1, 1], nocturnal: true,
-      predator: true, diet: 'carnivore', grazer: false,
-      meleeDamage: 16, meleeDamageType: 'bite', meleeCooldownTicks: 95, meleeSkill: 8,
-      meleeArmorPen: 0.08,
-      butcherProducts: { meatRaw: 85, leather: 45 }, leatherAmount: 45,
-      color: '#2c2a30', color2: '#4e4a54', armorSharp: 0.05,
+      moveSpeed: 6.0, baseHungerRate: 1.8, hungerRateFactor: 1.1, wildness: 0.95,
+      lifeExpectancyYears: 16, ageRange: [0.8, 14], trainability: 'advanced',
+      packSize: [1, 1], nocturnal: true, predator: true, diet: 'carnivore', grazer: false,
+      meleeDamage: 16, meleeCooldownTicks: 95, meleeSkill: 8, meleeArmorPen: 0.08,
+      butcherProducts: { meatRaw: 85, leather: 45 }, leatherAmount: 45, armorSharp: 0.05,
       revengeChance: 0.12, manhunterOnTameFail: 0.14, manhunterChance: 0.1,
-      comfyTempMin: -25, comfyTempMax: 46
+      color: '#2c2a30', color2: '#4e4a54', comfyTempMin: -25, comfyTempMax: 46
     }),
     direwolf: beast({
-      label: 'dire wolf', description: 'Wolves that never got the message about being afraid ' +
-        'of people. They hunt as a pack and they do not break off.',
-      combatPower: 150, sprite: 'wolf',
+      label: 'dire wolf', sprite: 'wolf', combatPower: 150,
+      description: 'Wolves that never got the message about being afraid of people. They ' +
+        'hunt as a pack and they do not break off.',
       baseHealthScale: 1.1, healthScale: 1.1, baseBodySize: 1.1, bodySize: 1.1, drawSize: 1.4,
-      moveSpeed: 5.6, baseHungerRate: 1.8, hungerRateFactor: 1.15,
-      lifeExpectancyYears: 14, ageRange: [0.8, 12], wildness: 0.96,
-      trainability: 'advanced', packSize: [3, 5], nocturnal: true,
-      predator: true, diet: 'carnivore', grazer: false,
-      meleeDamage: 15, meleeDamageType: 'bite', meleeCooldownTicks: 90, meleeSkill: 8,
+      moveSpeed: 5.6, baseHungerRate: 1.8, hungerRateFactor: 1.15, wildness: 0.96,
+      lifeExpectancyYears: 14, ageRange: [0.8, 12], trainability: 'advanced',
+      packSize: [3, 5], nocturnal: true, predator: true, diet: 'carnivore', grazer: false,
+      meleeDamage: 15, meleeCooldownTicks: 90, meleeSkill: 8,
       butcherProducts: { meatRaw: 80, leather: 46 }, leatherAmount: 46,
-      color: '#43434c', color2: '#8c8c96',
       revengeChance: 0.14, manhunterOnTameFail: 0.16, manhunterChance: 0.14,
-      comfyTempMin: -50, comfyTempMax: 34
+      color: '#43434c', color2: '#8c8c96', comfyTempMin: -50, comfyTempMax: 34
     }),
     sabrecat: beast({
-      label: 'sabrecat', description: 'The thing at the top. It crosses the map perhaps twice ' +
-        'a year, it is not afraid of a turret, and a colony of three does not fight it - ' +
-        'it goes indoors and waits.',
-      combatPower: 420, sprite: 'bear',
+      label: 'sabrecat', sprite: 'bear', combatPower: 420,
+      description: 'The thing at the top. It crosses the map perhaps twice a year, it is not ' +
+        'afraid of a turret, and a colony of three does not fight it - it goes indoors and waits.',
       baseHealthScale: 2.4, healthScale: 2.4, baseBodySize: 2.6, bodySize: 2.6, drawSize: 1.9,
-      moveSpeed: 5.2, baseHungerRate: 2.2, hungerRateFactor: 1.4,
-      lifeExpectancyYears: 24, ageRange: [2, 20], wildness: 0.99,
-      trainability: 'advanced', packSize: [1, 1],
-      predator: true, diet: 'carnivore', grazer: false,
-      meleeDamage: 30, meleeDamageType: 'bite', meleeCooldownTicks: 100, meleeSkill: 10,
-      meleeArmorPen: 0.25,
+      moveSpeed: 5.2, baseHungerRate: 2.2, hungerRateFactor: 1.4, wildness: 0.99,
+      lifeExpectancyYears: 24, ageRange: [2, 20], trainability: 'advanced',
+      packSize: [1, 1], predator: true, diet: 'carnivore', grazer: false,
+      meleeDamage: 30, meleeCooldownTicks: 100, meleeSkill: 10, meleeArmorPen: 0.25,
       butcherProducts: { meatRaw: 200, leather: 95 }, leatherAmount: 95,
-      color: '#7a6340', color2: '#cbb489', armorSharp: 0.2, armorBlunt: 0.18,
+      armorSharp: 0.2, armorBlunt: 0.18,
       revengeChance: 0.3, manhunterOnTameFail: 0.4, manhunterChance: 0.25,
-      comfyTempMin: -50, comfyTempMax: 44
+      color: '#7a6340', color2: '#cbb489', comfyTempMin: -50, comfyTempMax: 44
     }),
 
-    /* --- the water ----------
-       These two are stock species: the population is the fish stock in
-       the rivers and lakes, not a set of pawns wandering the bank. They
-       are registered as kinds anyway so the biomass report, the fishing
-       job and the trade value of a catch can all name what was caught
-       rather than talking about an abstract number. */
+    /* --- the water ---
+       These two are stock species: their population is the fish stock in
+       the rivers and lakes, not a set of pawns wandering the bank.
+       Registering them as kinds anyway is what lets the biomass report,
+       the fishing job and the value of a catch all name what was caught
+       instead of talking about an abstract number. Nothing in this file
+       ever puts one on the ground; spawnNear refuses. --- */
     riverTrout: beast({
-      label: 'river trout', description: 'Lives in running water and is the reason a colony ' +
-        'built on a river never quite starves.',
-      combatPower: 1, sprite: 'hare', stockOnly: true,
+      label: 'river trout', sprite: 'hare', combatPower: 1, stockOnly: true,
+      description: 'Lives in running water and is the reason a colony built on a river ' +
+        'never quite starves.',
       baseHealthScale: 0.15, healthScale: 0.15, baseBodySize: 0.2, bodySize: 0.2, drawSize: 0.5,
-      moveSpeed: 3.0, baseHungerRate: 0.8, lifeExpectancyYears: 6, ageRange: [0.2, 5],
-      wildness: 1, packSize: [1, 1], breeds: false,
+      moveSpeed: 3.0, baseHungerRate: 0.8, wildness: 1, breeds: false,
+      lifeExpectancyYears: 6, ageRange: [0.2, 5], packSize: [1, 1],
       meleeDamage: 1, meleeCooldownTicks: 200, meleeSkill: 0,
-      butcherProducts: { fishRaw: 9 },
-      color: '#7f9aa8', color2: '#d3dbdf', diet: 'carnivore', grazer: false,
-      comfyTempMin: -5, comfyTempMax: 28
+      butcherProducts: { fishRaw: 9 }, diet: 'carnivore', grazer: false,
+      color: '#7f9aa8', color2: '#d3dbdf', comfyTempMin: -5, comfyTempMax: 28
     }),
     lakePike: beast({
-      label: 'lake pike', description: 'Slow-growing, long-lived and worth three trout. Fish a ' +
-        'lake hard enough and the pike are the first thing that stops coming up.',
-      combatPower: 3, sprite: 'hare', stockOnly: true,
+      label: 'lake pike', sprite: 'hare', combatPower: 3, stockOnly: true,
+      description: 'Slow-growing, long-lived and worth three trout. Fish a lake hard enough ' +
+        'and the pike are the first thing that stops coming up.',
       baseHealthScale: 0.25, healthScale: 0.25, baseBodySize: 0.5, bodySize: 0.5, drawSize: 0.7,
-      moveSpeed: 3.0, baseHungerRate: 0.9, lifeExpectancyYears: 14, ageRange: [0.5, 12],
-      wildness: 1, packSize: [1, 1], breeds: false,
+      moveSpeed: 3.0, baseHungerRate: 0.9, wildness: 1, breeds: false,
+      lifeExpectancyYears: 14, ageRange: [0.5, 12], packSize: [1, 1],
       meleeDamage: 3, meleeCooldownTicks: 180, meleeSkill: 1,
-      butcherProducts: { fishRaw: 22 },
-      color: '#5f7a4a', color2: '#c3cc9a', diet: 'carnivore', grazer: false,
-      comfyTempMin: -5, comfyTempMax: 26
+      butcherProducts: { fishRaw: 22 }, diet: 'carnivore', grazer: false,
+      color: '#5f7a4a', color2: '#c3cc9a', comfyTempMin: -5, comfyTempMax: 26
     })
   });
 
@@ -525,8 +519,15 @@
     heron:       { role: 'fisher', biomes: ALL, share: 1.0, season: [1.1, 1.2, 1.0, 0.4], breed: 0.7,
                    migrates: true },
     /* stock species: no pawns, the fishery is their population */
-    riverTrout:  { role: 'fish', biomes: ALL, share: 0.7, season: [1.1, 1.0, 1.1, 0.8], breed: 0 },
-    lakePike:    { role: 'fish', biomes: ALL, share: 0.3, season: [1.0, 1.0, 1.1, 0.9], breed: 0 }
+    /* catchCost is stock taken per catch, catchYield the fish that come
+       out of it. The ratio is the same for both, so a pike is not better
+       value for the river - it is better value for the colonist's
+       afternoon, which is why a fished-down river where the pike have
+       gone is worse work for the same effort. */
+    riverTrout:  { role: 'fish', biomes: ALL, share: 0.7, season: [1.1, 1.0, 1.1, 0.8], breed: 0,
+                   catchCost: 0.25, catchYield: 1 },
+    lakePike:    { role: 'fish', biomes: ALL, share: 0.3, season: [1.0, 1.0, 1.1, 0.9], breed: 0,
+                   catchCost: 0.6, catchYield: 2.4 }
   };
 
   var SEASON_IDX = { spring: 0, summer: 1, fall: 2, winter: 3 };
@@ -637,12 +638,13 @@
     d = map.__eco = {
       w: map.w, cw: cw, ch: ch, n: cw * ch,
       graze: new Float32Array(cw * ch),     /* 0..1 how chewed down a patch is  */
+      browse: new Float32Array(cw * ch),    /* 0..1 pressure on saplings        */
       felled: new Float32Array(cw * ch),    /* trees taken out of a patch       */
       plant: new Float32Array(cw * ch),     /* standing nutrition per patch     */
       trees: new Int16Array(cw * ch),
       seeds: new Int16Array(cw * ch),       /* mature trees that can seed       */
       biomass: 0, treeCount: 0, seedTrees: 0, cover: 0,
-      water: 0, spots: null, spotTick: -99999,
+      water: -1, waterTick: -99999, spots: null, spotTick: -99999,
       censusTick: -99999
     };
     return d;
@@ -724,15 +726,19 @@
     return d.biomass;
   }
 
+  /* A whole-map terrain walk, so it is counted once a day rather than
+     once a beat. Zero is a real answer - a map with no river at all -
+     which is why the "not yet counted" sentinel is negative. */
   function waterCells(map) {
     var d = derived(map);
-    if (d.water) return d.water;
+    if (d.water >= 0 && now() - d.waterTick < TICKS_PER_DAY) return d.water;
     var n = 0;
     for (var i = 0; i < map.size; i++) {
       var t = map.terrainAtIdx ? map.terrainAtIdx(i) : null;
       if (t && t.isWater) n++;
     }
     d.water = n;
+    d.waterTick = now();
     return n;
   }
 
@@ -865,6 +871,11 @@
   function spawnNear(map, kindId, x, y, count) {
     var A = sys('Animals');
     if (!A || !A.spawnWild) return [];
+    /* The fish are a stock, not a crowd of pawns standing in the river.
+       Nothing in this file should ever try to put one on the ground, and
+       this is where that stays true. */
+    var rec = eco(kindId);
+    if (rec && rec.role === 'fish') return [];
     return A.spawnWild(map, kindId, x, y, count) || [];
   }
 
@@ -906,6 +917,9 @@
     if (map.removePawn) map.removePawn(pawn);
     else U.remove(map.pawns, pawn);
     pawn.map = null;
+    /* Not dead, just elsewhere. Anything still holding a reference to it
+       can tell the difference from this and from the null map. */
+    pawn.migrated = 1;
     return true;
   }
 
@@ -1204,6 +1218,7 @@
     var decay = GRAZE_DECAY_PER_DAY * days;
     for (i = 0; i < d.n; i++) {
       if (d.graze[i] > 0) d.graze[i] = Math.max(0, d.graze[i] - decay);
+      if (d.browse[i] > 0) d.browse[i] = Math.max(0, d.browse[i] - decay);
       if (d.felled[i] > 0) d.felled[i] = Math.max(0, d.felled[i] - decay * 0.4);
     }
 
@@ -1213,8 +1228,15 @@
       if (p.dead || p.isAnimal !== true) continue;
       var rec = eco(p.kindId);
       if (!rec || !HERB_ROLES[rec.role]) continue;
-      var c = chunkAt(d, p.x, p.y);
-      d.graze[c] = U.clamp01(d.graze[c] + GRAZE_PER_UNIT_DAY * sizeOf(p.kindId) * days);
+      var c = chunkAt(d, p.x, p.y), size = sizeOf(p.kindId);
+      d.graze[c] = U.clamp01(d.graze[c] + GRAZE_PER_UNIT_DAY * size * days);
+      /* A browser is not a lawnmower. It takes the saplings and the
+         bark, which is why a wood full of elk stops being a wood one
+         generation at a time rather than all at once. */
+      if (rec.browses) {
+        d.browse[c] = U.clamp01(d.browse[c] + BROWSE_PER_UNIT_DAY * size * days);
+        if (U.chance(1.2 * days)) killSapling(map, d, c);
+      }
     }
 
     /* Where the pressure is highest the ground actually goes bare. This
@@ -1234,8 +1256,11 @@
         if (!stripPatch(map, d, i)) break;
       }
     }
+    var browsed = 0;
+    for (i = 0; i < d.n; i++) if (d.browse[i] > BROWSE_BLOCKS) browsed++;
     state.grazeWorst = worst;
     state.grazeBare = bare;
+    state.browsedPatches = browsed;
   }
 
   Ecology.grazingAt = function (map, x, y) {
@@ -1245,8 +1270,58 @@
     return d.graze[chunkAt(d, x, y)];
   };
 
+  Ecology.browsingAt = function (map, x, y) {
+    map = mapOf(map);
+    if (!map || !map.inBounds(x, y)) return 0;
+    var d = derived(map);
+    return d.browse[chunkAt(d, x, y)];
+  };
+
+  /* The coarse fields, for anything that wants ground variation at the
+     scale of several tiles rather than per cell. render.js may read
+     these to tint the ground: a patch that has been grazed bare or
+     clear-felled ought to look like it, and a field that already varies
+     across eight tiles is the low-frequency variation the art direction
+     asks for without a speck of per-cell noise to make it.
+
+     The arrays are live and rebuilt from the world, so a reader takes
+     values out of them and never writes into them. */
+  Ecology.patchField = function (map) {
+    map = mapOf(map);
+    if (!map) return null;
+    var d = derived(map);
+    return {
+      size: CHUNK, w: d.cw, h: d.ch,
+      graze: d.graze, browse: d.browse, felled: d.felled, plant: d.plant,
+      at: function (x, y) {
+        if (!map.inBounds(x, y)) return null;
+        var c = chunkAt(d, x, y);
+        return { graze: d.graze[c], browse: d.browse[c], felled: d.felled[c], plant: d.plant[c] };
+      }
+    };
+  };
+
   function patchOrigin(d, c) {
     return { x: (c % d.cw) * CHUNK, y: ((c / d.cw) | 0) * CHUNK };
+  }
+
+  /* What browsing actually costs a wood: the young trees, before they
+     are old enough to seed anything themselves. */
+  function killSapling(map, d, c) {
+    var o = patchOrigin(d, c), P = sys('Plants');
+    for (var t = 0; t < 5; t++) {
+      var x = o.x + U.randInt(0, CHUNK - 1), y = o.y + U.randInt(0, CHUNK - 1);
+      if (!map.inBounds(x, y)) continue;
+      var plant = map.plantAt(x, y);
+      if (!plant || !plant.spawned || plant.sown) continue;
+      var def = plant.def;
+      if (!def || !def.plant || !def.plant.isTree) continue;
+      if ((plant.growth || 0) > 0.35) continue;
+      if (P && P.kill) P.kill(map, plant, 'browsed');
+      d.trees[c] = Math.max(0, d.trees[c] - 1);
+      return true;
+    }
+    return false;
   }
 
   function stripPatch(map, d, c) {
@@ -1285,7 +1360,9 @@
       if (!map.inBounds(x, y)) continue;
 
       /* Trees first: they are the slow half and the half that needs a
-         parent. Everything else fills in around them. */
+         parent. Everything else fills in around them. A patch under a
+         browsing herd grows grass and nothing taller. */
+      if (d.browse[c] > BROWSE_BLOCKS) { coverSeed(map, P, x, y, biome, d, c); continue; }
       if (d.trees[c] < 7 && U.chance(0.45)) {
         var treeId = seedTreeNear(map, x, y, biome);
         if (treeId) {
@@ -1532,9 +1609,13 @@
      is the warning a player gets.
      ============================================================ */
 
+  /* Below a handful of stock units there is no fishery worth the name:
+     a puddle in a marsh should not put a fishing job on the work tab. */
+  var FISH_MIN_CAP = 8;
+
   function fishCap(map) {
-    var n = waterCells(map);
-    return Math.round(n * FISH_PER_WATER);
+    var n = Math.round(waterCells(map) * FISH_PER_WATER);
+    return n >= FISH_MIN_CAP ? n : 0;
   }
 
   function tickFish(map, days) {
@@ -1550,7 +1631,7 @@
     var herons = state.pop.heron || 0;
     if (herons) f.stock = Math.max(0, f.stock - herons * 0.35 * days);
 
-    if (f.stock < f.cap * 0.2 && !f._told) {
+    if (f.stock < f.cap * 0.2 && f.caught > 30 && !f._told) {
       f._told = true;
       letter('The river is fished out',
         'Catches have collapsed. The stock needs a season with nobody standing on the bank ' +
@@ -1664,11 +1745,11 @@
               job.workLeft = 0;
               var map = pawn.map;
               if (!map) return 'fail';
-              var count = fishYield();
-              if (count < 1) return 'fail';
               var speciesId = fishSpecies();
-              var weight = speciesId === 'lakePike' ? 2.2 : 1;
-              state.fish.stock = Math.max(0, state.fish.stock - weight);
+              var species = eco(speciesId) || {};
+              var count = Math.round(fishYield() * (species.catchYield || 1));
+              if (count < 1) return 'fail';
+              state.fish.stock = Math.max(0, state.fish.stock - (species.catchCost || 0.25));
               state.fish.caught += count;
               state.taken[speciesId] = (state.taken[speciesId] || 0) + 1;
               var pos = T.pos(job.targetA, map) || { x: pawn.x, y: pawn.y };
@@ -1853,6 +1934,7 @@
         grazed: Math.round(b.grazeMean * 100) / 100,
         grazedWorst: Math.round((state.grazeWorst || 0) * 100) / 100,
         barePatches: state.grazeBare || 0,
+        browsedPatches: state.browsedPatches || 0,
         clearings: countClearings(d)
       },
       herbivores: {
@@ -1905,6 +1987,10 @@
     } else if ((state.grazeBare || 0) > 2) {
       out.push((state.grazeBare || 0) + ' patches have been eaten down to dirt and will not ' +
         'reseed while the herds are still standing on them.');
+    }
+    if ((state.browsedPatches || 0) > 2) {
+      out.push('Browsers are taking the saplings in ' + state.browsedPatches + ' patches. ' +
+        'No tree there will reach seeding age while they stay.');
     }
     if ((state.pressure || 0) > 1.6) {
       out.push('There is not enough game left to feed the predators on this map.');
@@ -1971,6 +2057,15 @@
      SAVE / LOAD
      ============================================================ */
 
+  /* The blob is a copy all the way down. A caller that holds on to it -
+     save.js keeps one around between serialise and write - must not end
+     up with a live handle on the running tables. */
+  function copyCounts(obj) {
+    var out = {};
+    for (var k in obj) out[k] = obj[k];
+    return out;
+  }
+
   Ecology.save = function () {
     var soil = [];
     for (var key in state.soil) {
@@ -1982,14 +2077,15 @@
       beat: state.beat,
       lastTick: state.lastTick,
       biome: state.biome,
-      taken: state.taken, born: state.born, starved: state.starved,
-      arrived: state.arrived, left: state.left,
+      taken: copyCounts(state.taken), born: copyCounts(state.born),
+      starved: copyCounts(state.starved),
+      arrived: copyCounts(state.arrived), left: copyCounts(state.left),
       soil: soil,
       fish: { stock: state.fish.stock, cap: state.fish.cap, caught: state.fish.caught, seeded: state.fish.seeded },
       seasonSeen: state.seasonSeen,
       apexDay: state.apexDay, swarmDay: state.swarmDay,
       predatorRaidDay: state.predatorRaidDay,
-      policy: state.policy,
+      policy: copyCounts(state.policy),
       log: state.log.slice(-20)
     };
   };
@@ -2001,7 +2097,7 @@
     state.lastTick = obj.lastTick | 0;
     if (obj.biome) state.biome = obj.biome;
     ['taken', 'born', 'starved', 'arrived', 'left'].forEach(function (k) {
-      if (obj[k] && typeof obj[k] === 'object') state[k] = obj[k];
+      if (obj[k] && typeof obj[k] === 'object') state[k] = copyCounts(obj[k]);
     });
     if (Array.isArray(obj.soil)) {
       for (var i = 0; i < obj.soil.length; i++) {
@@ -2123,10 +2219,10 @@
     if (!map) return 'no map';
     var b = budget(map);
     return 'plants ' + Math.round(b.plant) +
-      ' · herbivores ' + countRole(HERB_ROLES) + '/' + Math.round(b.herbTotal) +
-      ' · predators ' + countRole(MEAT_ROLES) +
-      ' · fish ' + Math.round(state.fish.stock) + '/' + state.fish.cap +
-      ' · grazed ' + U.pct(b.grazeMean);
+      ' | herbivores ' + countRole(HERB_ROLES) + '/' + Math.round(b.herbTotal) +
+      ' | predators ' + countRole(MEAT_ROLES) +
+      ' | fish ' + Math.round(state.fish.stock) + '/' + state.fish.cap +
+      ' | grazed ' + U.pct(b.grazeMean);
   };
 
   Ecology.SPECIES = SPECIES;
