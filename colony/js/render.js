@@ -3,15 +3,20 @@
 
    Three ideas carry the whole file.
 
-   1. Everything is drawn in device pixels at an integer scale. A tile is
-      16 authored pixels times the zoom times an integer device scale, and
-      the view origin is rounded to a whole pixel every frame, so a sprite
-      never lands on a half pixel and nearest-neighbour art stays crisp.
-   2. Terrain is cached. Ten thousand fillRects a frame is the obvious way
-      to draw a map and the wrong one; instead each 32x32 chunk of the map
-      owns an offscreen canvas at authored resolution, repainted only when
-      the terrain under it actually changed, and a dozen blits draw the
-      ground.
+   1. Everything is drawn in device pixels at an integer scale. Art is
+      authored at 64 pixels a tile and lands at 16 times the zoom times an
+      integer device scale, so it always arrives downscaled - and it
+      arrives smoothed, because nearest neighbour on that downscale is
+      what made the ground read as gravel. The view origin is still
+      rounded to a whole pixel every frame so nothing swims.
+   2. Terrain is cached, and blended. Each 16x16 chunk of the map owns an
+      offscreen canvas at 32 pixels a tile, repainted only when the
+      terrain under it - or in the ring of cells around it - actually
+      changed, and a dozen blits draw the ground. Inside that canvas
+      every cell lays its higher-ranked neighbours back over its own edge
+      through a ragged mask, so grass wanders into soil and sand crumbles
+      into water instead of meeting them along a ruled line. The blend
+      costs nothing per frame because it is baked into the chunk.
    3. Nothing in here may throw. A thrown frame kills main.js's animation
       loop and the game with it, so every reach into another system is
       guarded, every optional global is read off `root`, and frame() keeps
@@ -29,10 +34,14 @@
   var BASE_TS = 16;            /* screen pixels per tile at zoom 1 */
   var CACHE_PX = 32;           /* pixels per tile inside a cached terrain chunk */
   var CHUNK = 16;              /* tiles per cached terrain chunk (16 x 32px = 512px canvas) */
+  var EDGE_PX = CACHE_PX;      /* edge masks are cut at the resolution they are used at */
+  var PATCH = 3;               /* tiles across a terrain-variant patch, so variety is not per-cell */
+  var DETAIL_CHUNKS = 3;       /* chunks per frame allowed to paint their seams */
   var ZOOM_MIN = 1, ZOOM_MAX = 3;
   var OVERSCROLL = 6;          /* tiles of void the camera may pull past an edge */
   var DARK_STEPS = 16;         /* quantisation of the night tint, to merge fill runs */
-  var MAX_DARK = 0.62;         /* pitch midnight is still readable, just barely */
+  var MAX_DARK = 0.52;         /* how far a pitch-dark cell is pulled toward the night colour */
+  var DARK_GAMMA = 1.45;       /* above 1, partial light stays legible instead of falling off a cliff */
 
   var VOID = '#0a0c12';
   var BLOOD = '#8b1a1a';
@@ -87,17 +96,25 @@
      Each entry point is wrapped once; if it ever throws, that entry point
      is switched off for the session and the flat fallbacks take over,
      because a renderer that dies on a bad sprite is worse than an ugly one. */
-  var artOff = { terrain: false, thing: false, pawn: false, icon: false, effect: false };
+  var artOff = { terrain: false, thing: false, pawn: false, icon: false, effect: false, edge: false };
 
-  /* art.js decides terrain variants so that anything else keyed on the
-     same cell - wall joins, floor patterns - lines up with the ground. */
+  /* art.js decides terrain variants, so that the stencils it cuts for a
+     seam and anything else keyed on the same cell line up with the
+     ground. Its version varies by the patch rather than by the tile,
+     which is the whole point: four faces alternating cell by cell is
+     exactly the flicker that makes a field read as television static.
+     The fallback below does the same thing more crudely - one face per
+     patch of three tiles, with the patch boundaries jittered off the grid
+     by a row and a column hash so the patches themselves do not show. */
   function terrainVariant(x, y) {
     var A = root.Art;
     if (!artOff.terrain && A && A.terrainVariant) {
-      try { return A.terrainVariant(x, y); }
+      try { return A.terrainVariant(x, y) & 3; }
       catch (e) { artOff.terrain = true; warnOnce('Art.terrainVariant', e); }
     }
-    return (tileHash(x, y) >>> 15) & 3;
+    var px = ((x + ((tileHash(y, 31) >>> 5) & 1)) / PATCH) | 0;
+    var py = ((y + ((tileHash(x, 57) >>> 5) & 1)) / PATCH) | 0;
+    return (tileHash(px + 3, py + 11) >>> 9) & 3;
   }
 
   function artTerrain(def, variant) {
@@ -419,12 +436,332 @@
 
   function edge() { return Math.max(1, (TS / 16) | 0); }
 
-  /* ---------- terrain chunk cache ----------
-     The map exposes no per-chunk dirty counter, so the cache keeps its own
-     snapshot of the terrain indices it last painted and compares a visible
-     chunk against the live grid each frame. That is a kilobyte of byte
-     compares per visible chunk - a rounding error next to repainting one. */
+  /* The interface reads second. A marking that outlines a floor should be
+     the thinnest line the screen can hold, not a frame around the world. */
+  function hairline() { return Math.max(1, (TS / 26) | 0); }
 
+  /* ---------- terrain blending ----------
+
+     Every boundary in a top-down tile map is a right angle unless
+     something is done about it, and a grid of right angles is what makes
+     ground read as a spreadsheet rather than as a place. So each cell
+     asks which of its neighbours hold a different terrain and lets the
+     ones that outrank it spill back over its own edge through a torn
+     stencil - a bank about a third of a tile deep whose inner boundary
+     wanders. One direction only: the higher rank spills and the lower
+     never does, because two cells each bleeding into the other turns the
+     three resulting bands into a drawn line, which is worse than the
+     hard edge it replaced.
+
+     art.js owns the stencils and the rank order, because it also owns
+     the ground they are cut from and the two have to agree about where a
+     shoreline is. Art.terrainBlend hands back the neighbour's surface
+     already cut to the seam, cached, so a seam costs one drawImage. What
+     is left here is the neighbour-finding, the rank comparison and a
+     stencil of this file's own for the case where art.js is missing or
+     has been switched off after throwing. */
+
+  /* The fallback order, and a statement of the one art.js ships: water
+     rises over its shore, loose material creeps over firm, and a floor
+     somebody laid keeps its own outline and frays a little onto the dirt
+     around it. */
+  var RANK = {
+    deepWater: 9, shallowWater: 8, marsh: 7, mud: 6, sand: 5,
+    gravel: 4, richSoil: 3, soil: 2, rockFloor: 1
+  };
+
+  function terrainRank(def) {
+    var A = root.Art;
+    if (!artOff.edge && A && A.terrainRank) {
+      try { return A.terrainRank(def); }
+      catch (e) { artOff.edge = true; warnOnce('Art.terrainRank', e); }
+    }
+    if (!def) return -1;
+    if (def.buildCategory === 'floor') return 12;
+    var r = RANK[def.id];
+    if (r !== undefined) return r;
+    return def.terrainCategory === 'water' ? 8 : 2;
+  }
+
+  /* Neighbour order matches the bit order art.js uses for wall joins and
+     for its stencils: N E S W, then the four diagonals, which only this
+     file's own stencil knows about. */
+  var NB_X = [0, 1, 0, -1, 1, 1, -1, -1];
+  var NB_Y = [-1, 0, 1, 0, -1, 1, 1, -1];
+  var CORNER_X = [0, 0, 0, 0, 1, 1, 0, 0];
+  var CORNER_Y = [0, 0, 0, 0, 0, 1, 1, 0];
+
+  /* Deterministic per stencil, so a shoreline looks the same every
+     session and never shimmers between frames. */
+  function seeded(n) {
+    var s = (n >>> 0) || 1;
+    return function () {
+      s = (s + 0x6D2B79F5) >>> 0;
+      var t = s;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* A diagonal whose two neighbours are already in the stencil adds
+     nothing but a cache miss, so it goes before the key is made. */
+  function tidyBits(bits) {
+    if ((bits & 3) === 3) bits &= ~16;
+    if ((bits & 6) === 6) bits &= ~32;
+    if ((bits & 12) === 12) bits &= ~64;
+    if ((bits & 9) === 9) bits &= ~128;
+    return bits;
+  }
+
+  /* ---------- sprites at cache resolution ----------
+     Terrain art is authored at 64 and the chunk cache holds 32, so every
+     cell of a repaint was a smoothed downscale - three hundred of them
+     per chunk, which is what turned a pan into a stutter. A sprite is
+     immutable once art.js has built it, so each one is scaled exactly
+     once and the repaint is three hundred one-to-one blits instead. The
+     map is weak, so an art file that rebuilds its cache does not pin the
+     old canvases in memory. */
+  var scaledArt = new WeakMap();
+
+  function atCachePx(art) {
+    var s = scaledArt.get(art);
+    if (s) return s;
+    var k = CACHE_PX / ART_PX;
+    var w = Math.max(1, Math.round(art.width * k)), h = Math.max(1, Math.round(art.height * k));
+    s = document.createElement('canvas');
+    s.width = w; s.height = h;
+    var g = s.getContext('2d');
+    g.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high';
+    g.drawImage(art, 0, 0, w, h);
+    /* Half an authored pixel of rounding on a collar that hangs off the
+       tile is a sixtieth of a tile, and it buys an integer blit. */
+    s.dx = Math.round((art.ox || 0) * k);
+    s.dy = Math.round((art.oy || 0) * k);
+    scaledArt.set(art, s);
+    return s;
+  }
+
+  var masks = new Map(), seamCanvas = null, seamCtx = null;
+
+  function localMask(bits, variant) {
+    var key = bits | (variant << 8);
+    var hit = masks.get(key);
+    if (hit) return hit;
+    var c = document.createElement('canvas');
+    c.width = EDGE_PX; c.height = EDGE_PX;
+    var g = c.getContext('2d');
+    var rnd = seeded(Math.imul(key + 1, 2654435761) ^ 0x9e3779b9);
+    var d;
+    for (d = 0; d < 4; d++) if (bits & (1 << d)) maskBand(g, rnd, d);
+    for (d = 4; d < 8; d++) if (bits & (1 << d)) maskCorner(g, rnd, d);
+    if (masks.size > 400) masks.clear();
+    masks.set(key, c);
+    return c;
+  }
+
+  /* One edge of the tile, drawn as north and rotated into place. The band
+     has to be deep enough to wander across a whole step of the staircase
+     it is hiding; a fringe thinner than that only draws an outline around
+     the staircase and makes it easier to see. */
+  function maskBand(g, rnd, dir) {
+    var E = EDGE_PX, n = 4, dep = [], i, deep = 0;
+    g.save();
+    g.translate(E * 0.5, E * 0.5);
+    g.rotate(dir * 1.5707963267948966);
+    g.translate(-E * 0.5, -E * 0.5);
+    for (i = 0; i <= n; i++) {
+      dep.push(E * (0.18 + rnd() * 0.24));
+      if (dep[i] > deep) deep = dep[i];
+    }
+    var grd = g.createLinearGradient(0, -1, 0, deep + E * 0.05);
+    grd.addColorStop(0, 'rgba(255,255,255,1)');
+    grd.addColorStop(0.7, 'rgba(255,255,255,0.96)');
+    grd.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grd;
+    g.beginPath();
+    g.moveTo(-2, -2);
+    g.lineTo(E + 2, -2);
+    g.lineTo(E + 2, dep[n]);
+    for (i = n - 1; i >= 0; i--) {
+      var mx = ((i + 0.5) / n) * E;
+      var my = (dep[i] + dep[i + 1]) * 0.5 + (rnd() - 0.5) * E * 0.2;
+      g.quadraticCurveTo(mx, my, (i / n) * E, dep[i]);
+    }
+    g.lineTo(-2, dep[0]);
+    g.closePath();
+    g.fill();
+    /* A few grains carried past the bank. Small and few: this is grit on
+       a beach, not a second coat of paint. */
+    for (i = 0; i < 3; i++) {
+      var r = E * (0.03 + rnd() * 0.04);
+      g.fillStyle = 'rgba(255,255,255,' + (0.5 - i * 0.12).toFixed(2) + ')';
+      g.beginPath();
+      g.ellipse(rnd() * E, deep + r + rnd() * E * 0.1, r * 1.4, r, rnd() * 3.14159, 0, 6.283185307179586);
+      g.fill();
+    }
+    g.restore();
+  }
+
+  /* A corner neighbour with no shared edge: a soft bite out of the
+     corner, which is what stops a diagonal coastline from stepping. */
+  function maskCorner(g, rnd, dir) {
+    var E = EDGE_PX;
+    var cx = CORNER_X[dir] * E, cy = CORNER_Y[dir] * E;
+    var r = E * (0.3 + rnd() * 0.14);
+    var grd = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grd.addColorStop(0, 'rgba(255,255,255,0.96)');
+    grd.addColorStop(0.5, 'rgba(255,255,255,0.78)');
+    grd.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grd;
+    g.beginPath();
+    g.ellipse(cx, cy, r * (0.85 + rnd() * 0.3), r * (0.85 + rnd() * 0.3), 0, 0, 6.283185307179586);
+    g.fill();
+  }
+
+  /* One scratch tile, reused: the neighbour's ground goes in, the stencil
+     cuts it, and what is left is stamped into the chunk. Only the
+     fallback path needs it; art.js hands back the cut tile already. */
+  function localBlend(def, bits, variant, x, y) {
+    if (!seamCanvas) {
+      seamCanvas = document.createElement('canvas');
+      seamCanvas.width = EDGE_PX; seamCanvas.height = EDGE_PX;
+      seamCtx = seamCanvas.getContext('2d');
+      seamCtx.imageSmoothingEnabled = true;
+      if ('imageSmoothingQuality' in seamCtx) seamCtx.imageSmoothingQuality = 'high';
+    }
+    var sg = seamCtx;
+    sg.globalCompositeOperation = 'source-over';
+    sg.globalAlpha = 1;
+    sg.clearRect(0, 0, EDGE_PX, EDGE_PX);
+    var art = artTerrain(def, variant);
+    if (art) {
+      var sc = atCachePx(art);
+      sg.drawImage(sc, sc.dx, sc.dy);
+    } else {
+      sg.fillStyle = def.color || '#4a4a52';
+      sg.fillRect(0, 0, EDGE_PX, EDGE_PX);
+    }
+    sg.globalCompositeOperation = 'destination-in';
+    sg.drawImage(localMask(bits, variant), 0, 0, EDGE_PX, EDGE_PX);
+    sg.globalCompositeOperation = 'source-over';
+    return seamCanvas;
+  }
+
+  function blitSeam(g, def, bits, x, y, dx, dy) {
+    var A = root.Art, variant = terrainVariant(x, y);
+    if (!artOff.edge && A && A.terrainBlend) {
+      try {
+        /* art.js stencils the four sides; its blobs are centred outside
+           the tile and wide enough that the corners come out rounded on
+           their own, so a diagonal-only neighbour is simply left alone. */
+        var bl = (bits & 15) ? A.terrainBlend(def, bits & 15, variant) : null;
+        if (bl && bl.width) {
+          var sc = atCachePx(bl);
+          g.drawImage(sc, dx + sc.dx, dy + sc.dy);
+        }
+        return;
+      } catch (e) { artOff.edge = true; warnOnce('Art.terrainBlend', e); }
+    }
+    bits = tidyBits(bits);
+    if (!bits) return;
+    g.drawImage(localBlend(def, bits, variant, x, y), dx, dy, CACHE_PX, CACHE_PX);
+  }
+
+  /* ---------- the slow, large-scale variation ----------
+     Quiet ground still needs something to look at, and the only kind that
+     does not fight with a colonist is the kind you cannot quite see: a
+     broad wash of light and shade eleven tiles across. It is sampled per
+     cell into a small bitmap and drawn back up over the chunk, which
+     interpolates it into a smooth field; because the sample grid overhangs
+     the chunk by a cell on every side and comes from one function of
+     world coordinates, neighbouring chunks agree along their shared edge
+     and the wash crosses them without a seam. */
+
+  var macroCanvas = null, macroCtx = null, macroInk = null;
+
+  function latticeValue(ix, iy, salt) {
+    return (((tileHash(ix + salt, iy - salt) >>> 8) & 1023) / 511.5) - 1;
+  }
+
+  function octave(x, y, period, salt) {
+    var fx = x / period, fy = y / period;
+    var ix = Math.floor(fx), iy = Math.floor(fy);
+    var tx = fx - ix, ty = fy - iy;
+    tx = tx * tx * (3 - 2 * tx);
+    ty = ty * ty * (3 - 2 * ty);
+    var a = latticeValue(ix, iy, salt), b = latticeValue(ix + 1, iy, salt);
+    var c = latticeValue(ix, iy + 1, salt), d = latticeValue(ix + 1, iy + 1, salt);
+    var top = a + (b - a) * tx, bot = c + (d - c) * tx;
+    return top + (bot - top) * ty;
+  }
+
+  function macroNoise(x, y) {
+    var v = octave(x, y, 11, 3) * 0.72 + octave(x, y, 5, 17) * 0.28;
+    return v < -1 ? -1 : (v > 1 ? 1 : v);
+  }
+
+  function macroInkFor(v) {
+    if (!macroInk) {
+      macroInk = new Array(33);
+      for (var i = 0; i <= 32; i++) {
+        var t = i / 16 - 1;
+        macroInk[i] = t >= 0
+          ? 'rgba(255,244,214,' + (t * 0.05).toFixed(3) + ')'
+          : 'rgba(16,14,24,' + (-t * 0.08).toFixed(3) + ')';
+      }
+    }
+    var k = Math.round((v + 1) * 16);
+    return macroInk[k < 0 ? 0 : (k > 32 ? 32 : k)];
+  }
+
+  function paintMacroShade(g, x0, y0) {
+    var n = CHUNK + 3;
+    if (!macroCanvas) {
+      macroCanvas = document.createElement('canvas');
+      macroCanvas.width = n; macroCanvas.height = n;
+      macroCtx = macroCanvas.getContext('2d');
+    }
+    var mg = macroCtx;
+    mg.clearRect(0, 0, n, n);
+    for (var j = 0; j < n; j++) {
+      for (var i = 0; i < n; i++) {
+        mg.fillStyle = macroInkFor(macroNoise(x0 + i - 1, y0 + j - 1));
+        mg.fillRect(i, j, 1, 1);
+      }
+    }
+    /* Sample i lands on cell x0 + i - 1: one cache pixel back, one cell
+       wider on each side. That is the offset that makes it continuous. */
+    g.drawImage(macroCanvas, -CACHE_PX, -CACHE_PX, n * CACHE_PX, n * CACHE_PX);
+  }
+
+  /* ---------- terrain chunk cache ----------
+
+     A chunk holds CHUNK x CHUNK cells at CACHE_PX each - a 512px canvas -
+     and is repainted only when the terrain under it changed, so a dozen
+     blits draw the ground instead of ten thousand fillRects a frame.
+
+     The blend is what makes the staleness check interesting. A cell's
+     picture depends on its neighbours, and for a cell on a chunk boundary
+     some of those live in the chunk next door. Paving a single tile one
+     step outside a chunk changes the seam painted inside it while leaving
+     every byte that chunk owns untouched, so a snapshot of the chunk's
+     own terrain would keep showing yesterday's shoreline until something
+     else happened to dirty it. The snapshot is therefore an apron:
+     (CHUNK + 2) squared cells, one border cell on every side, with
+     off-map cells stored as a sentinel so the map edge compares equal to
+     itself. Three hundred byte compares per visible chunk per frame is a
+     rounding error next to one needless repaint.
+
+     Painting is split in two because a fresh view faults in two dozen
+     chunks at once and the seams are the expensive half. The base coat
+     always goes down immediately - the ground is never missing - and the
+     seams and the wash follow within a few frames, a handful of chunks at
+     a time, so panning costs a smooth ramp instead of a stutter. */
+
+  var APRON = CHUNK + 2;
+  var OFFMAP = 255;
   var chunks = null, chunksX = 0, chunksY = 0, chunkOwner = null;
 
   function ensureChunks(map) {
@@ -442,62 +779,137 @@
       el.width = CHUNK * CACHE_PX;
       el.height = CHUNK * CACHE_PX;
       var g = el.getContext('2d');
-      g.imageSmoothingEnabled = false;
-      c = chunks[ci] = { canvas: el, ctx: g, snap: new Uint8Array(CHUNK * CHUNK), painted: false, seen: 0 };
+      /* Art authored at 64 lands here at 32, and nearest-neighbour
+         downscaling is exactly the crunch the ground is meant to lose. */
+      g.imageSmoothingEnabled = true;
+      if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high';
+      c = chunks[ci] = {
+        canvas: el, ctx: g, snap: new Uint8Array(APRON * APRON),
+        painted: false, detailed: false, seen: 0
+      };
     }
     c.seen = frameCount;
     return c;
   }
 
+  function terrainApron(map, x, y) {
+    if (x < 0 || y < 0 || x >= map.w || y >= map.h) return OFFMAP;
+    return map.terrain[y * map.w + x];
+  }
+
   function chunkStale(map, c, cx, cy) {
     if (!c.painted) return true;
-    var terrain = map.terrain, w = map.w, snap = c.snap;
-    var x0 = cx * CHUNK, y0 = cy * CHUNK;
-    var x1 = Math.min(x0 + CHUNK, map.w), y1 = Math.min(y0 + CHUNK, map.h);
-    for (var y = y0; y < y1; y++) {
-      var base = y * w, row = (y - y0) * CHUNK - x0;
-      for (var x = x0; x < x1; x++) {
-        if (snap[row + x] !== terrain[base + x]) return true;
+    var snap = c.snap, ax = cx * CHUNK - 1, ay = cy * CHUNK - 1;
+    for (var j = 0; j < APRON; j++) {
+      var row = j * APRON, y = ay + j;
+      for (var i = 0; i < APRON; i++) {
+        if (snap[row + i] !== terrainApron(map, ax + i, y)) return true;
       }
     }
     return false;
   }
 
+  function snapshotChunk(map, c, cx, cy) {
+    var snap = c.snap, ax = cx * CHUNK - 1, ay = cy * CHUNK - 1;
+    for (var j = 0; j < APRON; j++) {
+      var row = j * APRON, y = ay + j;
+      for (var i = 0; i < APRON; i++) snap[row + i] = terrainApron(map, ax + i, y);
+    }
+  }
+
+  function paintCellBase(g, def, x, y, dx, dy) {
+    var art = artTerrain(def, terrainVariant(x, y));
+    if (art) {
+      /* The sprite arrives wider than a tile - art.js hangs a torn collar
+         off every side and puts the offset on the canvas - so ox and oy
+         are honoured here rather than assumed to be zero. */
+      var sc = atCachePx(art);
+      g.drawImage(sc, dx + sc.dx, dy + sc.dy);
+      return;
+    }
+    /* Flat stand-in for a missing art file. It stays flat: speckles here
+       would be the per-cell noise the ground is being rid of. */
+    g.fillStyle = (terrainVariant(x, y) & 1) && def.color2
+      ? def.color2 : (def.color || '#4a4a52');
+    g.fillRect(dx, dy, CACHE_PX, CACHE_PX);
+  }
+
+  /* The base coat runs one cell wide of the chunk on every side. Those
+     cells land off the canvas and are clipped away, but their collars
+     hang back inside it, which is the difference between a chunk boundary
+     you cannot find and a faint grid every sixteen tiles. */
   function repaintChunk(map, c, cx, cy) {
+    var g = c.ctx, side = CHUNK * CACHE_PX;
+    g.globalAlpha = 1;
+    g.globalCompositeOperation = 'source-over';
+    g.clearRect(0, 0, side, side);
+    var terrain = map.terrain, w = map.w;
+    var x0 = cx * CHUNK, y0 = cy * CHUNK;
+    var x1 = Math.min(x0 + CHUNK, map.w) - 1, y1 = Math.min(y0 + CHUNK, map.h) - 1;
+    for (var y = y0 - 1; y <= y1 + 1; y++) {
+      if (y < 0 || y >= map.h) continue;
+      var base = y * w, dy = (y - y0) * CACHE_PX;
+      for (var x = x0 - 1; x <= x1 + 1; x++) {
+        if (x < 0 || x >= map.w) continue;
+        var def = Defs.fromIndex('terrain', terrain[base + x]);
+        if (def) paintCellBase(g, def, x, y, (x - x0) * CACHE_PX, dy);
+      }
+    }
+    snapshotChunk(map, c, cx, cy);
+    c.painted = true;
+    c.detailed = false;
+  }
+
+  /* The second half: seams over the whole chunk, then the wash over that.
+     Seams run after every base coat is down so a blend always lands on
+     finished ground rather than under the cell painted next. */
+  function detailChunk(map, c, cx, cy) {
     var g = c.ctx;
-    g.clearRect(0, 0, CHUNK * CACHE_PX, CHUNK * CACHE_PX);
-    var terrain = map.terrain, w = map.w, snap = c.snap;
     var x0 = cx * CHUNK, y0 = cy * CHUNK;
     var x1 = Math.min(x0 + CHUNK, map.w), y1 = Math.min(y0 + CHUNK, map.h);
     for (var y = y0; y < y1; y++) {
-      var base = y * w, row = (y - y0) * CHUNK - x0, dy = (y - y0) * CACHE_PX;
-      for (var x = x0; x < x1; x++) {
-        var ti = terrain[base + x];
-        snap[row + x] = ti;
-        var def = Defs.fromIndex('terrain', ti);
-        if (!def) continue;
-        var variant = terrainVariant(x, y);
-        var art = artTerrain(def, variant);
-        var dx = (x - x0) * CACHE_PX;
-        if (art) {
-          /* Terrain art is authored at ART_PX and the cache holds CACHE_PX,
-             so it lands scaled rather than one-to-one. */
-          var k = CACHE_PX / ART_PX;
-          g.drawImage(art,
-            dx + (art.ox || 0) * k, dy + (art.oy || 0) * k,
-            art.width * k, art.height * k);
-        } else {
-          g.fillStyle = (variant & 1) && def.color2 ? def.color2 : (def.color || '#4a4a52');
-          g.fillRect(dx, dy, CACHE_PX, CACHE_PX);
-          /* Two speckles of the other shade keep a flat fill from reading
-             as a solid colour field when art.js is not there. */
-          g.fillStyle = (variant & 1) ? (def.color || '#4a4a52') : (def.color2 || def.color || '#4a4a52');
-          g.fillRect(dx + (variant % 11), dy + ((variant >>> 4) % 11), 3, 2);
-          g.fillRect(dx + ((variant >>> 8) % 12), dy + ((variant >>> 12) % 13), 2, 2);
-        }
+      var dy = (y - y0) * CACHE_PX;
+      for (var x = x0; x < x1; x++) paintSeams(g, map, x, y, (x - x0) * CACHE_PX, dy);
+    }
+    paintMacroShade(g, x0, y0);
+    c.detailed = true;
+  }
+
+  /* Hoisted: this runs a quarter of a million times on a map-wide repaint
+     and may not allocate. */
+  var seamTer = new Int32Array(8), seamBits = new Int32Array(8), seamRank = new Int32Array(8);
+
+  function paintSeams(g, map, x, y, dx, dy) {
+    var w = map.w, here = map.terrain[y * w + x];
+    var hereDef = Defs.fromIndex('terrain', here);
+    if (!hereDef) return;
+    var myRank = terrainRank(hereDef), n = 0, d, k;
+    for (d = 0; d < 8; d++) {
+      var nx = x + NB_X[d], ny = y + NB_Y[d];
+      if (nx < 0 || ny < 0 || nx >= w || ny >= map.h) continue;
+      var ti = map.terrain[ny * w + nx];
+      if (ti === here) continue;
+      var def = Defs.fromIndex('terrain', ti);
+      if (!def) continue;
+      var rank = terrainRank(def);
+      if (rank <= myRank) continue;
+      for (k = 0; k < n; k++) if (seamTer[k] === ti) break;
+      if (k === n) { seamTer[n] = ti; seamBits[n] = 0; seamRank[n] = rank; n++; }
+      seamBits[k] |= 1 << d;
+    }
+    if (!n) return;
+    /* Three terrains meeting at one cell is rare, but when it happens the
+       lower ground has to go down before the one that outranks it. */
+    for (k = 1; k < n; k++) {
+      for (var j = k; j > 0 && seamRank[j] < seamRank[j - 1]; j--) {
+        var tr = seamTer[j]; seamTer[j] = seamTer[j - 1]; seamTer[j - 1] = tr;
+        var tb = seamBits[j]; seamBits[j] = seamBits[j - 1]; seamBits[j - 1] = tb;
+        var tk = seamRank[j]; seamRank[j] = seamRank[j - 1]; seamRank[j - 1] = tk;
       }
     }
-    c.painted = true;
+    for (k = 0; k < n; k++) {
+      blitSeam(g, Defs.fromIndex('terrain', seamTer[k]), seamBits[k], x, y, dx, dy);
+    }
   }
 
   function pruneChunks() {
@@ -510,7 +922,7 @@
 
   function drawTerrain(map) {
     ensureChunks(map);
-    var side = CHUNK * TS;
+    var side = CHUNK * TS, budget = DETAIL_CHUNKS;
     var c0x = Math.max(0, Math.floor(b0x / CHUNK)), c1x = Math.min(chunksX - 1, Math.floor(b1x / CHUNK));
     var c0y = Math.max(0, Math.floor(b0y / CHUNK)), c1y = Math.min(chunksY - 1, Math.floor(b1y / CHUNK));
     for (var cy = c0y; cy <= c1y; cy++) {
@@ -518,6 +930,7 @@
       for (var cx = c0x; cx <= c1x; cx++) {
         var c = chunkAt(cx, cy);
         if (chunkStale(map, c, cx, cy)) repaintChunk(map, c, cx, cy);
+        if (!c.detailed && budget > 0) { detailChunk(map, c, cx, cy); budget--; }
         ctx.drawImage(c.canvas, originX + cx * side, dy, side, side);
       }
     }
@@ -526,21 +939,30 @@
 
   /* ---------- filth ---------- */
 
+  /* Blood is one of the few things on the ground that is allowed to be
+     loud, but a pair of hard rectangles is not how a spill looks. Two
+     soft ellipses cost an arc each and land as a stain. */
   function drawFilth(map) {
     var blood = map.blood;
     if (!blood) return;
-    var w = map.w, q = Math.max(1, TS >> 3), lastA = -1;
+    var w = map.w, q = TS / 8, lastA = -1;
     ctx.fillStyle = BLOOD;
     for (var y = b0y; y <= b1y; y++) {
       var base = y * w, py = originY + y * TS;
       for (var x = b0x; x <= b1x; x++) {
         var v = blood[base + x];
         if (!v) continue;
-        var a = Math.round((0.10 + (v / 255) * 0.5) * 16) / 16;
+        var a = Math.round((0.08 + (v / 255) * 0.42) * 16) / 16;
         if (a !== lastA) { ctx.globalAlpha = a; lastA = a; }
         var h = tileHash(x, y + 9001), px = originX + x * TS;
-        ctx.fillRect(px + (h % 5) * q, py + ((h >>> 4) % 5) * q, q * 4, q * 3);
-        ctx.fillRect(px + ((h >>> 8) % 9) * q, py + ((h >>> 12) % 9) * q, q * 2, q * 2);
+        ctx.beginPath();
+        ctx.ellipse(px + (1.5 + (h % 5) * 0.4) * q, py + (1.5 + ((h >>> 4) % 5) * 0.4) * q,
+          q * 2.1, q * 1.6, (h % 7) * 0.4, 0, 6.283185307179586);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(px + (1 + ((h >>> 8) % 6) * 0.9) * q, py + (1 + ((h >>> 12) % 6) * 0.9) * q,
+          q * 1.1, q * 0.85, ((h >>> 3) % 7) * 0.4, 0, 6.283185307179586);
+        ctx.fill();
       }
     }
     ctx.globalAlpha = 1;
@@ -573,9 +995,12 @@
     if (c) return c;
     var hue = z.kind === 'growing' ? 96 : 38;
     hue = (hue + (tileHash(z.id, 17) % 40) - 20 + 360) % 360;
+    /* A zone is a note the player wrote on the floor. It has to be
+       legible at a glance and invisible the moment you stop looking for
+       it, which means a wash and a thin border, not a coat of paint. */
     c = z.color
       ? [z.color, z.color]
-      : ['hsla(' + hue + ',55%,45%,0.22)', 'hsla(' + hue + ',70%,62%,0.75)'];
+      : ['hsla(' + hue + ',42%,46%,0.13)', 'hsla(' + hue + ',58%,62%,0.42)'];
     zoneFills.set(z.id, c);
     return c;
   }
@@ -593,7 +1018,7 @@
     var zid = map.zoneId;
     if (!zid) return;
     if (zoneCacheFrame !== frameCount) rebuildZoneCache(map);
-    var w = map.w, h = map.h, e = edge();
+    var w = map.w, h = map.h, e = hairline();
     for (var y = b0y; y <= b1y; y++) {
       var base = y * w, py = originY + y * TS;
       for (var x = b0x; x <= b1x; x++) {
@@ -829,7 +1254,7 @@
         ctx.fillStyle = def.color || '#8f97a3';
         ctx.fillRect(px, py, dw, dh);
       }
-      ctx.globalAlpha = frame ? 0.30 : 0.38;
+      ctx.globalAlpha = frame ? 0.22 : 0.28;
       ctx.fillStyle = frame ? '#9c8a5a' : '#6fa8dc';
       ctx.fillRect(px, py, dw, dh);
       ctx.globalAlpha = 1;
@@ -1069,14 +1494,19 @@
     darkLUT = new Uint8Array(256);
     for (var v = 0; v < 256; v++) {
       var d = 1 - v / 255;
-      darkLUT[v] = Math.round(Math.pow(d, 1.15) * DARK_STEPS);
+      darkLUT[v] = Math.round(Math.pow(d, DARK_GAMMA) * DARK_STEPS);
     }
   }
 
   function tintFor(day) {
     /* Night is the blue of the palette; daytime gloom indoors is a
        neutral shadow. One ramp covers both, mixed by how bright it is
-       outside, and is rebuilt only when that brightness really changes. */
+       outside, and is rebuilt only when that brightness really changes.
+       The ground is quieter than it was, so the veil had to come down
+       with it: at full strength this now keeps about half the colour
+       underneath, which reads as night without reading as a closed lid,
+       and the gamma above keeps a half-lit room from falling straight
+       off into soup. */
     var key = Math.round(day * 24);
     if (tintRamp && tintKey === key) return tintRamp;
     tintKey = key;
@@ -1172,14 +1602,12 @@
     if (fireList.length) {
       var g = glow(), r = TS * 3;
       ctx.globalCompositeOperation = 'lighter';
-      ctx.imageSmoothingEnabled = true;
       for (var i = 0; i < fireList.length; i++) {
         var t = fireList[i];
         var flick = 0.8 + 0.2 * Math.sin(clock * 0.013 + (tileHash(t.x, t.y) % 628) / 100);
         var s = r * flick;
         ctx.drawImage(g, originX + (t.x + 0.5) * TS - s * 0.5, originY + (t.y + 0.5) * TS - s * 0.5, s, s);
       }
-      ctx.imageSmoothingEnabled = false;
       ctx.globalCompositeOperation = 'source-over';
     }
   }
@@ -1216,7 +1644,14 @@
      the cell is marked and roughly for what, and no more. */
   function drawDesignationMark(type, px, py) {
     var icon = artIcon('des-' + type);
-    if (icon) { blitAt(icon, px, py); return; }
+    if (icon) {
+      /* A designation is an instruction, not an event. It should be
+         findable, not the brightest thing on the map. */
+      ctx.globalAlpha = 0.68;
+      blitAt(icon, px, py);
+      ctx.globalAlpha = 1;
+      return;
+    }
     var m = TS * 0.22, s = TS - m * 2, t = Math.max(1, pixelScale);
     outlineRect(px + m, py + m, s, s, t, 'rgba(8,10,16,0.75)');
     outlineRect(px + m + t, py + m + t, s - t * 2, s - t * 2, t, desigColor(type));
@@ -1256,10 +1691,12 @@
     if (ppx < b0x - 2 || ppx > b1x + 2 || ppy < b0y - 2 || ppy > b1y + 2) return;
     var cx = originX + (ppx + 0.5) * TS, cy = originY + (ppy + 0.75) * TS;
     ctx.lineWidth = Math.max(1, pixelScale);
-    ctx.strokeStyle = 'rgba(8,10,16,0.7)';
+    ctx.strokeStyle = 'rgba(8,10,16,0.45)';
     ringPath(cx, cy, TS * 0.42, TS * 0.22);
     ctx.stroke();
-    ctx.strokeStyle = PAPER;
+    /* Lighter than the pawn it rings: the ring says which one, the pawn
+       is still the thing you are looking at. */
+    ctx.strokeStyle = 'rgba(232,226,212,0.72)';
     ringPath(cx, cy, TS * 0.40, TS * 0.20);
     ctx.stroke();
   }
@@ -1269,15 +1706,15 @@
     footprintOf(def, t.rot | 0, fp);
     var px = originX + t.x * TS, py = originY + t.y * TS;
     var e = Math.max(1, pixelScale);
-    outlineRect(px - e, py - e, fp.w * TS + e * 2, fp.h * TS + e * 2, e, 'rgba(8,10,16,0.7)');
-    outlineRect(px, py, fp.w * TS, fp.h * TS, e, PAPER);
+    outlineRect(px - e, py - e, fp.w * TS + e * 2, fp.h * TS + e * 2, e, 'rgba(8,10,16,0.45)');
+    outlineRect(px, py, fp.w * TS, fp.h * TS, e, 'rgba(232,226,212,0.72)');
   }
 
   function drawZoneHighlight(map, z) {
     var zid = map.zoneId;
     if (!zid) return;
-    var w = map.w, e = edge();
-    ctx.fillStyle = PAPER;
+    var w = map.w, e = hairline();
+    ctx.fillStyle = 'rgba(232,226,212,0.8)';
     for (var y = b0y; y <= b1y; y++) {
       var base = y * w, py = originY + y * TS;
       for (var x = b0x; x <= b1x; x++) {
@@ -1356,14 +1793,14 @@
     pawnRec(p, interp);
     var x0 = originX + (ppx + 0.5) * TS, y0 = originY + (ppy + 0.5) * TS;
     var x1 = originX + (pos.x + 0.5) * TS, y1 = originY + (pos.y + 0.5) * TS;
-    ctx.strokeStyle = 'rgba(232,226,212,0.55)';
+    ctx.strokeStyle = 'rgba(232,226,212,0.32)';
     ctx.lineWidth = Math.max(1, pixelScale);
     ctx.beginPath();
     ctx.moveTo(x0, y0);
     ctx.lineTo(x1, y1);
     ctx.stroke();
     var s = Math.max(2, pixelScale * 2);
-    ctx.fillStyle = GOLD;
+    ctx.fillStyle = 'rgba(255,194,60,0.8)';
     ctx.fillRect(x1 - s, y1 - s, s * 2, s * 2);
   }
 
@@ -1375,7 +1812,7 @@
     var px = originX + selBox.x0 * TS, py = originY + selBox.y0 * TS;
     var w = (selBox.x1 - selBox.x0 + 1) * TS, h = (selBox.y1 - selBox.y0 + 1) * TS;
     var col = kind === 'cancel' ? '#c0392b' : (kind === 'select' ? PAPER : GOLD);
-    ctx.globalAlpha = 0.16;
+    ctx.globalAlpha = 0.12;
     ctx.fillStyle = col;
     ctx.fillRect(px, py, w, h);
     ctx.globalAlpha = 1;
@@ -1475,11 +1912,12 @@
       ctx.fillStyle = def.color || '#8f97a3';
       ctx.fillRect(px, py, dw, dh);
     }
-    ctx.globalAlpha = 0.34;
+    ctx.globalAlpha = 0.24;
     ctx.fillStyle = ok ? '#4ad07a' : '#c0392b';
     ctx.fillRect(px, py, dw, dh);
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = 0.85;
     outlineRect(px, py, dw, dh, Math.max(1, pixelScale), ok ? '#8df0b0' : '#ff6b5a');
+    ctx.globalAlpha = 1;
   }
 
   function drawToolRect(map) {
@@ -1491,11 +1929,12 @@
     if (mouse.x < b0x || mouse.x > b1x || mouse.y < b0y || mouse.y > b1y) return;
     var px = originX + mouse.x * TS, py = originY + mouse.y * TS;
     var col = tool.kind === 'cancel' ? '#c0392b' : (tool.kind === 'zone' ? '#7ec24a' : GOLD);
-    ctx.globalAlpha = 0.22;
+    ctx.globalAlpha = 0.16;
     ctx.fillStyle = col;
     ctx.fillRect(px, py, TS, TS);
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = 0.8;
     outlineRect(px, py, TS, TS, Math.max(1, pixelScale), col);
+    ctx.globalAlpha = 1;
     if (tool.kind === 'designate' && tool.designation) {
       drawDesignationMark(tool.designation, px, py);
     }
@@ -1520,8 +1959,8 @@
     var bid = map.buildingId;
     if (!bid) return;
     var w = map.w, e = edge();
-    var flash = 0.35 + 0.35 * Math.sin(clock * 0.008);
-    ctx.globalAlpha = 0.35;
+    var flash = 0.30 + 0.30 * Math.sin(clock * 0.008);
+    ctx.globalAlpha = 0.30;
     ctx.fillStyle = '#05070c';
     ctx.fillRect(originX + b0x * TS, originY + b0y * TS, (b1x - b0x + 1) * TS, (b1y - b0y + 1) * TS);
     ctx.globalAlpha = 1;
@@ -1562,7 +2001,7 @@
     var rid = map.roomId;
     if (!rid) return;
     var w = map.w, e = edge();
-    ctx.globalAlpha = 0.34;
+    ctx.globalAlpha = 0.28;
     for (var y = b0y; y <= b1y; y++) {
       var base = y * w, py = originY + y * TS;
       for (var x = b0x; x <= b1x; x++) {
@@ -1572,7 +2011,7 @@
         ctx.fillRect(originX + x * TS, py, TS, TS);
       }
     }
-    ctx.globalAlpha = 0.8;
+    ctx.globalAlpha = 0.62;
     for (y = b0y; y <= b1y; y++) {
       base = y * w; py = originY + y * TS;
       for (x = b0x; x <= b1x; x++) {
@@ -1608,7 +2047,7 @@
 
   function overlayBeauty(map) {
     var w = map.w;
-    ctx.globalAlpha = 0.5;
+    ctx.globalAlpha = 0.42;
     for (var y = b0y; y <= b1y; y++) {
       var base = y * w, py = originY + y * TS;
       for (var x = b0x; x <= b1x; x++) {
@@ -1632,7 +2071,7 @@
     roomIds.length = 0; roomSx.length = 0; roomSy.length = 0; roomN.length = 0;
     roomIdx.clear();
 
-    ctx.globalAlpha = 0.45;
+    ctx.globalAlpha = 0.38;
     for (var y = b0y; y <= b1y; y++) {
       var base = y * w, py = originY + y * TS;
       for (var x = b0x; x <= b1x; x++) {
@@ -1713,7 +2152,11 @@
     clock = (root.performance && root.performance.now) ? root.performance.now() : frameCount * 16.7;
     if (!(interp >= 0)) interp = 0;
     if (interp > 1) interp = 1;
-    ctx.imageSmoothingEnabled = false;
+    /* Every sprite is authored at 64 and lands at 16, 32 or 48; nearest
+       neighbour on that downscale is what made the world look like gravel.
+       Smoothing is on for the whole world layer and stays on. */
+    ctx.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
 
@@ -1756,7 +2199,7 @@
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
-      ctx.imageSmoothingEnabled = false;
+      ctx.imageSmoothingEnabled = true;
       frameErrors++;
       if (frameErrors <= 3 && typeof console !== 'undefined') console.error('render frame:', err);
     }

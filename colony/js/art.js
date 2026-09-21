@@ -75,8 +75,17 @@
     bg0: '#0b0e14', bg1: '#171c26', bg2: '#1f2531', bg3: '#2a3140', bg4: '#38404f',
     line: '#39414f', lineSoft: '#2b3240', dim: '#98a0ad', faint: '#6c7686',
     accent: '#ffc23c', good: '#7fae4f', warn: '#e0912a', bad: '#d4553f',
-    cold: '#7fb4e0', hot: '#e08a5a'
+    cold: '#7fb4e0', hot: '#e08a5a',
+
+    /* The world layer's white and black. Nothing drawn onto the map is
+       allowed to be 255 or 0: a painted board has no pure values in it,
+       and a highlight that is warm and a shadow that is warm are what
+       make a screenful of unrelated sprites agree about the weather.
+       UI icons keep the pure ones - a panel chip wants the contrast. */
+    lit: '#f4efe2', dark: '#1c1710'
   };
+
+  var LIT = P.lit, DARK = P.dark;
 
   var FACTION = {
     player: P.colonist, raider: P.raider, wild: P.wild, neutral: '#8a7f6a'
@@ -511,143 +520,209 @@
   /* ------------------------------------------------------------------
      Terrain
 
-     Fourteen surfaces, four variants each, and every one has to tile
-     against itself and against the other thirteen. That rules out
-     directional gradients on natural ground - two neighbouring tiles
-     lit from opposite corners show the seam immediately - so the
-     natural terrains are built from a flat base, soft mottling that
-     falls where the seed puts it, and per-pixel grain. Built floors are
-     the opposite case: a plank or a slab is a manufactured unit, so
-     their edges are supposed to line up with the tile grid, and they do.
+     Ground is the largest thing on the screen and the least important
+     thing on it, so it is painted the way a board game paints it: a flat
+     field of colour, a handful of large soft marks, and nothing that
+     competes with a pawn standing on top. Three rules hold the section
+     together, and each one answers a complaint about the tiles this
+     replaced.
+
+     1. FEW MARKS, LARGE AND QUIET. A tile of soil carries six clods and
+        a stone, not thirty clods and five pebbles under a per-pixel
+        dither. Every mark is shaded within a few per cent of the field
+        it sits on. At a 32-pixel tile the old marks were smaller than a
+        screen pixel, which is not texture, it is static.
+
+     2. VARIATION AT THE SCALE OF A FIELD. Art.terrainVariant hands the
+        renderer a variant whose high bit comes from smooth value noise
+        about seven tiles across, so neighbouring tiles usually agree and
+        the tone drifts across a patch instead of shouting from every
+        cell. The low bit is per-cell and only swaps the arrangement of
+        the marks, which is what stops a patch from tiling visibly.
+
+     3. NO TILE HAS A STRAIGHT EDGE. Every terrain canvas is larger than
+        its tile. The core 64x64 is fully opaque; around it sits a
+        ragged, soft collar of the same ground colour that spills a few
+        authored pixels past all four sides. render.js already offsets
+        every sprite by its ox/oy, so the collar lands over whichever
+        neighbour was painted before this tile and a shoreline becomes a
+        torn edge instead of a rectangle. The collar never eats into the
+        tile itself, so a tile can never show a hole where its neighbour
+        has not been drawn yet. Art.terrainEdge and Art.terrainBlend at
+        the bottom of the file offer the renderer the stronger,
+        neighbour-aware version of the same idea.
      ------------------------------------------------------------------ */
 
-  /* Flat base plus a few wide, soft patches. Seamless because nothing
-     in it knows where the tile edge is. */
+  /* A tile is painted flush to its own 64 squared and nothing else. The
+     seam between two grounds belongs to render.js, because only the
+     renderer knows what the neighbours are - art.js hands it the shapes
+     to cut the seam with, and those are Art.terrainEdge at the bottom of
+     this file. */
+  function flatBase(g, c) {
+    fill(g, 0, 0, PX, PX, c);
+  }
+
+  function tileGrain(g, rnd, alpha) {
+    grain(g, rnd, 0, 0, PX, PX, alpha, 'overlay');
+  }
+
+  /* The variant's contribution to the field's tone, and it is deliberately
+     almost nothing - a step of about one and a half per cent. Two tiles
+     of one terrain never get a seam blended between them, so any tone
+     difference big enough to see would be a ruled line along a tile edge,
+     which is the fault this whole pass exists to remove. The slow, wide
+     variation that makes ground interesting belongs to the field, not to
+     the cell: render.js washes it over the chunk at eleven tiles a cycle.
+     What the variant is really for is moving the marks about. */
+  function toneOf(variant) {
+    return ((variant & 2) ? 0.014 : -0.014) + ((variant & 1) ? 0.005 : -0.005);
+  }
+
+  /* A flat field with two or three very wide, very soft patches. Nothing
+     in it knows where the tile edge is, so it tiles against itself. */
   function groundBase(g, rnd, c1, c2, patches) {
-    fill(g, 0, 0, PX, PX, c1);
+    flatBase(g, c1);
     for (var i = 0; i < patches; i++) {
-      blob(g, rr(rnd, -8, PX + 8), rr(rnd, -8, PX + 8), rr(rnd, 14, 30),
-        rnd() < 0.5 ? c2 : shade(c1, -0.09), rr(rnd, 0.16, 0.34), 0.05);
+      blob(g, rr(rnd, -8, PX + 8), rr(rnd, -8, PX + 8), rr(rnd, 26, 48),
+        rnd() < 0.5 ? c2 : shade(c1, -0.05), rr(rnd, 0.1, 0.2), 0.05);
     }
   }
 
-  /* A pebble with the contact shadow that makes it sit on the ground
-     rather than float above it. */
+  /* A pebble with the soft contact shadow that makes it sit on the
+     ground rather than float above it. Both the shadow and the crown are
+     gentler than they were: a stone is a detail, not an event. */
   function pebble(g, rnd, x, y, r, c) {
-    ell(g, x + r * 0.35, y + r * 0.4, r * 1.05, r * 0.8, 0, rgba('#000000', 0.28));
+    blobEll(g, x + r * 0.3, y + r * 0.4, r * 1.15, r * 0.85, DARK, 0.16, 0.25);
     var rot = rnd() * TAU;
     ell(g, x, y, r, r * rr(rnd, 0.72, 0.95), rot, c);
-    ell(g, x - r * 0.28, y - r * 0.3, r * 0.45, r * 0.3, rot, shade(c, 0.22));
+    blobEll(g, x - r * 0.26, y - r * 0.3, r * 0.5, r * 0.34, LIT, 0.11, 0.2);
   }
 
-  function paintSoil(g, rnd, c1, c2, rich) {
-    groundBase(g, rnd, c1, c2, 5);
-    /* Clods: a dark under-shape with a lit crown, which is the whole
-       trick for reading broken earth from directly above. */
-    for (var i = 0; i < (rich ? 30 : 24); i++) {
-      var x = rnd() * PX, y = rnd() * PX, r = rr(rnd, 2, 5.5);
-      ell(g, x + 0.8, y + 0.9, r, r * 0.8, 0, rgba(shade(c1, -0.4), 0.35));
-      ell(g, x, y, r, r * 0.78, rnd() * TAU, shade(c1, rr(rnd, -0.1, 0.05)));
-      ell(g, x - r * 0.25, y - r * 0.3, r * 0.5, r * 0.3, 0, rgba(shade(c1, 0.22), 0.5));
+  function paintSoil(g, rnd, c1, c2, rich, variant) {
+    var base = shade(c1, toneOf(variant));
+    groundBase(g, rnd, base, mix(c2, base, 0.55), 3);
+    /* Clods: a soft dark underside and a lit crown, which is the whole
+       trick for reading broken earth from directly above. Six of them,
+       each three times the size the old ones were, shaded within six per
+       cent of the field. */
+    var n = rich ? 7 : 6;
+    for (var i = 0; i < n; i++) {
+      var x = rr(rnd, 5, PX - 5), y = rr(rnd, 5, PX - 5), r = rr(rnd, 4.5, 8.5);
+      blobEll(g, x + 1.4, y + 1.6, r * 1.1, r * 0.82, DARK, 0.15, 0.3);
+      ell(g, x, y, r, r * rr(rnd, 0.72, 0.9), rnd() * TAU,
+        shade(base, rr(rnd, -0.06, 0.035)));
+      blobEll(g, x - r * 0.24, y - r * 0.3, r * 0.56, r * 0.34, LIT, 0.13, 0.25);
     }
     if (rich) {
-      for (var f = 0; f < 6; f++) {
-        var fx = rnd() * PX, fy = rnd() * PX;
-        whip(g, fx, fy, fx + rs(rnd, 9), fy + rs(rnd, 9), fx + rs(rnd, 16), fy + rs(rnd, 16),
-          rgba(shade(c1, 0.3), 0.3), 1);
+      /* Two root threads, and they are the only thing telling rich soil
+         from plain soil beyond its darker field. */
+      for (var f = 0; f < 2; f++) {
+        var fx = rr(rnd, 8, PX - 8), fy = rr(rnd, 8, PX - 8);
+        whip(g, fx, fy, fx + rs(rnd, 12), fy + rs(rnd, 12), fx + rs(rnd, 22), fy + rs(rnd, 22),
+          rgba(shade(base, 0.16), 0.22), 1.6);
       }
     }
-    for (var s = 0; s < (rich ? 2 : 5); s++) {
-      pebble(g, rnd, rr(rnd, 4, PX - 4), rr(rnd, 4, PX - 4), rr(rnd, 1.6, 3), '#8b8278');
+    /* One or two stones, the only thing on the tile allowed to be a
+       different material from the ground. */
+    for (var s = 0; s < (rich ? 1 : 2); s++) {
+      pebble(g, rnd, rr(rnd, 8, PX - 8), rr(rnd, 8, PX - 8), rr(rnd, 2.6, 4.2),
+        mix('#8b8278', base, 0.62));
     }
-    grain(g, rnd, 0, 0, PX, PX, 0.34, 'overlay');
+    tileGrain(g, rnd, 0.09);
   }
 
-  function paintGrassTerrain(g, rnd, c1, c2) {
-    /* Soil shows through between the blades, which is what stops a
-       grass field reading as a flat green rectangle. */
-    groundBase(g, rnd, shade(mix(c1, P.soil, 0.45), -0.05), shade(c1, -0.2), 4);
-    var tones = [c1, c2, shade(c1, -0.16), mix(c1, P.foliageLight, 0.4)];
-    for (var i = 0; i < 132; i++) {
-      var x = rnd() * PX, y = rr(rnd, 3, PX + 3);
-      var h = rr(rnd, 5, 12), lean = rs(rnd, 4.5);
-      whip(g, x, y, x + lean * 0.4, y - h * 0.6, x + lean, y - h,
-        tones[(rnd() * tones.length) | 0], rr(rnd, 0.9, 1.7));
+  function paintGrassTerrain(g, rnd, c1, c2, variant) {
+    var base = shade(c1, toneOf(variant));
+    groundBase(g, rnd, base, mix(c2, base, 0.5), 3);
+    /* Three small clumps of blade catching the light, not a mat of a
+       hundred and thirty of them. The eye has to have somewhere on a
+       grass field to rest. */
+    var tones = [shade(base, 0.06), mix(base, P.foliageLight, 0.22), shade(base, -0.08)];
+    for (var cl = 0; cl < 3; cl++) {
+      var gx = rr(rnd, 12, PX - 12), gy = rr(rnd, 20, PX - 2);
+      for (var i = 0; i < 5; i++) {
+        var x = gx + rs(rnd, 7), y = gy + rs(rnd, 4);
+        var h = rr(rnd, 8, 15), lean = rs(rnd, 5);
+        whip(g, x, y, x + lean * 0.4, y - h * 0.6, x + lean, y - h,
+          rgba(tones[(rnd() * 3) | 0], 0.8), rr(rnd, 1.6, 2.8));
+      }
     }
-    /* A last pass of pale tips catches the light and gives the mat some
-       depth instead of one uniform height. */
-    for (var t = 0; t < 26; t++) {
-      var tx = rnd() * PX, ty = rr(rnd, 6, PX);
-      whip(g, tx, ty, tx + rs(rnd, 2), ty - 5, tx + rs(rnd, 5), ty - 9,
-        rgba(shade(c2, 0.26), 0.75), 1);
-    }
-    grain(g, rnd, 0, 0, PX, PX, 0.16, 'overlay');
+    tileGrain(g, rnd, 0.08);
   }
 
-  function paintSand(g, rnd, c1, c2) {
-    groundBase(g, rnd, c1, c2, 4);
-    /* Wind ripples: a pale crest with its own trough shadow just below,
-       which is the only reason a ripple reads as relief. */
-    for (var i = 0; i < 6; i++) {
-      var y = rr(rnd, 2, PX - 2), amp = rr(rnd, 3, 7);
-      whip(g, -6, y + 2, PX * 0.5, y + amp + 2, PX + 6, y + 2, rgba(shade(c1, -0.22), 0.4), 2.4);
-      whip(g, -6, y, PX * 0.5, y + amp, PX + 6, y, rgba(shade(c1, 0.26), 0.55), 1.8);
+  function paintSand(g, rnd, c1, c2, variant) {
+    var base = shade(c1, toneOf(variant));
+    groundBase(g, rnd, base, mix(c2, base, 0.5), 2);
+    /* Two wind ripples and that is the entire texture: sand is the
+       flattest thing on the map and it should look it. Each one is a
+       short arc that stops well inside the tile, at its own angle -
+       ripples drawn edge to edge line up across a field into corduroy. */
+    for (var i = 0; i < 2; i++) {
+      var rx = rr(rnd, 10, PX - 10), ry = rr(rnd, 10, PX - 10);
+      var len = rr(rnd, 16, 26), ang = rs(rnd, 0.5) + (rnd() < 0.5 ? 0 : Math.PI);
+      var dx = Math.cos(ang) * len, dy = Math.sin(ang) * len;
+      var bow = rr(rnd, 4, 9);
+      whip(g, rx - dx, ry - dy + 3, rx, ry + bow + 3, rx + dx, ry + dy + 3,
+        rgba(shade(base, -0.08), 0.22), 5);
+      whip(g, rx - dx, ry - dy, rx, ry + bow, rx + dx, ry + dy,
+        rgba(shade(base, 0.1), 0.26), 4);
     }
-    flecks(g, rnd, 26, 0, 0, PX, PX, [shade(c1, 0.18), shade(c1, -0.14)], 0.8, 2, 0.5);
-    grain(g, rnd, 0, 0, PX, PX, 0.42, 'overlay');
+    tileGrain(g, rnd, 0.07);
   }
 
-  function paintGravel(g, rnd, c1, c2) {
-    groundBase(g, rnd, shade(c1, -0.18), shade(c1, -0.08), 4);
-    var tones = [c1, c2, shade(c1, 0.16), shade(c1, -0.12), mix(c1, P.sand, 0.25)];
-    for (var i = 0; i < 46; i++) {
-      pebble(g, rnd, rr(rnd, -2, PX + 2), rr(rnd, -2, PX + 2), rr(rnd, 1.8, 4.4),
-        tones[(rnd() * tones.length) | 0]);
+  function paintGravel(g, rnd, c1, c2, variant) {
+    var base = shade(c1, toneOf(variant) - 0.1);
+    groundBase(g, rnd, base, shade(base, 0.06), 3);
+    /* Twelve stones instead of forty-six, and each one is tinted toward
+       the field it lies on so the tile reads as grit rather than as a
+       bag of marbles. */
+    var tones = [shade(base, 0.12), shade(base, -0.09), mix(base, P.sand, 0.18)];
+    for (var i = 0; i < 12; i++) {
+      pebble(g, rnd, rr(rnd, -2, PX + 2), rr(rnd, -2, PX + 2), rr(rnd, 3, 5.5),
+        tones[(rnd() * 3) | 0]);
     }
-    grain(g, rnd, 0, 0, PX, PX, 0.3, 'overlay');
+    tileGrain(g, rnd, 0.1);
   }
 
-  function paintMud(g, rnd, c1, c2) {
-    groundBase(g, rnd, c1, c2, 6);
-    for (var i = 0; i < 14; i++) {
-      var x = rnd() * PX, y = rnd() * PX, r = rr(rnd, 4, 10);
-      ell(g, x, y, r, r * rr(rnd, 0.45, 0.75), rnd() * TAU, rgba(shade(c1, -0.35), 0.5));
+  function paintMud(g, rnd, c1, c2, variant) {
+    var base = shade(c1, toneOf(variant));
+    groundBase(g, rnd, base, mix(c2, base, 0.5), 4);
+    for (var i = 0; i < 4; i++) {
+      blobEll(g, rr(rnd, 4, PX - 4), rr(rnd, 4, PX - 4), rr(rnd, 10, 18), rr(rnd, 6, 11),
+        shade(base, -0.2), 0.4, 0.2);
     }
     /* Wet sheen: standing water reflects the sky, so the highlights are
        cool and sit in the hollows rather than on the ridges. */
-    for (var s = 0; s < 5; s++) {
-      var sx = rr(rnd, 6, PX - 6), sy = rr(rnd, 6, PX - 6), sr = rr(rnd, 5, 11);
-      blobEll(g, sx, sy, sr, sr * 0.5, mix(P.sky, '#ffffff', 0.35), rr(rnd, 0.16, 0.3), 0.1);
-      ell(g, sx - sr * 0.3, sy - sr * 0.15, sr * 0.34, sr * 0.11, rr(rnd, -0.4, 0.4),
-        rgba('#ffffff', 0.4));
-    }
-    grain(g, rnd, 0, 0, PX, PX, 0.26, 'overlay');
+    var sx = rr(rnd, 12, PX - 12), sy = rr(rnd, 12, PX - 12), sr = rr(rnd, 10, 16);
+    blobEll(g, sx, sy, sr, sr * 0.42, mix(P.sky, LIT, 0.25), 0.13, 0.1);
+    tileGrain(g, rnd, 0.08);
   }
 
-  function paintMarsh(g, rnd, c1, c2) {
-    groundBase(g, rnd, c1, c2, 5);
-    for (var i = 0; i < 7; i++) {
-      var x = rnd() * PX, y = rnd() * PX, r = rr(rnd, 7, 15);
-      blobEll(g, x, y, r, r * 0.6, mix(P.water, c1, 0.35), rr(rnd, 0.3, 0.55), 0.35);
-      ell(g, x - r * 0.2, y - r * 0.2, r * 0.3, r * 0.12, 0, rgba('#ffffff', 0.22));
+  function paintMarsh(g, rnd, c1, c2, variant) {
+    var base = shade(c1, toneOf(variant));
+    groundBase(g, rnd, base, mix(c2, base, 0.5), 3);
+    for (var i = 0; i < 3; i++) {
+      blobEll(g, rr(rnd, 2, PX - 2), rr(rnd, 2, PX - 2), rr(rnd, 12, 20), rr(rnd, 8, 13),
+        mix(P.water, base, 0.4), 0.42, 0.3);
     }
-    var reed = shade(c1, 0.22), reedDark = shade(c1, -0.25);
-    for (var k = 0; k < 30; k++) {
-      var rx = rnd() * PX, ry = rr(rnd, 8, PX + 4), h = rr(rnd, 8, 18);
+    var reed = shade(base, 0.18);
+    for (var k = 0; k < 8; k++) {
+      var rx = rr(rnd, 4, PX - 4), ry = rr(rnd, 16, PX + 2), h = rr(rnd, 10, 20);
       whip(g, rx, ry, rx + rs(rnd, 3), ry - h * 0.6, rx + rs(rnd, 7), ry - h,
-        rnd() < 0.4 ? reedDark : reed, rr(rnd, 1, 1.8));
+        rgba(reed, 0.7), rr(rnd, 1.6, 2.6));
     }
-    grain(g, rnd, 0, 0, PX, PX, 0.2, 'overlay');
+    tileGrain(g, rnd, 0.07);
   }
 
   function paintWater(g, rnd, c1, c2, deep, variant) {
-    fill(g, 0, 0, PX, PX, c1);
-    /* Depth banding: broad soft patches of lighter and darker water so
-       the surface has somewhere to shelve, without a straight edge
-       anywhere that could line up into a grid across the map. */
-    for (var i = 0; i < 7; i++) {
-      blob(g, rr(rnd, -10, PX + 10), rr(rnd, -10, PX + 10), rr(rnd, 16, 34),
-        rnd() < 0.5 ? c2 : shade(c1, deep ? -0.22 : 0.16), rr(rnd, 0.2, 0.42), 0.05);
+    var base = shade(c1, toneOf(variant) * 0.6);
+    flatBase(g, base);
+    /* Depth banding: four broad soft patches so the surface has somewhere
+       to shelve, with no straight edge anywhere that could line up into a
+       grid across the map. */
+    for (var i = 0; i < 4; i++) {
+      blob(g, rr(rnd, -8, PX + 8), rr(rnd, -8, PX + 8), rr(rnd, 26, 46),
+        rnd() < 0.5 ? c2 : shade(base, deep ? -0.14 : 0.1), rr(rnd, 0.16, 0.3), 0.05);
     }
     if (!deep) {
       /* Shallow water is lit from a different quarter in each variant.
@@ -657,212 +732,196 @@
       gradRect(g, 0, 0, PX, PX, linGrad(g,
         PX / 2 - dirs[0] * PX / 2, PX / 2 - dirs[1] * PX / 2,
         PX / 2 + dirs[0] * PX / 2, PX / 2 + dirs[1] * PX / 2,
-        [0, rgba(mix(c2, P.sand, 0.45), 0.34), 1, rgba(c1, 0)]));
+        [0, rgba(mix(c2, P.sand, 0.4), 0.22), 1, rgba(base, 0)]));
     }
-    /* Caustics: the bright net of light refracted onto the bottom. */
-    var lit = mix(c2, '#ffffff', deep ? 0.28 : 0.45);
-    for (var k = 0; k < (deep ? 7 : 11); k++) {
-      var x = rnd() * PX, y = rnd() * PX, w = rr(rnd, 8, 20);
+    /* Four long, low-contrast caustics instead of eleven bright ones.
+       Water still moves; it no longer sparkles like tinsel. */
+    var lit = mix(c2, LIT, deep ? 0.22 : 0.34);
+    for (var k = 0; k < 4; k++) {
+      var x = rr(rnd, 2, PX - 2), y = rr(rnd, 2, PX - 2), w = rr(rnd, 14, 26);
       whip(g, x - w, y, x, y + rs(rnd, 5), x + w, y + rs(rnd, 3),
-        rgba(lit, rr(rnd, 0.1, 0.24)), rr(rnd, 1.2, 2.6));
+        rgba(lit, rr(rnd, 0.08, 0.15)), rr(rnd, 2.4, 4));
     }
-    /* Two specular glints - the sun itself, not the sky. */
-    for (var s = 0; s < 2; s++) {
-      var gx = rr(rnd, 8, PX - 8), gy = rr(rnd, 8, PX - 8);
-      blobEll(g, gx, gy, rr(rnd, 5, 9), rr(rnd, 1.6, 3), '#ffffff', 0.3, 0.15);
-      ell(g, gx, gy, rr(rnd, 2, 3.4), 0.9, rs(rnd, 0.3), rgba('#ffffff', 0.7));
-    }
-    grain(g, rnd, 0, 0, PX, PX, 0.1, 'overlay');
+    /* One specular glint - the sun itself, not the sky. */
+    var gx = rr(rnd, 12, PX - 12), gy = rr(rnd, 12, PX - 12);
+    blobEll(g, gx, gy, rr(rnd, 7, 11), rr(rnd, 2.2, 3.6), LIT, 0.22, 0.15);
+    tileGrain(g, rnd, 0.05);
   }
 
-  function paintRockFloor(g, rnd, c1, c2) {
-    fill(g, 0, 0, PX, PX, c1);
-    /* Chiselled facets: a handful of irregular plates at slightly
-       different angles to the light, the way a mined-out floor breaks. */
-    for (var i = 0; i < 7; i++) {
-      var cx = rnd() * PX, cy = rnd() * PX, n = ri(rnd, 5, 7), pts = [];
-      var r0 = rr(rnd, 9, 20);
+  function paintRockFloor(g, rnd, c1, c2, variant) {
+    var base = shade(c1, toneOf(variant));
+    flatBase(g, base);
+    /* Two broad facets at slightly different angles to the light, the way
+       a mined-out floor breaks, and one crack. That is all. */
+    for (var i = 0; i < 2; i++) {
+      var cx = rr(rnd, 8, PX - 8), cy = rr(rnd, 8, PX - 8), n = ri(rnd, 5, 7), pts = [];
+      var r0 = rr(rnd, 18, 30);
       for (var k = 0; k < n; k++) {
         var a = (k / n) * TAU + rs(rnd, 0.3), rk = r0 * rr(rnd, 0.6, 1.15);
         pts.push(cx + Math.cos(a) * rk, cy + Math.sin(a) * rk);
       }
-      g.globalAlpha = rr(rnd, 0.3, 0.6);
-      poly(g, pts, shade(c1, rr(rnd, -0.16, 0.13)));
+      g.globalAlpha = rr(rnd, 0.18, 0.3);
+      poly(g, pts, shade(base, rr(rnd, -0.08, 0.07)));
       g.globalAlpha = 1;
     }
-    /* Cracks, with a lit lip on the north-west side of each. */
-    for (var c = 0; c < 4; c++) {
-      var x0 = rr(rnd, -4, PX + 4), y0 = rr(rnd, -4, PX + 4);
-      var x1 = x0 + rs(rnd, 26), y1 = y0 + rs(rnd, 26);
-      var mx = (x0 + x1) / 2 + rs(rnd, 8), my = (y0 + y1) / 2 + rs(rnd, 8);
-      whip(g, x0, y0, mx, my, x1, y1, rgba(shade(c1, -0.45), 0.6), 1.6);
-      whip(g, x0 - 1, y0 - 1, mx - 1, my - 1, x1 - 1, y1 - 1, rgba(shade(c2, 0.3), 0.3), 1);
-    }
-    flecks(g, rnd, 34, 0, 0, PX, PX, [shade(c1, 0.2), shade(c1, -0.22), c2], 0.8, 2.4, 0.55);
-    grain(g, rnd, 0, 0, PX, PX, 0.33, 'overlay');
+    var x0 = rr(rnd, -2, PX + 2), y0 = rr(rnd, -2, PX + 2);
+    var x1 = x0 + rs(rnd, 34), y1 = y0 + rs(rnd, 34);
+    var mx = (x0 + x1) / 2 + rs(rnd, 9), my = (y0 + y1) / 2 + rs(rnd, 9);
+    whip(g, x0, y0, mx, my, x1, y1, rgba(shade(base, -0.28), 0.4), 2.2);
+    whip(g, x0 - 1.4, y0 - 1.4, mx - 1.4, my - 1.4, x1 - 1.4, y1 - 1.4,
+      rgba(shade(base, 0.2), 0.2), 1.4);
+    tileGrain(g, rnd, 0.1);
   }
 
-  /* ---------- built floors ---------- */
+  /* ---------- built floors ----------
+     A floor is a manufactured unit, so its structure is allowed to line
+     up with the tile grid and its edges are allowed to be straight. What
+     it is not allowed is the fog of per-pixel dither the natural ground
+     just lost: the grain and the fleck counts here came down with
+     everything else. */
 
   function paintWoodFloor(g, rnd, c1, c2, variant) {
-    var dark = shade(c1, -0.42), seam = shade(c1, -0.55);
-    fill(g, 0, 0, PX, PX, dark);
-    /* Four courses of plank, sixteen pixels each, so the seams line up
-       across the whole floor rather than stopping at the tile. */
-    for (var row = 0; row < 4; row++) {
-      var y = row * 16, tone = shade(c1, rr(rnd, -0.07, 0.07));
-      fill(g, 0, y + 1, PX, 14, tone);
-      gradRect(g, 0, y + 1, PX, 14, linGrad(g, 0, y + 1, 0, y + 15,
-        [0, rgba('#ffffff', 0.13), 0.35, rgba('#ffffff', 0), 1, rgba('#000000', 0.16)]));
-      /* Grain runs the length of the plank and wanders a little. */
-      for (var k = 0; k < 6; k++) {
-        var gy = y + rr(rnd, 2, 14);
-        whip(g, -4, gy, PX / 2, gy + rs(rnd, 2.2), PX + 4, gy + rs(rnd, 1.6),
-          rgba(rnd() < 0.35 ? shade(c1, 0.2) : shade(c1, -0.22), rr(rnd, 0.2, 0.42)),
-          rr(rnd, 0.7, 1.5));
+    var base = shade(c1, toneOf(variant) * 0.5);
+    var dark = shade(base, -0.3), seam = shade(base, -0.34);
+    flatBase(g, dark);
+    /* Two courses of board to the tile, thirty-two pixels each, so the
+       seams line up across the whole floor rather than stopping at the
+       tile. Four courses looked like brickwork the moment the tile was
+       drawn at anything under sixty-four pixels. */
+    for (var row = 0; row < 2; row++) {
+      var y = row * 32, tone = shade(base, rr(rnd, -0.04, 0.04));
+      fill(g, 0, y + 1, PX, 30, tone);
+      gradRect(g, 0, y + 1, PX, 30, linGrad(g, 0, y + 1, 0, y + 31,
+        [0, rgba(LIT, 0.07), 0.35, rgba(LIT, 0), 1, rgba(DARK, 0.1)]));
+      for (var k = 0; k < 4; k++) {
+        var gy = y + rr(rnd, 4, 28);
+        whip(g, -4, gy, PX / 2, gy + rs(rnd, 3), PX + 4, gy + rs(rnd, 2),
+          rgba(rnd() < 0.35 ? shade(base, 0.14) : shade(base, -0.15), rr(rnd, 0.1, 0.2)),
+          rr(rnd, 1, 2));
       }
-      /* One butt joint per course; where it falls moves with the
-         variant, so a floor does not grow a column of end grain. */
+      /* One butt joint per course; where it falls moves with the variant,
+         so a floor does not grow a column of end grain. */
       var jx = 8 + ((variant * 13 + row * 21) % 48);
-      fill(g, jx, y + 1, 2, 14, seam);
-      fill(g, jx + 2, y + 1, 1, 14, rgba(shade(c1, 0.3), 0.5));
-      for (var e = 0; e < 4; e++) {
-        whip(g, jx - 5, y + 3 + e * 3, jx - 2, y + 4 + e * 3, jx - 1, y + 3 + e * 3,
-          rgba(shade(c1, -0.3), 0.4), 0.8);
-      }
+      fill(g, jx, y + 1, 2, 30, seam);
+      fill(g, jx + 2, y + 1, 1, 30, rgba(shade(base, 0.2), 0.3));
       fill(g, 0, y, PX, 1, seam);
-      fill(g, 0, y + 15, PX, 1, rgba('#000000', 0.35));
+      fill(g, 0, y + 31, PX, 1, rgba(DARK, 0.14));
     }
-    /* Two nail heads per course line, sunk and catching the light. */
-    for (var n = 0; n < 6; n++) {
-      var nx = rr(rnd, 4, PX - 4), ny = (((rnd() * 4) | 0) * 16) + 3;
-      circle(g, nx, ny, 1.3, shade(P.iron, -0.2));
-      circle(g, nx - 0.4, ny - 0.4, 0.7, shade(P.iron, 0.4));
+    /* One nail head per course line, sunk and catching the light. */
+    for (var n = 0; n < 3; n++) {
+      var nx = rr(rnd, 6, PX - 6), ny = (((rnd() * 2) | 0) * 32) + 4;
+      circle(g, nx, ny, 1.4, shade(P.iron, -0.2));
+      circle(g, nx - 0.4, ny - 0.4, 0.7, shade(P.iron, 0.34));
     }
-    grain(g, rnd, 0, 0, PX, PX, 0.16, 'overlay');
+    tileGrain(g, rnd, 0.08);
   }
 
-  function paintStoneFloor(g, rnd, c1, c2) {
-    var mortar = shade(mix(c1, P.mortar, 0.5), -0.2);
-    fill(g, 0, 0, PX, PX, mortar);
+  function paintStoneFloor(g, rnd, c1, c2, variant) {
+    var base = shade(c1, toneOf(variant) * 0.5);
+    var mortar = shade(mix(base, P.mortar, 0.42), -0.1);
+    flatBase(g, mortar);
     /* Four cut slabs to the tile, inset by one pixel so the joints line
        up with the neighbouring tile's slabs and form one grid. */
     for (var sy = 0; sy < 2; sy++) {
       for (var sx = 0; sx < 2; sx++) {
         var x = 1 + sx * 32, y = 1 + sy * 32, s = 30;
-        var tone = shade(c1, rr(rnd, -0.08, 0.08));
+        var tone = shade(base, rr(rnd, -0.05, 0.05));
         fill(g, x, y, s, s, tone);
         gradRect(g, x, y, s, s, linGrad(g, x, y, x + s, y + s,
-          [0, rgba('#ffffff', 0.12), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.14)]));
-        flecks(g, rnd, 16, x, y, s, s, [shade(tone, 0.22), shade(tone, -0.2), c2], 0.7, 2, 0.5);
+          [0, rgba(LIT, 0.08), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.1)]));
+        flecks(g, rnd, 4, x + 4, y + 4, s - 8, s - 8,
+          [shade(tone, 0.1), shade(tone, -0.09)], 1.8, 3.4, 0.3);
         /* The cut edge: lit on the north-west, shadowed on the far side. */
-        bevel(g, x, y, s, s, 2.5, rgba('#ffffff', 0.35), rgba('#000000', 0.42), 15, 1);
-        if (rnd() < 0.45) {
-          var hx = x + rr(rnd, 4, s - 8), hy = y + rr(rnd, 4, s - 8);
-          whip(g, hx, hy, hx + rs(rnd, 6), hy + rs(rnd, 6), hx + rs(rnd, 11), hy + rs(rnd, 11),
-            rgba(shade(tone, -0.4), 0.45), 1);
-        }
+        bevel(g, x, y, s, s, 2, rgba(LIT, 0.13), rgba(DARK, 0.18), 15, 1);
       }
     }
-    grain(g, rnd, 0, 0, PX, PX, 0.2, 'overlay');
+    tileGrain(g, rnd, 0.08);
   }
 
-  function paintConcrete(g, rnd, c1, c2) {
-    fill(g, 0, 0, PX, PX, c1);
-    /* Float finish: broad, very soft patches where the trowel pulled
-       the cream, plus the aggregate that shows through. */
-    for (var i = 0; i < 9; i++) {
-      blob(g, rr(rnd, -8, PX + 8), rr(rnd, -8, PX + 8), rr(rnd, 12, 28),
-        rnd() < 0.5 ? shade(c1, 0.07) : shade(c2, -0.08), rr(rnd, 0.18, 0.34), 0.1);
+  function paintConcrete(g, rnd, c1, c2, variant) {
+    var base = shade(c1, toneOf(variant) * 0.5);
+    flatBase(g, base);
+    /* Float finish: broad, very soft patches where the trowel pulled the
+       cream. The aggregate that used to speckle every square inch is now
+       a dozen flecks. */
+    for (var i = 0; i < 5; i++) {
+      blob(g, rr(rnd, -8, PX + 8), rr(rnd, -8, PX + 8), rr(rnd, 18, 34),
+        rnd() < 0.5 ? shade(base, 0.05) : shade(base, -0.06), rr(rnd, 0.12, 0.24), 0.1);
     }
-    for (var s = 0; s < 4; s++) {
-      var ax = rr(rnd, 0, PX), ay = rr(rnd, 0, PX), r = rr(rnd, 12, 22);
-      g.beginPath();
-      g.arc(ax, ay, r, rr(rnd, 0, TAU), rr(rnd, 1.2, 2.6));
-      g.strokeStyle = rgba('#ffffff', 0.07); g.lineWidth = 3; g.stroke();
-    }
-    flecks(g, rnd, 60, 0, 0, PX, PX,
-      [shade(c1, -0.2), shade(c1, 0.16), shade(c2, -0.28)], 0.5, 1.5, 0.45);
+    flecks(g, rnd, 12, 0, 0, PX, PX,
+      [shade(base, -0.12), shade(base, 0.1)], 1.2, 2.6, 0.3);
     /* Control joints on the tile lines: a sawn groove with a lit lip. */
-    fill(g, 0, 0, PX, 2, rgba('#000000', 0.22));
-    fill(g, 0, 0, 2, PX, rgba('#000000', 0.22));
-    fill(g, 0, 2, PX, 1, rgba('#ffffff', 0.14));
-    fill(g, 2, 0, 1, PX, rgba('#ffffff', 0.14));
-    grain(g, rnd, 0, 0, PX, PX, 0.24, 'overlay');
+    fill(g, 0, 0, PX, 2, rgba(DARK, 0.18));
+    fill(g, 0, 0, 2, PX, rgba(DARK, 0.18));
+    fill(g, 0, 2, PX, 1, rgba(LIT, 0.1));
+    fill(g, 2, 0, 1, PX, rgba(LIT, 0.1));
+    tileGrain(g, rnd, 0.09);
   }
 
-  function paintSteelFloor(g, rnd, c1, c2) {
-    fill(g, 0, 0, PX, PX, shade(c1, -0.45));
-    rrect(g, 1, 1, PX - 2, PX - 2, 4, c1);
-    /* Brushed metal: fine directional lines, then one broad sweep of
-       reflected sky across the plate. */
-    for (var i = 0; i < 54; i++) {
-      var y = rr(rnd, 2, PX - 2);
-      fill(g, 2, y, PX - 4, rr(rnd, 0.6, 1.2),
-        rgba(rnd() < 0.5 ? '#ffffff' : '#000000', rr(rnd, 0.03, 0.09)));
+  function paintSteelFloor(g, rnd, c1, c2, variant) {
+    var base = shade(c1, toneOf(variant) * 0.5);
+    flatBase(g, shade(base, -0.4));
+    rrect(g, 1, 1, PX - 2, PX - 2, 4, base);
+    /* Brushed metal: a few fine directional lines, then one broad sweep
+       of reflected sky across the plate. */
+    for (var i = 0; i < 22; i++) {
+      var y = rr(rnd, 3, PX - 3);
+      fill(g, 2, y, PX - 4, rr(rnd, 0.8, 1.6), rgba(rnd() < 0.5 ? LIT : DARK, rr(rnd, 0.03, 0.07)));
     }
-    sheen(g, 1, 1, PX - 2, PX - 2, 0.16, 0.8);
-    bevel(g, 1, 1, PX - 2, PX - 2, 3, rgba('#ffffff', 0.4), rgba('#000000', 0.45), 15, 1);
+    sheen(g, 1, 1, PX - 2, PX - 2, 0.1, 0.8);
+    bevel(g, 1, 1, PX - 2, PX - 2, 3, rgba(LIT, 0.26), rgba(DARK, 0.3), 15, 1);
     /* Rivets, one to a corner, each a dome: lit crown, dark seat. */
     var pos = [[7, 7], [PX - 7, 7], [7, PX - 7], [PX - 7, PX - 7]];
     for (var r = 0; r < 4; r++) {
       var rx = pos[r][0], ry = pos[r][1];
-      circle(g, rx, ry + 0.8, 3, rgba('#000000', 0.4));
-      circle(g, rx, ry, 2.6, shade(c1, -0.1));
-      circle(g, rx - 0.7, ry - 0.8, 1.4, shade(c2, 0.4));
+      circle(g, rx, ry + 0.8, 3, rgba(DARK, 0.3));
+      circle(g, rx, ry, 2.6, shade(base, -0.1));
+      circle(g, rx - 0.7, ry - 0.8, 1.4, shade(c2, 0.3));
     }
-    grain(g, rnd, 0, 0, PX, PX, 0.14, 'overlay');
+    tileGrain(g, rnd, 0.06);
   }
 
-  function paintCarpet(g, rnd, c1, c2) {
-    fill(g, 0, 0, PX, PX, shade(c1, -0.12));
+  function paintCarpet(g, rnd, c1, c2, variant) {
+    var base = shade(c1, toneOf(variant) * 0.5);
+    flatBase(g, shade(base, -0.12));
     /* Woven pile: short strokes whose direction alternates by cell, so
-       the light catches every other tuft and the weave reads. */
-    for (var y = 0; y < PX; y += 4) {
-      for (var x = 0; x < PX; x += 4) {
-        var over = ((x >> 2) + (y >> 2)) & 1;
-        var tone = shade(over ? c1 : c2, rr(rnd, -0.09, 0.12));
-        if (over) {
-          stroke(g, [x + 0.6, y + 2, x + 3.4, y + 2], tone, 2.6);
-          fill(g, x + 0.6, y + 0.8, 2.8, 0.8, rgba('#ffffff', 0.1));
-        } else {
-          stroke(g, [x + 2, y + 0.6, x + 2, y + 3.4], tone, 2.6);
-          fill(g, x + 0.8, y + 0.6, 0.8, 2.8, rgba('#ffffff', 0.08));
-        }
+       the light catches every other tuft and the weave reads. The weave
+       is the texture; it does not need flyaway fibres on top of it. */
+    for (var y = 0; y < PX; y += 8) {
+      for (var x = 0; x < PX; x += 8) {
+        var over = ((x >> 3) + (y >> 3)) & 1;
+        var tone = shade(over ? base : mix(c2, base, 0.4), rr(rnd, -0.03, 0.05));
+        if (over) stroke(g, [x + 1.2, y + 4, x + 6.8, y + 4], tone, 5.4);
+        else stroke(g, [x + 4, y + 1.2, x + 4, y + 6.8], tone, 5.4);
       }
     }
-    for (var f = 0; f < 22; f++) {
-      var fx = rnd() * PX, fy = rnd() * PX;
-      whip(g, fx, fy, fx + rs(rnd, 2), fy - 2, fx + rs(rnd, 3), fy - 3.5,
-        rgba(shade(c1, 0.3), 0.35), 1);
-    }
-    grain(g, rnd, 0, 0, PX, PX, 0.2, 'overlay');
+    tileGrain(g, rnd, 0.1);
   }
 
   function paintTerrain(g, rnd, def, variant) {
     var c1 = def.color, c2 = def.color2 || shade(c1, 0.06);
     switch (def.id) {
-      case 'soil': paintSoil(g, rnd, c1, c2, false); break;
-      case 'richSoil': paintSoil(g, rnd, c1, c2, true); break;
-      case 'gravel': paintGravel(g, rnd, c1, c2); break;
-      case 'sand': paintSand(g, rnd, c1, c2); break;
-      case 'mud': paintMud(g, rnd, c1, c2); break;
-      case 'marsh': paintMarsh(g, rnd, c1, c2); break;
+      case 'soil': paintSoil(g, rnd, c1, c2, false, variant); break;
+      case 'richSoil': paintSoil(g, rnd, c1, c2, true, variant); break;
+      case 'gravel': paintGravel(g, rnd, c1, c2, variant); break;
+      case 'sand': paintSand(g, rnd, c1, c2, variant); break;
+      case 'mud': paintMud(g, rnd, c1, c2, variant); break;
+      case 'marsh': paintMarsh(g, rnd, c1, c2, variant); break;
       case 'shallowWater': paintWater(g, rnd, c1, c2, false, variant); break;
       case 'deepWater': paintWater(g, rnd, c1, c2, true, variant); break;
-      case 'rockFloor': paintRockFloor(g, rnd, c1, c2); break;
+      case 'rockFloor': paintRockFloor(g, rnd, c1, c2, variant); break;
       case 'woodFloor': paintWoodFloor(g, rnd, c1, c2, variant); break;
-      case 'stoneFloor': paintStoneFloor(g, rnd, c1, c2); break;
-      case 'concreteFloor': paintConcrete(g, rnd, c1, c2); break;
-      case 'steelFloor': paintSteelFloor(g, rnd, c1, c2); break;
-      case 'carpet': paintCarpet(g, rnd, c1, c2); break;
+      case 'stoneFloor': paintStoneFloor(g, rnd, c1, c2, variant); break;
+      case 'concreteFloor': paintConcrete(g, rnd, c1, c2, variant); break;
+      case 'steelFloor': paintSteelFloor(g, rnd, c1, c2, variant); break;
+      case 'carpet': paintCarpet(g, rnd, c1, c2, variant); break;
       default:
         /* A terrain this file has not met yet still has to look like
            ground rather than like a bug: grass if it grows things,
            grit if it does not. */
         if (def.terrainCategory === 'water') paintWater(g, rnd, c1, c2, true, variant);
-        else if (def.supportsPlants) paintGrassTerrain(g, rnd, c1, c2);
-        else paintGravel(g, rnd, c1, c2);
+        else if (def.supportsPlants) paintGrassTerrain(g, rnd, c1, c2, variant);
+        else paintGravel(g, rnd, c1, c2, variant);
     }
   }
 
@@ -882,26 +941,26 @@
     var d = 7;
     if (!(mask & 1)) {
       gradRect(g, 0, 0, w, d, linGrad(g, 0, 0, 0, d,
-        [0, rgba('#ffffff', lightA), 1, rgba('#ffffff', 0)]));
-      fill(g, 0, 0, w, 1.2, rgba('#ffffff', lightA * 0.9));
+        [0, rgba(LIT, lightA), 1, rgba(LIT, 0)]));
+      fill(g, 0, 0, w, 1.2, rgba(LIT, lightA * 0.9));
     }
     if (!(mask & 8)) {
       gradRect(g, 0, 0, d, h, linGrad(g, 0, 0, d, 0,
-        [0, rgba('#ffffff', lightA * 0.8), 1, rgba('#ffffff', 0)]));
-      fill(g, 0, 0, 1.2, h, rgba('#ffffff', lightA * 0.7));
+        [0, rgba(LIT, lightA * 0.8), 1, rgba(LIT, 0)]));
+      fill(g, 0, 0, 1.2, h, rgba(LIT, lightA * 0.7));
     }
     if (!(mask & 4)) {
       gradRect(g, 0, h - d - 2, w, d + 2, linGrad(g, 0, h - d - 2, 0, h,
-        [0, rgba('#000000', 0), 1, rgba('#000000', darkA)]));
+        [0, rgba(DARK, 0), 1, rgba(DARK, darkA)]));
     }
     if (!(mask & 2)) {
       gradRect(g, w - d - 2, 0, d + 2, h, linGrad(g, w - d - 2, 0, w, 0,
-        [0, rgba('#000000', 0), 1, rgba('#000000', darkA * 0.85)]));
+        [0, rgba(DARK, 0), 1, rgba(DARK, darkA * 0.85)]));
     }
     /* Where two neighbours meet, the corner between them is interior and
        must not keep the bright pixel an open side would have given it. */
-    if ((mask & 1) && (mask & 8)) fill(g, 0, 0, 3, 3, rgba('#000000', 0.12));
-    if ((mask & 1) && (mask & 2)) fill(g, w - 3, 0, 3, 3, rgba('#000000', 0.12));
+    if ((mask & 1) && (mask & 8)) fill(g, 0, 0, 3, 3, rgba(DARK, 0.12));
+    if ((mask & 1) && (mask & 2)) fill(g, w - 3, 0, 3, 3, rgba(DARK, 0.12));
   }
 
   /* One course of masonry: irregular blocks with mortar between them,
@@ -916,7 +975,7 @@
       rrectPath(g, bx, by, bw - 2.4, bh, 2.2);
       g.save(); g.clip();
       gradRect(g, bx, by, bw, bh, linGrad(g, bx, by, bx + bw * 0.5, by + bh,
-        [0, rgba('#ffffff', 0.2), 0.45, rgba('#ffffff', 0), 1, rgba('#000000', 0.26)]));
+        [0, rgba(LIT, 0.2), 0.45, rgba(LIT, 0), 1, rgba(DARK, 0.26)]));
       flecks(g, rnd, 7, bx, by, bw - 2.4, bh,
         [shade(tone, 0.2), shade(tone, -0.24)], 0.7, 2.2, 0.5);
       /* A chipped corner or a spall, which is what keeps a course of
@@ -955,8 +1014,8 @@
       var tone = shade(base, rr(rnd, -0.08, 0.08));
       fill(g, x + 1, 0, 14, h, tone);
       gradRect(g, x + 1, 0, 14, h, linGrad(g, x + 1, 0, x + 15, 0,
-        [0, rgba('#ffffff', 0.16), 0.35, rgba('#ffffff', 0.03),
-         0.75, rgba('#000000', 0.1), 1, rgba('#000000', 0.3)]));
+        [0, rgba(LIT, 0.16), 0.35, rgba(LIT, 0.03),
+         0.75, rgba(DARK, 0.1), 1, rgba(DARK, 0.3)]));
       for (var k = 0; k < 7; k++) {
         var gx = x + rr(rnd, 2, 14);
         whip(g, gx, -4, gx + rs(rnd, 2.4), h / 2, gx + rs(rnd, 1.8), h + 4,
@@ -974,12 +1033,12 @@
       /* Nail heads, sunk into the board at the framing lines. */
       for (var n = 0; n < 2; n++) {
         var nx = x + 8 + rs(rnd, 3), ny = n ? h - 8 : 8;
-        circle(g, nx, ny + 0.7, 2, rgba('#000000', 0.35));
+        circle(g, nx, ny + 0.7, 2, rgba(DARK, 0.35));
         circle(g, nx, ny, 1.7, shade(P.iron, -0.05));
         circle(g, nx - 0.5, ny - 0.5, 0.8, shade(P.iron, 0.45));
       }
-      fill(g, x, 0, 1, h, rgba('#000000', 0.45));
-      fill(g, x + 15, 0, 1, h, rgba('#000000', 0.3));
+      fill(g, x, 0, 1, h, rgba(DARK, 0.45));
+      fill(g, x + 15, 0, 1, h, rgba(DARK, 0.3));
     }
     grain(g, rnd, 0, 0, w, h, 0.16, 'overlay');
     wallEdges(g, mask, w, h, 0.26, 0.32);
@@ -991,20 +1050,20 @@
     for (var i = 0; i < 46; i++) {
       var y = rr(rnd, 2, h - 2);
       fill(g, 2, y, w - 4, rr(rnd, 0.6, 1.3),
-        rgba(rnd() < 0.5 ? '#ffffff' : '#000000', rr(rnd, 0.03, 0.1)));
+        rgba(rnd() < 0.5 ? LIT : DARK, rr(rnd, 0.03, 0.1)));
     }
     sheen(g, 1.5, 1.5, w - 3, h - 3, 0.14, 0.7);
     /* A welded seam across the middle, because a plate this size would
        be two plates. */
-    fill(g, 0, h / 2 - 1, w, 2, rgba('#000000', 0.28));
-    fill(g, 0, h / 2 + 1, w, 1, rgba('#ffffff', 0.16));
+    fill(g, 0, h / 2 - 1, w, 2, rgba(DARK, 0.28));
+    fill(g, 0, h / 2 + 1, w, 1, rgba(LIT, 0.16));
     var pos = [[8, 8], [w - 8, 8], [8, h - 8], [w - 8, h - 8]];
     for (var r = 0; r < 4; r++) {
-      circle(g, pos[r][0], pos[r][1] + 1, 3.2, rgba('#000000', 0.42));
+      circle(g, pos[r][0], pos[r][1] + 1, 3.2, rgba(DARK, 0.42));
       circle(g, pos[r][0], pos[r][1], 2.8, shade(base, -0.08));
       circle(g, pos[r][0] - 0.8, pos[r][1] - 0.9, 1.5, shade(base, 0.42));
     }
-    bevel(g, 1.5, 1.5, w - 3, h - 3, 3.5, rgba('#ffffff', 0.35), rgba('#000000', 0.4), 15, 1);
+    bevel(g, 1.5, 1.5, w - 3, h - 3, 3.5, rgba(LIT, 0.35), rgba(DARK, 0.4), 15, 1);
     grain(g, rnd, 0, 0, w, h, 0.12, 'overlay');
     wallEdges(g, mask, w, h, 0.28, 0.3);
   }
@@ -1089,7 +1148,7 @@
     var step = alpha / spread;
     for (var i = spread; i >= 1; i--) {
       g.globalAlpha = step;
-      rrect(g, x - i + 2.5, y - i + 3.5, w + i * 2, h + i * 2, r + i, '#000000');
+      rrect(g, x - i + 2.5, y - i + 3.5, w + i * 2, h + i * 2, r + i, DARK);
     }
     g.globalAlpha = 1;
   }
@@ -1100,9 +1159,9 @@
     rrect(g, x, y, w, h, r, c);
     rrectPath(g, x, y, w, h, r);
     g.save(); g.clip();
-    bevel(g, x, y, w, h, depth || 4, rgba('#ffffff', 0.34), rgba('#000000', 0.4), 15, 1);
+    bevel(g, x, y, w, h, depth || 4, rgba(LIT, 0.34), rgba(DARK, 0.4), 15, 1);
     g.restore();
-    rrectLine(g, x, y, w, h, r, rgba('#000000', 0.45), 1.2);
+    rrectLine(g, x, y, w, h, r, rgba(DARK, 0.45), 1.2);
   }
 
   /* What a stuffable thing is actually made of. Defs name their stuff
@@ -1148,7 +1207,7 @@
       for (var i = 0; i < 26; i++) {
         var ly = y + a.rnd() * h;
         fill(g, x, ly, w, rr(a.rnd, 0.6, 1.2),
-          rgba(a.rnd() < 0.5 ? '#ffffff' : '#000000', rr(a.rnd, 0.03, 0.09)));
+          rgba(a.rnd() < 0.5 ? LIT : DARK, rr(a.rnd, 0.03, 0.09)));
       }
       grain(g, a.rnd, x, y, w, h, 0.1, 'overlay');
     } else if (a.material === 'stone') {
@@ -1167,7 +1226,7 @@
     var pts = [[inset, inset], [a.w - inset - size, inset],
                [inset, a.h - inset - size], [a.w - inset - size, a.h - inset - size]];
     for (var i = 0; i < 4; i++) {
-      rrect(g, pts[i][0] + 1.5, pts[i][1] + 2, size, size, 1.5, rgba('#000000', 0.35));
+      rrect(g, pts[i][0] + 1.5, pts[i][1] + 2, size, size, 1.5, rgba(DARK, 0.35));
       rrect(g, pts[i][0], pts[i][1], size, size, 1.5, dk);
       rrect(g, pts[i][0] + 0.8, pts[i][1] + 0.8, size * 0.5, size * 0.5, 1, shade(a.c1, 0.1));
     }
@@ -1202,14 +1261,14 @@
     var step = h / n;
     for (var i = 0; i < n; i++) {
       var vy = y + i * step;
-      rrect(g, x, vy, w, Math.max(1.4, step * 0.5), 1, rgba('#000000', 0.42));
-      fill(g, x, vy + Math.max(1.4, step * 0.5), w, 1, rgba('#ffffff', 0.16));
+      rrect(g, x, vy, w, Math.max(1.4, step * 0.5), 1, rgba(DARK, 0.42));
+      fill(g, x, vy + Math.max(1.4, step * 0.5), w, 1, rgba(LIT, 0.16));
     }
     if (c) fill(g, x, y, w, 1, rgba(c, 0.3));
   }
 
   function bolt(g, x, y, r, c) {
-    circle(g, x, y + 0.6, r, rgba('#000000', 0.4));
+    circle(g, x, y + 0.6, r, rgba(DARK, 0.4));
     circle(g, x, y, r * 0.85, shade(c, -0.05));
     circle(g, x - r * 0.28, y - r * 0.3, r * 0.42, shade(c, 0.45));
   }
@@ -1220,7 +1279,7 @@
     g.globalCompositeOperation = 'lighter';
     blob(g, x, y, r * 2.4, c, 0.1 * strength, 0);
     blob(g, x, y, r * 1.35, c, 0.24 * strength, 0.05);
-    blob(g, x, y, r * 0.7, mix(c, '#ffffff', 0.55), 0.45 * strength, 0.2);
+    blob(g, x, y, r * 0.7, mix(c, LIT, 0.55), 0.45 * strength, 0.2);
     g.globalCompositeOperation = 'source-over';
   }
 
@@ -1247,36 +1306,36 @@
         g2.restore();
         /* A recessed panel, which is what makes a door a door. */
         var ix = x + pw * 0.22, iy = y + ph * 0.18;
-        rrect(g2, ix, iy, pw * 0.56, ph * 0.64, 2, rgba('#000000', 0.16));
-        rrectLine(g2, ix, iy, pw * 0.56, ph * 0.64, 2, rgba('#ffffff', 0.16), 1);
+        rrect(g2, ix, iy, pw * 0.56, ph * 0.64, 2, rgba(DARK, 0.16));
+        rrectLine(g2, ix, iy, pw * 0.56, ph * 0.64, 2, rgba(LIT, 0.16), 1);
       }
 
       if (horiz) {
-        fill(g, 0, 0, w, h, rgba('#000000', 0.25));
+        fill(g, 0, 0, w, h, rgba(DARK, 0.25));
         fill(g, 0, 0, 7, h, jamb); fill(g, w - 7, 0, 7, h, jamb);
-        fill(g, 6, 0, 1, h, rgba('#ffffff', 0.18));
+        fill(g, 6, 0, 1, h, rgba(LIT, 0.18));
         if (a.open) {
           panel(g, 7, 2, 12, h - 4);
           panel(g, w - 19, 2, 12, h - 4);
         } else {
           panel(g, 7, 2, (w - 14) / 2 - 1, h - 4);
           panel(g, w / 2 + 1, 2, (w - 14) / 2 - 1, h - 4);
-          fill(g, w / 2 - 1, 2, 2, h - 4, rgba('#000000', 0.5));
+          fill(g, w / 2 - 1, 2, 2, h - 4, rgba(DARK, 0.5));
           /* Handles either side of the meeting stile. */
           rrect(g, w / 2 - 8, h / 2 - 2, 5, 4, 2, a.c2);
           rrect(g, w / 2 + 3, h / 2 - 2, 5, 4, 2, a.c2);
         }
       } else {
-        fill(g, 0, 0, w, h, rgba('#000000', 0.25));
+        fill(g, 0, 0, w, h, rgba(DARK, 0.25));
         fill(g, 0, 0, w, 7, jamb); fill(g, 0, h - 7, w, 7, jamb);
-        fill(g, 0, 6, w, 1, rgba('#ffffff', 0.18));
+        fill(g, 0, 6, w, 1, rgba(LIT, 0.18));
         if (a.open) {
           panel(g, 2, 7, w - 4, 12);
           panel(g, 2, h - 19, w - 4, 12);
         } else {
           panel(g, 2, 7, w - 4, (h - 14) / 2 - 1);
           panel(g, 2, h / 2 + 1, w - 4, (h - 14) / 2 - 1);
-          fill(g, 2, h / 2 - 1, w - 4, 2, rgba('#000000', 0.5));
+          fill(g, 2, h / 2 - 1, w - 4, 2, rgba(DARK, 0.5));
           rrect(g, w / 2 - 2, h / 2 - 8, 4, 5, 2, a.c2);
           rrect(g, w / 2 - 2, h / 2 + 3, 4, 5, 2, a.c2);
         }
@@ -1286,21 +1345,21 @@
     conduit: function (g, a) {
       var m = a.variant, c = a.c1, mid = PX / 2;
       function run(x, y, w, h) {
-        rrect(g, x, y + 1.5, w, h, 3, rgba('#000000', 0.3));
+        rrect(g, x, y + 1.5, w, h, 3, rgba(DARK, 0.3));
         rrect(g, x, y, w, h, 3, c);
         gradRect(g, x, y, w, h, h > w
-          ? linGrad(g, x, 0, x + w, 0, [0, rgba('#ffffff', 0.22), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.28)])
-          : linGrad(g, 0, y, 0, y + h, [0, rgba('#ffffff', 0.22), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.28)]));
+          ? linGrad(g, x, 0, x + w, 0, [0, rgba(LIT, 0.22), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.28)])
+          : linGrad(g, 0, y, 0, y + h, [0, rgba(LIT, 0.22), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.28)]));
       }
       if (m & 1) run(mid - 6, 0, 12, mid + 6);
       if (m & 4) run(mid - 6, mid - 6, 12, mid + 6);
       if (m & 8) run(0, mid - 6, mid + 6, 12);
       if (m & 2) run(mid - 6, mid - 6, mid + 6, 12);
       if (!m) run(mid - 6, mid - 10, 12, 20);
-      circle(g, mid, mid + 1.5, 8, rgba('#000000', 0.3));
+      circle(g, mid, mid + 1.5, 8, rgba(DARK, 0.3));
       circle(g, mid, mid, 7.5, shade(c, 0.05));
-      ring(g, mid, mid, 6, 1.4, rgba('#000000', 0.35));
-      circle(g, mid - 1.5, mid - 1.8, 3, rgba('#ffffff', 0.22));
+      ring(g, mid, mid, 6, 1.4, rgba(DARK, 0.35));
+      circle(g, mid - 1.5, mid - 1.8, 3, rgba(LIT, 0.22));
       circle(g, mid, mid, 2.4, a.c2);
     },
 
@@ -1319,7 +1378,7 @@
       /* Charge indicator: four cells, the brightest one at the top. */
       for (var i = 0; i < 4; i++) {
         var by = 16 + i * 7;
-        rrect(g, w - 16, by, 7, 4, 1.5, rgba('#000000', 0.45));
+        rrect(g, w - 16, by, 7, 4, 1.5, rgba(DARK, 0.45));
         rrect(g, w - 15.2, by + 0.8, 5.4, 2.4, 1, i < 3 ? a.c2 : shade(a.c2, -0.55));
       }
       glow(g, w - 12.5, 18, 5, a.c2, 0.5);
@@ -1336,19 +1395,19 @@
           var cw = cell - 3, ch = cellH - 3;
           fill(g, x, y, cw, ch, a.c1);
           gradRect(g, x, y, cw, ch, linGrad(g, x, y, x + cw, y + ch,
-            [0, rgba('#ffffff', 0.16), 0.5, rgba('#000000', 0.08), 1, rgba('#000000', 0.22)]));
+            [0, rgba(LIT, 0.16), 0.5, rgba(DARK, 0.08), 1, rgba(DARK, 0.22)]));
           /* Busbars: the fine silver fingers across each cell. */
           for (var b = 1; b < 5; b++) {
             fill(g, x + cw * b / 5, y, 0.9, ch, rgba(a.c2, 0.4));
           }
           fill(g, x, y + ch * 0.33, cw, 1.1, rgba(a.c2, 0.55));
           fill(g, x, y + ch * 0.66, cw, 1.1, rgba(a.c2, 0.55));
-          box(g, x, y, cw, ch, rgba('#000000', 0.4));
+          box(g, x, y, cw, ch, rgba(DARK, 0.4));
         }
       }
       /* One sweep of reflected sky across the whole array. */
       sheen(g, 4, 4, w - 8, h - 8, 0.3, 0.75);
-      rrectLine(g, 1, 1, w - 2, h - 2, 4, rgba('#000000', 0.5), 1.4);
+      rrectLine(g, 1, 1, w - 2, h - 2, 4, rgba(DARK, 0.5), 1.4);
     },
 
     turbine: function (g, a) {
@@ -1358,7 +1417,7 @@
       softShade(g, cx - 7, cy, 14, h / 2 - 4, 4, 0.34);
       rrect(g, cx - 6, cy, 12, h / 2 - 2, 3, shade(hub, -0.2));
       gradRect(g, cx - 6, cy, 12, h / 2 - 2, linGrad(g, cx - 6, 0, cx + 6, 0,
-        [0, rgba('#ffffff', 0.25), 0.4, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]));
+        [0, rgba(LIT, 0.25), 0.4, rgba(LIT, 0), 1, rgba(DARK, 0.3)]));
       var ang = [-0.42, 1.68, 3.78];
       for (var i = 0; i < 3; i++) {
         var ca = Math.cos(ang[i]), sa = Math.sin(ang[i]);
@@ -1377,12 +1436,12 @@
           tipx + nx * 1.2, tipy + ny * 1.2,
           tipx, tipy, cx, cy
         ], shade(blade, 0.22));
-        stroke(g, [cx, cy, tipx, tipy], rgba('#000000', 0.25), 1.2);
+        stroke(g, [cx, cy, tipx, tipy], rgba(DARK, 0.25), 1.2);
       }
-      circle(g, cx, cy + 2, 13, rgba('#000000', 0.32));
+      circle(g, cx, cy + 2, 13, rgba(DARK, 0.32));
       circle(g, cx, cy, 12, shade(hub, -0.15));
       circle(g, cx, cy, 9, hub);
-      circle(g, cx - 3, cy - 3.5, 4.5, rgba('#ffffff', 0.3));
+      circle(g, cx - 3, cy - 3.5, 4.5, rgba(LIT, 0.3));
       circle(g, cx, cy, 3, shade(hub, -0.5));
     },
 
@@ -1396,16 +1455,16 @@
       for (var b = 0; b < 4; b++) {
         fill(g, fx + 2 + b * (fw - 4) / 4, fy + 2, 2, fh - 4, rgba(P.iron, 0.9));
       }
-      rrectLine(g, fx, fy, fw, fh, 3, rgba('#000000', 0.55), 1.5);
+      rrectLine(g, fx, fy, fw, fh, 3, rgba(DARK, 0.55), 1.5);
       /* Flywheel and exhaust on the other half. */
       var mx = w - 22, my = h / 2;
-      circle(g, mx, my + 1.5, 13, rgba('#000000', 0.3));
+      circle(g, mx, my + 1.5, 13, rgba(DARK, 0.3));
       circle(g, mx, my, 12, shade(P.steel, -0.2));
       ring(g, mx, my, 8, 3, shade(P.steel, 0.15));
-      circle(g, mx - 3, my - 4, 4, rgba('#ffffff', 0.25));
+      circle(g, mx - 3, my - 4, 4, rgba(LIT, 0.25));
       circle(g, mx, my, 3.5, shade(P.iron, -0.3));
       rrect(g, w - 17, 8, 10, 10, 2, shade(P.iron, -0.1));
-      circle(g, w - 12, 13, 3, rgba('#000000', 0.55));
+      circle(g, w - 12, 13, 3, rgba(DARK, 0.55));
       vents(g, 10, h - 11, w * 0.4, 6, 2);
     },
 
@@ -1418,10 +1477,10 @@
       for (var i = 0; i < 4; i++) {
         var y = iy + 4 + i * (ih - 8) / 3;
         stroke(g, [ix + 4, y, ix + iw - 4, y], shade(a.c2, -0.15), 3.2);
-        stroke(g, [ix + 7, y, ix + iw - 7, y], mix(a.c2, '#ffffff', 0.4), 1.6);
+        stroke(g, [ix + 7, y, ix + iw - 7, y], mix(a.c2, LIT, 0.4), 1.6);
       }
       if (a.lit) glow(g, w / 2, iy + ih / 2, ih * 0.7, a.c2, 0.65);
-      rrectLine(g, ix, iy, iw, ih, 3, rgba('#000000', 0.5), 1.4);
+      rrectLine(g, ix, iy, iw, ih, 3, rgba(DARK, 0.5), 1.4);
       circle(g, w - 12, 10, 2.6, a.lit ? P.good : shade(P.good, -0.6));
     },
 
@@ -1441,8 +1500,8 @@
         g.restore();
       }
       circle(g, cx, cy, 4, shade(P.steel, -0.3));
-      circle(g, cx - 1, cy - 1.4, 1.8, rgba('#ffffff', 0.35));
-      ring(g, cx, cy, Math.min(w, h) * 0.32, 2, rgba('#000000', 0.45));
+      circle(g, cx - 1, cy - 1.4, 1.8, rgba(LIT, 0.35));
+      ring(g, cx, cy, Math.min(w, h) * 0.32, 2, rgba(DARK, 0.45));
       blob(g, cx, cy, Math.min(w, h) * 0.42, a.c2, a.lit ? 0.16 : 0.03, 0.1);
       circle(g, w - 12, 10, 2.6, a.lit ? a.c2 : shade(a.c2, -0.6));
     },
@@ -1455,18 +1514,18 @@
       ell(g, cx, base, 11, 5, 0, a.c1);
       ell(g, cx, base - 1.5, 7, 3, 0, shade(a.c1, 0.2));
       rrect(g, cx - 3, base - 20, 6, 20, 2, shade(a.c1, -0.15));
-      fill(g, cx - 3, base - 20, 2, 20, rgba('#ffffff', 0.22));
+      fill(g, cx - 3, base - 20, 2, 20, rgba(LIT, 0.22));
       if (a.lit) {
         glow(g, cx, base - 26, 22, a.c2, 1);
         circle(g, cx, base - 26, 11, shade(a.c2, -0.1));
-        circle(g, cx, base - 26, 8, mix(a.c2, '#ffffff', 0.45));
-        circle(g, cx - 2, base - 28.5, 3.4, '#ffffff');
+        circle(g, cx, base - 26, 8, mix(a.c2, LIT, 0.45));
+        circle(g, cx - 2, base - 28.5, 3.4, LIT);
       } else {
         circle(g, cx, base - 26, 11, shade(P.steel, -0.25));
         circle(g, cx, base - 26, 8, shade(P.steel, 0.05));
-        circle(g, cx - 3, base - 29, 3, rgba('#ffffff', 0.3));
+        circle(g, cx - 3, base - 29, 3, rgba(LIT, 0.3));
       }
-      ring(g, cx, base - 26, 11, 1.6, rgba('#000000', 0.4));
+      ring(g, cx, base - 26, 11, 1.6, rgba(DARK, 0.4));
     },
 
     turret: function (g, a) {
@@ -1475,7 +1534,7 @@
       /* Base ring bolted to the floor. */
       circle(g, cx, cy + 6, 23, shade(a.c1, -0.4));
       circle(g, cx, cy + 5, 21, shade(a.c1, -0.12));
-      ring(g, cx, cy + 5, 21, 2, rgba('#000000', 0.4));
+      ring(g, cx, cy + 5, 21, 2, rgba(DARK, 0.4));
       for (var i = 0; i < 6; i++) {
         var ang = i * TAU / 6 + 0.5;
         bolt(g, cx + Math.cos(ang) * 17, cy + 5 + Math.sin(ang) * 17, 2.6, P.steel);
@@ -1486,17 +1545,17 @@
       g.save(); g.clip();
       sheen(g, cx - 13, cy - 12, 26, 26, 0.16, 0.8);
       g.restore();
-      bevel(g, cx - 13, cy - 12, 26, 26, 4, rgba('#ffffff', 0.32), rgba('#000000', 0.42), 15, 1);
-      rrectLine(g, cx - 13, cy - 12, 26, 26, 6, rgba('#000000', 0.45), 1.3);
+      bevel(g, cx - 13, cy - 12, 26, 26, 4, rgba(LIT, 0.32), rgba(DARK, 0.42), 15, 1);
+      rrectLine(g, cx - 13, cy - 12, 26, 26, 6, rgba(DARK, 0.45), 1.3);
       circle(g, cx + 8, cy + 6, 6, shade(a.c1, -0.3));
-      ring(g, cx + 8, cy + 6, 4, 1.4, rgba('#ffffff', 0.2));
+      ring(g, cx + 8, cy + 6, 4, 1.4, rgba(LIT, 0.2));
       /* Barrel, pointing north, with a muzzle brake. */
       rrect(g, cx - 3.5, cy - 32, 7, 24, 2, shade(a.c2, -0.15));
-      fill(g, cx - 3.5, cy - 32, 2.2, 24, rgba('#ffffff', 0.25));
-      fill(g, cx + 1.8, cy - 32, 1.7, 24, rgba('#000000', 0.3));
+      fill(g, cx - 3.5, cy - 32, 2.2, 24, rgba(LIT, 0.25));
+      fill(g, cx + 1.8, cy - 32, 1.7, 24, rgba(DARK, 0.3));
       rrect(g, cx - 5.5, cy - 34, 11, 6, 2, shade(a.c2, 0.06));
-      fill(g, cx - 5.5, cy - 33.4, 11, 1.4, rgba('#ffffff', 0.3));
-      circle(g, cx, cy - 33.5, 2.1, rgba('#000000', 0.8));
+      fill(g, cx - 5.5, cy - 33.4, 11, 1.4, rgba(LIT, 0.3));
+      circle(g, cx, cy - 33.5, 2.1, rgba(DARK, 0.8));
       circle(g, cx, cy - 12, 4, shade(a.c1, -0.45));
     },
 
@@ -1512,10 +1571,10 @@
         var sx = 10 + (i % 3) * 22, sy = 12 + ((i / 3) | 0) * 19;
         poly(g, [sx - 6, sy + 9, sx, sy - 9, sx + 6, sy + 9], shade(a.c2, -0.25));
         poly(g, [sx - 6, sy + 9, sx, sy - 9, sx, sy + 9], shade(a.c2, 0.25));
-        stroke(g, [sx, sy - 9, sx, sy + 8], rgba('#ffffff', 0.3), 1);
-        ell(g, sx, sy + 9, 6, 2, 0, rgba('#000000', 0.3));
+        stroke(g, [sx, sy - 9, sx, sy + 8], rgba(LIT, 0.3), 1);
+        ell(g, sx, sy + 9, 6, 2, 0, rgba(DARK, 0.3));
       }
-      rrectLine(g, 3, 3, w - 6, h - 6, 3, rgba('#000000', 0.45), 1.4);
+      rrectLine(g, 3, 3, w - 6, h - 6, 3, rgba(DARK, 0.45), 1.4);
     },
 
     sandbags: function (g, a) {
@@ -1524,11 +1583,11 @@
         var y = 11 + row * 20, off = (row & 1) ? 12 : 0;
         for (var x = -18 + off; x < PX + 6; x += 24) {
           var cx = x + 12, tone = row === 0 ? lt : (row === 2 ? dk : a.c1);
-          ell(g, cx, y + 4, 13, 9, 0, rgba('#000000', 0.32));
+          ell(g, cx, y + 4, 13, 9, 0, rgba(DARK, 0.32));
           ell(g, cx, y, 13, 9, rs(a.rnd, 0.12), tone);
           ell(g, cx - 3, y - 3, 8, 4.5, -0.2, shade(tone, 0.2));
           /* Seam and the pucker at each end of the bag. */
-          whip(g, cx - 11, y + 1, cx, y + 4, cx + 11, y + 1, rgba('#000000', 0.25), 1.4);
+          whip(g, cx - 11, y + 1, cx, y + 4, cx + 11, y + 1, rgba(DARK, 0.25), 1.4);
           ell(g, cx - 12, y, 2.5, 3.4, 0, shade(tone, -0.3));
           ell(g, cx + 12, y, 2.5, 3.4, 0, shade(tone, -0.3));
           grain(g, a.rnd, cx - 13, y - 9, 26, 18, 0.12, 'overlay');
@@ -1547,15 +1606,15 @@
       g.save(); g.clip();
       for (var i = 0; i < 26; i++) {
         var cx2 = mx + a.rnd() * mw, cy2 = my + a.rnd() * mh, r = rr(a.rnd, 2, 5);
-        ell(g, cx2, cy2 + 0.8, r, r * 0.7, 0, rgba('#000000', 0.3));
+        ell(g, cx2, cy2 + 0.8, r, r * 0.7, 0, rgba(DARK, 0.3));
         ell(g, cx2, cy2, r, r * 0.7, a.rnd() * TAU, shade(P.soil, rr(a.rnd, -0.1, 0.1)));
       }
       g.restore();
       rrect(g, w / 2 - 12, 8, 24, 13, 2, a.c2);
       fill(g, w / 2 - 12, 8, 24, 2, shade(a.c2, 0.3));
-      fill(g, w / 2 - 12, 19, 24, 2, rgba('#000000', 0.3));
-      fill(g, w / 2 - 2, 10, 4, 9, rgba('#000000', 0.35));
-      fill(g, w / 2 - 7, 12.5, 14, 4, rgba('#000000', 0.35));
+      fill(g, w / 2 - 12, 19, 24, 2, rgba(DARK, 0.3));
+      fill(g, w / 2 - 2, 10, 4, 9, rgba(DARK, 0.35));
+      fill(g, w / 2 - 7, 12.5, 14, 4, rgba(DARK, 0.35));
     },
 
     sculpture: function (g, a) {
@@ -1574,11 +1633,11 @@
       g.fillStyle = a.c1; g.fill();
       g.save(); g.clip();
       gradRect(g, cx - 20, PX - 56, 40, 42, linGrad(g, cx - 14, PX - 52, cx + 14, PX - 16,
-        [0, rgba('#ffffff', 0.4), 0.45, rgba('#ffffff', 0.05), 1, rgba('#000000', 0.34)]));
+        [0, rgba(LIT, 0.4), 0.45, rgba(LIT, 0.05), 1, rgba(DARK, 0.34)]));
       grain(g, a.rnd, cx - 20, PX - 56, 40, 42, 0.12, 'overlay');
       g.restore();
-      whip(g, cx - 5, PX - 22, cx - 7, PX - 36, cx - 3, PX - 48, rgba('#ffffff', 0.32), 2);
-      ell(g, cx + 5, PX - 30, 3.4, 6, 0.4, rgba('#000000', 0.16));
+      whip(g, cx - 5, PX - 22, cx - 7, PX - 36, cx - 3, PX - 48, rgba(LIT, 0.32), 2);
+      ell(g, cx + 5, PX - 30, 3.4, 6, 0.4, rgba(DARK, 0.16));
     },
 
     bed: function (g, a) {
@@ -1593,28 +1652,28 @@
       var mx = 7, my = 8, mw = w - 14, mh = h - 16;
       rrect(g, mx, my, mw, mh, 4, P.linen);
       gradRect(g, mx, my, mw, mh, linGrad(g, mx, my, mx + mw * 0.6, my + mh,
-        [0, rgba('#ffffff', 0.3), 0.4, rgba('#ffffff', 0), 1, rgba('#000000', 0.16)]));
+        [0, rgba(LIT, 0.3), 0.4, rgba(LIT, 0), 1, rgba(DARK, 0.16)]));
       /* Pillow at the head, plumped and creased. */
       var ph = mh * 0.2;
       rrect(g, mx + 3, my + 3, mw - 6, ph, 5, shade(P.linen, 0.1));
-      rrectLine(g, mx + 3, my + 3, mw - 6, ph, 5, rgba('#000000', 0.16), 1.2);
+      rrectLine(g, mx + 3, my + 3, mw - 6, ph, 5, rgba(DARK, 0.16), 1.2);
       whip(g, mx + 8, my + 3 + ph * 0.6, mx + mw / 2, my + 3 + ph * 0.75,
-        mx + mw - 8, my + 3 + ph * 0.6, rgba('#000000', 0.12), 2);
+        mx + mw - 8, my + 3 + ph * 0.6, rgba(DARK, 0.12), 2);
       /* Blanket over the lower two thirds, with a turned-back cuff and
          the fold shadow that makes the cuff read as cloth. */
       var by = my + mh * 0.33;
       rrect(g, mx + 1, by, mw - 2, mh - (by - my) - 2, 3, a.c2);
       gradRect(g, mx + 1, by, mw - 2, mh - (by - my) - 2,
-        linGrad(g, mx, by, mx + mw, by + mh, [0, rgba('#ffffff', 0.2), 1, rgba('#000000', 0.2)]));
+        linGrad(g, mx, by, mx + mw, by + mh, [0, rgba(LIT, 0.2), 1, rgba(DARK, 0.2)]));
       fill(g, mx + 1, by, mw - 2, 5, shade(a.c2, 0.22));
-      fill(g, mx + 1, by + 5, mw - 2, 2.5, rgba('#000000', 0.3));
+      fill(g, mx + 1, by + 5, mw - 2, 2.5, rgba(DARK, 0.3));
       for (var f = 0; f < 3; f++) {
         var fy = by + 12 + f * (mh - (by - my)) * 0.24;
-        whip(g, mx + 3, fy, mx + mw / 2, fy + 3, mx + mw - 3, fy, rgba('#000000', 0.14), 2.6);
-        whip(g, mx + 3, fy - 2, mx + mw / 2, fy + 1, mx + mw - 3, fy - 2, rgba('#ffffff', 0.12), 1.6);
+        whip(g, mx + 3, fy, mx + mw / 2, fy + 3, mx + mw - 3, fy, rgba(DARK, 0.14), 2.6);
+        whip(g, mx + 3, fy - 2, mx + mw / 2, fy + 1, mx + mw - 3, fy - 2, rgba(LIT, 0.12), 1.6);
       }
       grain(g, a.rnd, mx, my, mw, mh, 0.1, 'overlay');
-      rrectLine(g, 2, 2, w - 4, h - 4, 4, rgba('#000000', 0.5), 1.4);
+      rrectLine(g, 2, 2, w - 4, h - 4, 4, rgba(DARK, 0.5), 1.4);
     },
 
     spot: function (g, a) {
@@ -1624,18 +1683,18 @@
         /* A bedroll laid out on the ground. */
         rrect(g, 12, 10, w - 24, h - 20, 6, a.c2);
         gradRect(g, 12, 10, w - 24, h - 20, linGrad(g, 12, 10, w - 12, h - 10,
-          [0, rgba('#ffffff', 0.22), 1, rgba('#000000', 0.2)]));
+          [0, rgba(LIT, 0.22), 1, rgba(DARK, 0.2)]));
         rrect(g, 16, 14, w - 32, 12, 5, shade(P.linen, -0.06));
         for (var i = 0; i < 4; i++) {
-          whip(g, 14, 30 + i * 7, w / 2, 33 + i * 7, w - 14, 30 + i * 7, rgba('#000000', 0.13), 2.2);
+          whip(g, 14, 30 + i * 7, w / 2, 33 + i * 7, w - 14, 30 + i * 7, rgba(DARK, 0.13), 2.2);
         }
-        rrectLine(g, 12, 10, w - 24, h - 20, 6, rgba('#000000', 0.35), 1.2);
+        rrectLine(g, 12, 10, w - 24, h - 20, 6, rgba(DARK, 0.35), 1.2);
       } else {
         /* Crossed tools: this is a place where work happens. */
         stroke(g, [18, h - 18, w - 18, 18], shade(a.c2, -0.2), 4);
         stroke(g, [18, 18, w - 18, h - 18], a.c2, 4);
         circle(g, w / 2, h / 2, 5, shade(a.c2, 0.25));
-        circle(g, w / 2 - 1.5, h / 2 - 1.8, 2, rgba('#ffffff', 0.4));
+        circle(g, w / 2 - 1.5, h / 2 - 1.8, 2, rgba(LIT, 0.4));
       }
     },
 
@@ -1649,11 +1708,11 @@
       surfaceTexture(g, a, 3, 3, w - 6, h - 6, false, 14);
       /* Board joints across the top: a table this size is planks. */
       for (var b = 1; b * 21 < h - 6; b++) {
-        fill(g, 3, 3 + b * 21, w - 6, 1.4, rgba('#000000', 0.26));
-        fill(g, 3, 4.4 + b * 21, w - 6, 1, rgba('#ffffff', 0.13));
+        fill(g, 3, 3 + b * 21, w - 6, 1.4, rgba(DARK, 0.26));
+        fill(g, 3, 4.4 + b * 21, w - 6, 1, rgba(LIT, 0.13));
       }
       g.restore();
-      rrectLine(g, 3, 3, w - 6, h - 6, 3, rgba('#000000', 0.45), 1.4);
+      rrectLine(g, 3, 3, w - 6, h - 6, 3, rgba(DARK, 0.45), 1.4);
     },
 
     stool: function (g, a) {
@@ -1665,15 +1724,15 @@
         circle(g, lx, ly, 3.4, shade(a.c1, -0.5));
         circle(g, lx - 0.8, ly - 1, 1.6, shade(a.c1, -0.2));
       }
-      circle(g, cx, cy + 1.5, 16, rgba('#000000', 0.3));
+      circle(g, cx, cy + 1.5, 16, rgba(DARK, 0.3));
       circle(g, cx, cy, 15, a.c1);
       g.beginPath(); g.arc(cx, cy, 15, 0, TAU); g.save(); g.clip();
       surfaceTexture(g, a, cx - 16, cy - 16, 32, 32, false, 9);
       gradRect(g, cx - 16, cy - 16, 32, 32, linGrad(g, cx - 12, cy - 12, cx + 12, cy + 12,
-        [0, rgba('#ffffff', 0.28), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.26)]));
+        [0, rgba(LIT, 0.28), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.26)]));
       g.restore();
-      ring(g, cx, cy, 15, 1.4, rgba('#000000', 0.4));
-      ring(g, cx, cy, 8, 1.2, rgba('#000000', 0.16));
+      ring(g, cx, cy, 15, 1.4, rgba(DARK, 0.4));
+      ring(g, cx, cy, 8, 1.2, rgba(DARK, 0.16));
     },
 
     dresser: function (g, a) {
@@ -1689,12 +1748,12 @@
       for (var i = 0; i < n; i++) {
         var y = 6 + i * dh;
         rrect(g, 7, y + 1.5, w - 14, dh - 3, 2, shade(a.c1, -0.08));
-        fill(g, 7, y + 1.5, w - 14, 1.6, rgba('#ffffff', 0.22));
-        fill(g, 7, y + dh - 3, w - 14, 1.6, rgba('#000000', 0.32));
+        fill(g, 7, y + 1.5, w - 14, 1.6, rgba(LIT, 0.22));
+        fill(g, 7, y + dh - 3, w - 14, 1.6, rgba(DARK, 0.32));
         rrect(g, w / 2 - 9, y + dh / 2 - 2.2, 18, 4.4, 2.2, a.c2);
-        fill(g, w / 2 - 9, y + dh / 2 - 2.2, 18, 1.4, rgba('#ffffff', 0.35));
+        fill(g, w / 2 - 9, y + dh / 2 - 2.2, 18, 1.4, rgba(LIT, 0.35));
       }
-      rrectLine(g, 3, 3, w - 6, h - 6, 3, rgba('#000000', 0.45), 1.4);
+      rrectLine(g, 3, 3, w - 6, h - 6, 3, rgba(DARK, 0.45), 1.4);
     },
 
     campfire: function (g, a) {
@@ -1705,7 +1764,7 @@
         var sx = cx + Math.cos(ang) * 24, sy = cy + Math.sin(ang) * 23;
         pebble(g, a.rnd, sx, sy, rr(a.rnd, 4, 6.5), shade(P.rock, rr(a.rnd, -0.06, 0.16)));
       }
-      blob(g, cx, cy, 20, '#000000', 0.35, 0.2);
+      blob(g, cx, cy, 20, DARK, 0.35, 0.2);
       for (var k = 0; k < 4; k++) {
         var ang2 = k * 0.7 + 0.4;
         var ex = Math.cos(ang2) * 15, ey = Math.sin(ang2) * 9;
@@ -1728,13 +1787,13 @@
       for (var i = 0; i < 2; i++) {
         var hx = 20 + i * 27, hy = h / 2 - 2;
         circle(g, hx, hy, 12, shade(a.c1, -0.35));
-        ring(g, hx, hy, 12, 1.6, rgba('#000000', 0.4));
+        ring(g, hx, hy, 12, 1.6, rgba(DARK, 0.4));
         ring(g, hx, hy, 8.5, 2.6, shade(P.iron, -0.15));
         ring(g, hx, hy, 4.5, 2.2, shade(P.iron, -0.05));
         if (a.lit && i === 0) {
           glow(g, hx, hy, 14, a.c2, 0.7);
           ring(g, hx, hy, 8.5, 2.6, rgba(a.c2, 0.7));
-          ring(g, hx, hy, 4.5, 2.2, rgba(mix(a.c2, '#ffffff', 0.4), 0.7));
+          ring(g, hx, hy, 4.5, 2.2, rgba(mix(a.c2, LIT, 0.4), 0.7));
         }
       }
       var ox = w - 34, oy = 10;
@@ -1745,9 +1804,9 @@
         gradRect(g, ox + 4, oy + 4, 20, h - 34, linGrad(g, 0, oy + 4, 0, oy + h - 30,
           [0, rgba(a.c2, 0.1), 1, rgba(a.c2, 0.5)]));
       }
-      rrectLine(g, ox + 4, oy + 4, 20, h - 34, 2, rgba('#ffffff', 0.18), 1.2);
+      rrectLine(g, ox + 4, oy + 4, 20, h - 34, 2, rgba(LIT, 0.18), 1.2);
       rrect(g, ox + 2, h - 19, 24, 5, 2.5, P.steel);
-      fill(g, ox + 2, h - 19, 24, 1.8, rgba('#ffffff', 0.4));
+      fill(g, ox + 2, h - 19, 24, 1.8, rgba(LIT, 0.4));
       /* Vent strip along the front, warm when the stove is working. */
       vents(g, 12, h - 13, 30, 7, 2);
       if (a.lit) glow(g, 27, h - 10, 12, a.c2, 0.45);
@@ -1778,10 +1837,10 @@
       var bx = t.x + 6, by = t.y + 5, bw = t.w * 0.42, bh = t.h - 10;
       rrect(g, bx, by, bw, bh, 2, a.c2);
       gradRect(g, bx, by, bw, bh, linGrad(g, bx, by, bx + bw, by + bh,
-        [0, rgba('#ffffff', 0.3), 1, rgba('#000000', 0.26)]));
+        [0, rgba(LIT, 0.3), 1, rgba(DARK, 0.26)]));
       flecks(g, a.rnd, 10, bx, by, bw, bh, [shade(a.c2, 0.25), shade(a.c2, -0.25)], 0.8, 2.4, 0.6);
-      fill(g, bx + bw * 0.55, by, 2, bh, rgba('#000000', 0.4));
-      rrectLine(g, bx, by, bw, bh, 2, rgba('#000000', 0.4), 1.2);
+      fill(g, bx + bw * 0.55, by, 2, bh, rgba(DARK, 0.4));
+      rrectLine(g, bx, by, bw, bh, 2, rgba(DARK, 0.4), 1.2);
       /* Chisel and mallet on the free half. */
       var cx = t.x + t.w * 0.7;
       stroke(g, [cx, t.y + 20, cx + 16, t.y + 8], P.steel, 4);
@@ -1799,18 +1858,18 @@
       for (var i = 0; i < 5; i++) {
         var fy = cy + 3 + i * (t.h - 16) / 4;
         whip(g, cx + 1, fy, cx + t.w * 0.2, fy + 3, cx + t.w * 0.4 - 1, fy,
-          rgba('#000000', 0.16), 2.4);
+          rgba(DARK, 0.16), 2.4);
         whip(g, cx + 1, fy - 1.6, cx + t.w * 0.2, fy + 1.4, cx + t.w * 0.4 - 1, fy - 1.6,
-          rgba('#ffffff', 0.2), 1.2);
+          rgba(LIT, 0.2), 1.2);
       }
-      rrectLine(g, cx, cy, t.w * 0.4, t.h - 10, 3, rgba('#000000', 0.32), 1.2);
+      rrectLine(g, cx, cy, t.w * 0.4, t.h - 10, 3, rgba(DARK, 0.32), 1.2);
       var mx = t.x + t.w * 0.62;
       rrect(g, mx, t.y + 4, 24, 10, 3, shade(P.steel, -0.15));
       rrect(g, mx + 18, t.y + 10, 6, t.h - 18, 2, shade(P.steel, -0.15));
-      fill(g, mx, t.y + 4, 24, 2, rgba('#ffffff', 0.32));
+      fill(g, mx, t.y + 4, 24, 2, rgba(LIT, 0.32));
       stroke(g, [mx + 3, t.y + 14, mx + 3, t.y + 20], P.steel, 1.6);
       circle(g, mx + 20, t.y + 8, 3.4, P.gold);
-      circle(g, mx + 19, t.y + 7, 1.4, rgba('#ffffff', 0.5));
+      circle(g, mx + 19, t.y + 7, 1.4, rgba(LIT, 0.5));
       flecks(g, a.rnd, 8, t.x, t.y, t.w, t.h, [a.c2, P.linen], 0.7, 2, 0.5);
     },
 
@@ -1820,12 +1879,12 @@
       slab(g, 3, 3, w - 6, h - 6, 4, shade(a.c1, -0.12), 5);
       /* Anvil on the left: horn, face and waist, read from above. */
       var ax = 26, ay = h / 2;
-      ell(g, ax, ay + 12, 20, 7, 0, rgba('#000000', 0.34));
+      ell(g, ax, ay + 12, 20, 7, 0, rgba(DARK, 0.34));
       poly(g, [ax - 18, ay - 9, ax + 14, ay - 7, ax + 24, ay, ax + 14, ay + 7, ax - 18, ay + 9],
         shade(P.iron, 0.05));
       poly(g, [ax - 18, ay - 9, ax + 14, ay - 7, ax + 24, ay, ax + 12, ay - 1, ax - 18, ay - 2],
         shade(P.iron, 0.3));
-      stroke(g, [ax - 16, ay + 8, ax + 12, ay + 6], rgba('#000000', 0.45), 2);
+      stroke(g, [ax - 16, ay + 8, ax + 12, ay + 6], rgba(DARK, 0.45), 2);
       grain(g, a.rnd, ax - 20, ay - 10, 46, 22, 0.14, 'overlay');
       /* Forge on the right, glowing. */
       var fx = w - 30, fy = h / 2;
@@ -1836,8 +1895,8 @@
           rgba(a.rnd() < 0.5 ? '#ff5a1a' : P.ember, 0.8));
       }
       glow(g, fx, fy, 17, a.c2, a.lit ? 0.95 : 0.3);
-      ring(g, fx, fy, 16, 2, rgba('#000000', 0.45));
-      rrectLine(g, 3, 3, w - 6, h - 6, 4, rgba('#000000', 0.45), 1.4);
+      ring(g, fx, fy, 16, 2, rgba(DARK, 0.45));
+      rrectLine(g, 3, 3, w - 6, h - 6, 4, rgba(DARK, 0.45), 1.4);
     },
 
     research: function (g, a) {
@@ -1851,10 +1910,10 @@
           rgba(a.c2, rr(a.rnd, 0.5, 1)));
       }
       glow(g, sx + sw / 2, sy + sh / 2, sw * 0.6, a.c2, 0.35);
-      rrectLine(g, sx, sy, sw, sh, 3, rgba('#000000', 0.45), 1.2);
+      rrectLine(g, sx, sy, sw, sh, 3, rgba(DARK, 0.45), 1.2);
       rrect(g, sx + 1, t.y + t.h - 11, sw + 4, 8, 2, shade(P.steel, -0.1));
       for (var k = 0; k < 9; k++) {
-        fill(g, sx + 3 + k * (sw / 9), t.y + t.h - 9.5, sw / 12, 2.4, rgba('#000000', 0.35));
+        fill(g, sx + 3 + k * (sw / 9), t.y + t.h - 9.5, sw / 12, 2.4, rgba(DARK, 0.35));
       }
       var px2 = t.x + t.w * 0.58;
       rrect(g, px2, t.y + 5, 20, 14, 2, shade(P.steel, -0.2));
@@ -1863,7 +1922,7 @@
       }
       circle(g, px2 + 26, t.y + 12, 6, rgba(P.glass, 0.5));
       ring(g, px2 + 26, t.y + 12, 6, 1.4, P.steel);
-      circle(g, px2 + 24, t.y + 10, 2, rgba('#ffffff', 0.55));
+      circle(g, px2 + 24, t.y + 10, 2, rgba(LIT, 0.55));
       flecks(g, a.rnd, 7, t.x + t.w * 0.55, t.y + t.h * 0.55, t.w * 0.4, t.h * 0.4,
         [P.brass, P.steel, P.gold], 1, 2.4, 0.8);
     },
@@ -1877,15 +1936,15 @@
       sheen(g, 3, 3, w - 6, h - 6, 0.1, 0.8);
       g.restore();
       /* A hinged lid with a strap and a latch. */
-      fill(g, 3, h / 2 - 1.5, w - 6, 3, rgba('#000000', 0.38));
-      fill(g, 3, h / 2 + 1.5, w - 6, 1.2, rgba('#ffffff', 0.16));
+      fill(g, 3, h / 2 - 1.5, w - 6, 3, rgba(DARK, 0.38));
+      fill(g, 3, h / 2 + 1.5, w - 6, 1.2, rgba(LIT, 0.16));
       rrect(g, w / 2 - 7, h / 2 - 8, 14, 16, 2, shade(a.c1, -0.25));
       rrect(g, w / 2 - 4, h / 2 - 3, 8, 6, 1.5, a.c2);
       bolt(g, 10, 10, 2.6, P.steel);
       bolt(g, w - 10, 10, 2.6, P.steel);
       bolt(g, 10, h - 10, 2.6, P.steel);
       bolt(g, w - 10, h - 10, 2.6, P.steel);
-      rrectLine(g, 3, 3, w - 6, h - 6, 3, rgba('#000000', 0.45), 1.4);
+      rrectLine(g, 3, 3, w - 6, h - 6, 3, rgba(DARK, 0.45), 1.4);
     },
 
     blueprint: function (g, a) {
@@ -1917,9 +1976,9 @@
       stroke(g, [w - 6, 6, 6, h - 6], rgba(a.c1, 0.55), 3);
       for (var i = 0; i < 4; i++) {
         var px2 = (i & 1) ? w - 11 : 4, py = (i & 2) ? h - 11 : 4;
-        rrect(g, px2, py, 7, 7, 1.5, rgba('#000000', 0.3));
+        rrect(g, px2, py, 7, 7, 1.5, rgba(DARK, 0.3));
         rrect(g, px2 - 1, py - 1, 7, 7, 1.5, a.c1);
-        fill(g, px2 - 1, py - 1, 7, 2, rgba('#ffffff', 0.25));
+        fill(g, px2 - 1, py - 1, 7, 2, rgba(LIT, 0.25));
       }
       g.strokeStyle = rgba(a.c1, 0.85); g.lineWidth = 2.4;
       g.setLineDash([9, 6]);
@@ -1933,7 +1992,7 @@
     corpse: function (g, a) {
       var an = a.kindId && ANIMAL[a.kindId];
       var cx = PX / 2, cy = PX / 2 + 4;
-      blobEll(g, cx + 2, cy + 8, 24, 8, '#000000', 0.32, 0.2);
+      blobEll(g, cx + 2, cy + 8, 24, 8, DARK, 0.32, 0.2);
       if (an) {
         var body = drained(an.body), belly = drained(an.belly);
         ell(g, cx + 4, cy, 19, 11, 0.06, body);
@@ -1977,7 +2036,7 @@
      ------------------------------------------------------------------ */
 
   function groundShadow(g, cx, cy, rx, ry, alpha) {
-    blobEll(g, cx + 2, cy + 3, rx, ry, '#000000', alpha === undefined ? 0.36 : alpha, 0.3);
+    blobEll(g, cx + 2, cy + 3, rx, ry, DARK, alpha === undefined ? 0.36 : alpha, 0.3);
   }
 
   /* End grain: the rings and the split of a sawn log, seen head-on. */
@@ -1989,7 +2048,7 @@
     circle(g, cx, cy, 1, rgba(shade(c, -0.45), 0.8));
     whip(g, cx, cy, cx + r * 0.5, cy - r * 0.4, cx + r * 0.9, cy - r * 0.75,
       rgba(shade(c, -0.5), 0.5), 1);
-    ring(g, cx, cy, r, 1.2, rgba('#000000', 0.4));
+    ring(g, cx, cy, r, 1.2, rgba(DARK, 0.4));
   }
 
   var ITEMS = {
@@ -2012,7 +2071,7 @@
       var pos = [[20, 38], [40, 40], [26, 24], [44, 26], [33, 32]];
       for (var i = 0; i < pos.length; i++) {
         var x = pos[i][0], y = pos[i][1], r = i === 4 ? 8 : 9.5;
-        circle(g, x + 1.5, y + 2, r, rgba('#000000', 0.3));
+        circle(g, x + 1.5, y + 2, r, rgba(DARK, 0.3));
         circle(g, x, y, r, a.c1);
         endGrain(g, a.rnd, x, y, r - 0.6, a.c1);
         /* Bark on the shoulder the light does not reach. */
@@ -2022,7 +2081,7 @@
       }
       /* The twine holding it together. */
       stroke(g, [13, 33, 30, 28, 50, 33], rgba(P.sand, 0.85), 2);
-      stroke(g, [13, 34.5, 30, 29.5, 50, 34.5], rgba('#000000', 0.3), 1);
+      stroke(g, [13, 34.5, 30, 29.5, 50, 34.5], rgba(DARK, 0.3), 1);
     },
 
     ingot: function (g, a) {
@@ -2034,12 +2093,12 @@
         poly(g, [x + 3, y - 10, x + w - 3, y - 10, x + w, y + 1, x, y + 1],
           shade(a.c1, -0.12));
         poly(g, [x + 3, y - 10, x + w - 3, y - 10, x + w - 5, y - 6, x + 5, y - 6],
-          mix(a.c2 || a.c1, '#ffffff', 0.35));
+          mix(a.c2 || a.c1, LIT, 0.35));
         poly(g, [x + 5, y - 6, x + w - 5, y - 6, x + w, y + 1, x, y + 1], a.c1);
         gradRect(g, x, y - 6, w, 7, linGrad(g, x, 0, x + w, 0,
-          [0, rgba('#ffffff', 0.3), 0.4, rgba('#ffffff', 0.05), 1, rgba('#000000', 0.26)]));
-        stroke(g, [x + 5, y - 6, x + w - 5, y - 6], rgba('#ffffff', 0.5), 1.2);
-        stroke(g, [x, y + 0.5, x + w, y + 0.5], rgba('#000000', 0.4), 1.2);
+          [0, rgba(LIT, 0.3), 0.4, rgba(LIT, 0.05), 1, rgba(DARK, 0.26)]));
+        stroke(g, [x + 5, y - 6, x + w - 5, y - 6], rgba(LIT, 0.5), 1.2);
+        stroke(g, [x, y + 0.5, x + w, y + 0.5], rgba(DARK, 0.4), 1.2);
       }
     },
 
@@ -2065,10 +2124,10 @@
       }
       rrect(g, cx + 3, cy + 1, 10, 7, 1, shade(P.ink, 0.15));
       circle(g, cx + 8, cy - 7, 3.4, shade(P.steel, 0.1));
-      ring(g, cx + 8, cy - 7, 3.4, 1, rgba('#000000', 0.4));
+      ring(g, cx + 8, cy - 7, 3.4, 1, rgba(DARK, 0.4));
       g.restore();
-      bevel(g, cx - 16, cy - 13, 32, 26, 3, rgba('#ffffff', 0.25), rgba('#000000', 0.35), 15, 1);
-      rrectLine(g, cx - 16, cy - 13, 32, 26, 2, rgba('#000000', 0.45), 1.2);
+      bevel(g, cx - 16, cy - 13, 32, 26, 3, rgba(LIT, 0.25), rgba(DARK, 0.35), 15, 1);
+      rrectLine(g, cx - 16, cy - 13, 32, 26, 2, rgba(DARK, 0.45), 1.2);
     },
 
     coin: function (g, a) {
@@ -2082,8 +2141,8 @@
           ell(g, x, y - i * 3 - 1.4, 9, 5, 0, a.c1);
         }
         ell(g, x, y - n * 3 + 1.6, 9, 5, 0, a.c2);
-        ell(g, x - 2.6, y - n * 3 + 0.4, 4.4, 2.2, 0, rgba('#ffffff', 0.5));
-        ring(g, x, y - n * 3 + 1.6, 6, 1, rgba('#000000', 0.25));
+        ell(g, x - 2.6, y - n * 3 + 0.4, 4.4, 2.2, 0, rgba(LIT, 0.5));
+        ring(g, x, y - n * 3 + 1.6, 6, 1, rgba(DARK, 0.25));
       }
       circle(g, 17, 44, 4.6, a.c1);
       ell(g, 17, 43, 4.6, 2.6, 0, a.c2);
@@ -2104,7 +2163,7 @@
       g.closePath();
       g.save(); g.clip();
       gradRect(g, cx - 24, cy - 20, 48, 40, linGrad(g, cx - 14, cy - 14, cx + 16, cy + 16,
-        [0, rgba('#ffffff', 0.34), 0.45, rgba('#ffffff', 0), 1, rgba('#000000', 0.32)]));
+        [0, rgba(LIT, 0.34), 0.45, rgba(LIT, 0), 1, rgba(DARK, 0.32)]));
       /* Fracture planes: this was struck off a wall, so it has facets. */
       for (var f = 0; f < 4; f++) {
         var fx = cx + rs(a.rnd, 14), fy = cy + rs(a.rnd, 11);
@@ -2114,7 +2173,7 @@
       flecks(g, a.rnd, 18, cx - 22, cy - 18, 44, 36, [a.c2, shade(a.c1, 0.28)], 0.8, 2.4, 0.55);
       grain(g, a.rnd, cx - 24, cy - 20, 48, 40, 0.24, 'overlay');
       g.restore();
-      stroke(g, [pts[0], pts[1], pts[2], pts[3]], rgba('#ffffff', 0.25), 1.2);
+      stroke(g, [pts[0], pts[1], pts[2], pts[3]], rgba(LIT, 0.25), 1.2);
     },
 
     block: function (g, a) {
@@ -2128,11 +2187,11 @@
           var bx = x + b * bw;
           rrect(g, bx + 1, y - h, bw - 2, h, 1.5, shade(a.c1, rr(a.rnd, -0.08, 0.08)));
           gradRect(g, bx + 1, y - h, bw - 2, h, linGrad(g, bx, y - h, bx + bw, y,
-            [0, rgba('#ffffff', 0.28), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.26)]));
+            [0, rgba(LIT, 0.28), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.26)]));
           flecks(g, a.rnd, 5, bx + 2, y - h + 1, bw - 4, h - 2,
             [a.c2, shade(a.c1, 0.25)], 0.7, 1.8, 0.55);
-          stroke(g, [bx + 1, y - h + 0.6, bx + bw - 1, y - h + 0.6], rgba('#ffffff', 0.4), 1.2);
-          stroke(g, [bx + 1, y - 0.6, bx + bw - 1, y - 0.6], rgba('#000000', 0.4), 1.2);
+          stroke(g, [bx + 1, y - h + 0.6, bx + bw - 1, y - h + 0.6], rgba(LIT, 0.4), 1.2);
+          stroke(g, [bx + 1, y - 0.6, bx + bw - 1, y - 0.6], rgba(DARK, 0.4), 1.2);
         }
       }
     },
@@ -2152,7 +2211,7 @@
         g.fillStyle = a.c1; g.fill();
         g.save(); g.clip();
         gradRect(g, cx - 24, cy - 22, 48, 44, linGrad(g, cx - 16, cy - 16, cx + 16, cy + 16,
-          [0, rgba('#ffffff', 0.28), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]));
+          [0, rgba(LIT, 0.28), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.3)]));
         for (var i = 0; i < 24; i++) {
           var hx = cx + rs(a.rnd, 20), hy = cy + rs(a.rnd, 16);
           whip(g, hx, hy, hx + 3, hy + 2, hx + 6, hy + 1, rgba(a.c2, 0.4), 1);
@@ -2167,13 +2226,13 @@
         var y = cy + 10 - k * 9, w = 38 - k * 3;
         rrect(g, cx - w / 2, y - 9, w, 11, 4, shade(a.c1, k * 0.05));
         gradRect(g, cx - w / 2, y - 9, w, 11, linGrad(g, 0, y - 9, 0, y + 2,
-          [0, rgba('#ffffff', 0.26), 0.45, rgba('#ffffff', 0), 1, rgba('#000000', 0.28)]));
-        rrect(g, cx - w / 2, y - 9, w, 3, 3, rgba('#ffffff', 0.14));
+          [0, rgba(LIT, 0.26), 0.45, rgba(LIT, 0), 1, rgba(DARK, 0.28)]));
+        rrect(g, cx - w / 2, y - 9, w, 3, 3, rgba(LIT, 0.14));
         /* The weave, which is what tells cloth from a painted board. */
         for (var t = 0; t < 4; t++) {
           fill(g, cx - w / 2 + 2, y - 7 + t * 2.4, w - 4, 0.8, rgba(a.c2, 0.32));
         }
-        rrectLine(g, cx - w / 2, y - 9, w, 11, 4, rgba('#000000', 0.3), 1);
+        rrectLine(g, cx - w / 2, y - 9, w, 11, 4, rgba(DARK, 0.3), 1);
       }
     },
 
@@ -2189,12 +2248,12 @@
           shade(a.c1, -0.25), 1.6);
         var lc = i % 2 ? a.c1 : a.c2;
         ell(g, ex, ey, 6, 3.2, ang + 0.2, lc);
-        ell(g, ex - 1, ey - 0.8, 3.6, 1.6, ang + 0.2, rgba('#ffffff', 0.28));
+        ell(g, ex - 1, ey - 0.8, 3.6, 1.6, ang + 0.2, rgba(LIT, 0.28));
         stroke(g, [ex - 5, ey, ex + 5, ey], rgba(shade(lc, -0.35), 0.5), 0.8);
       }
       rrect(g, cx - 8, cy + 6, 16, 6, 3, P.sand);
-      fill(g, cx - 8, cy + 6, 16, 2, rgba('#ffffff', 0.35));
-      for (var t = 0; t < 3; t++) fill(g, cx - 6 + t * 5, cy + 6, 1.4, 6, rgba('#000000', 0.25));
+      fill(g, cx - 8, cy + 6, 16, 2, rgba(LIT, 0.35));
+      for (var t = 0; t < 3; t++) fill(g, cx - 6 + t * 5, cy + 6, 1.4, 6, rgba(DARK, 0.25));
     },
 
     medkit: function (g, a) {
@@ -2203,16 +2262,16 @@
       slab(g, cx - 19, cy - 13, 38, 27, 4, a.c1, 4);
       rrectPath(g, cx - 19, cy - 13, 38, 27, 4);
       g.save(); g.clip();
-      fill(g, cx - 19, cy - 3, 38, 2.6, rgba('#000000', 0.3));
-      fill(g, cx - 19, cy - 0.4, 38, 1.2, rgba('#ffffff', 0.25));
+      fill(g, cx - 19, cy - 3, 38, 2.6, rgba(DARK, 0.3));
+      fill(g, cx - 19, cy - 0.4, 38, 1.2, rgba(LIT, 0.25));
       g.restore();
       /* The cross, the one thing this has to read as. */
       fill(g, cx - 4, cy - 10, 8, 20, a.c2);
       fill(g, cx - 12, cy - 4, 24, 8, a.c2);
-      fill(g, cx - 4, cy - 10, 8, 2, rgba('#ffffff', 0.35));
-      fill(g, cx - 12, cy - 4, 24, 1.6, rgba('#ffffff', 0.3));
+      fill(g, cx - 4, cy - 10, 8, 2, rgba(LIT, 0.35));
+      fill(g, cx - 12, cy - 4, 24, 1.6, rgba(LIT, 0.3));
       rrect(g, cx - 6, cy - 16, 12, 5, 2, shade(a.c1, -0.25));
-      rrectLine(g, cx - 19, cy - 13, 38, 27, 4, rgba('#000000', 0.4), 1.3);
+      rrectLine(g, cx - 19, cy - 13, 38, 27, 4, rgba(DARK, 0.4), 1.3);
     },
 
     barrel: function (g, a) {
@@ -2222,21 +2281,21 @@
       rrectPath(g, cx - 14, cy - 20, 28, 40, 6);
       g.save(); g.clip();
       gradRect(g, cx - 14, cy - 20, 28, 40, linGrad(g, cx - 14, 0, cx + 14, 0,
-        [0, rgba('#ffffff', 0.3), 0.32, rgba('#ffffff', 0.05),
-         0.75, rgba('#000000', 0.12), 1, rgba('#000000', 0.34)]));
+        [0, rgba(LIT, 0.3), 0.32, rgba(LIT, 0.05),
+         0.75, rgba(DARK, 0.12), 1, rgba(DARK, 0.34)]));
       /* Rolling hoops. */
       for (var i = 0; i < 2; i++) {
         var y = cy - 11 + i * 22;
         fill(g, cx - 14, y, 28, 5, shade(a.c2, -0.1));
-        fill(g, cx - 14, y, 28, 1.4, rgba('#ffffff', 0.3));
-        fill(g, cx - 14, y + 4, 28, 1, rgba('#000000', 0.3));
+        fill(g, cx - 14, y, 28, 1.4, rgba(LIT, 0.3));
+        fill(g, cx - 14, y + 4, 28, 1, rgba(DARK, 0.3));
       }
       g.restore();
       /* Bung on the top face. */
       ell(g, cx, cy - 20, 14, 5, 0, shade(a.c1, 0.14));
       ell(g, cx + 4, cy - 20, 4, 2.2, 0, shade(P.steel, -0.1));
-      ell(g, cx + 4, cy - 20.6, 2.4, 1.2, 0, rgba('#ffffff', 0.4));
-      rrectLine(g, cx - 14, cy - 20, 28, 40, 6, rgba('#000000', 0.45), 1.3);
+      ell(g, cx + 4, cy - 20.6, 2.4, 1.2, 0, rgba(LIT, 0.4));
+      rrectLine(g, cx - 14, cy - 20, 28, 40, 6, rgba(DARK, 0.45), 1.3);
     },
 
     grain: function (g, a) {
@@ -2250,7 +2309,7 @@
       g.fillStyle = a.c2; g.fill();
       g.save(); g.clip();
       gradRect(g, cx - 24, cy - 18, 48, 30, linGrad(g, cx - 10, cy - 14, cx + 14, cy + 10,
-        [0, rgba('#ffffff', 0.35), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.26)]));
+        [0, rgba(LIT, 0.35), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.26)]));
       for (var i = 0; i < 70; i++) {
         var gx = cx + rs(a.rnd, 21), gy = cy + rr(a.rnd, -13, 9);
         ell(g, gx, gy, rr(a.rnd, 1.4, 2.4), 0.9, rs(a.rnd, 1),
@@ -2270,16 +2329,16 @@
       var pos = [[26, 36, 11, 8], [42, 40, 9, 7], [35, 25, 8, 6]];
       for (var i = 0; i < 3; i++) {
         var x = pos[i][0], y = pos[i][1], rx = pos[i][2], ry = pos[i][3];
-        ell(g, x + 1.5, y + 2, rx, ry, 0.3, rgba('#000000', 0.3));
+        ell(g, x + 1.5, y + 2, rx, ry, 0.3, rgba(DARK, 0.3));
         ell(g, x, y, rx, ry, 0.3 + i, a.c1);
-        ell(g, x - rx * 0.3, y - ry * 0.4, rx * 0.5, ry * 0.35, 0.3 + i, rgba('#ffffff', 0.28));
+        ell(g, x - rx * 0.3, y - ry * 0.4, rx * 0.5, ry * 0.35, 0.3 + i, rgba(LIT, 0.28));
         /* Eyes, which is the only thing that makes a blob a potato. */
         for (var e = 0; e < 4; e++) {
           var ex = x + rs(a.rnd, rx * 0.7), ey = y + rs(a.rnd, ry * 0.7);
           ell(g, ex, ey, 1.4, 0.9, a.rnd() * TAU, rgba(a.c2, 0.8));
           dot(g, ex, ey - 1, rgba(shade(a.c2, -0.4), 0.7));
         }
-        ell(g, x, y, rx, ry, 0.3 + i, rgba('#000000', 0));
+        ell(g, x, y, rx, ry, 0.3 + i, rgba(DARK, 0));
         g.beginPath(); g.ellipse(x, y, rx, ry, 0.3 + i, 0, TAU);
         g.strokeStyle = rgba(shade(a.c1, -0.4), 0.45); g.lineWidth = 1; g.stroke();
       }
@@ -2300,7 +2359,7 @@
             var kx = c * 3 + (r & 1 ? 1.5 : 0), ky = r * 3;
             if (kx * kx / 25 + ky * ky / 200 > 1) continue;
             circle(g, kx, ky, 1.6, shade(a.c1, rr(a.rnd, -0.06, 0.16)));
-            circle(g, kx - 0.4, ky - 0.5, 0.8, rgba('#ffffff', 0.4));
+            circle(g, kx - 0.4, ky - 0.5, 0.8, rgba(LIT, 0.4));
           }
         }
         /* Husk leaves peeled down. */
@@ -2315,12 +2374,12 @@
       var pos = [[24, 36], [36, 32], [42, 42], [30, 44], [33, 26], [45, 30]];
       for (var i = 0; i < pos.length; i++) {
         var x = pos[i][0], y = pos[i][1], r = 6.5 - (i % 2);
-        circle(g, x + 1.2, y + 1.8, r, rgba('#000000', 0.3));
+        circle(g, x + 1.2, y + 1.8, r, rgba(DARK, 0.3));
         circle(g, x, y, r, a.c1);
         g.fillStyle = radGrad(g, x - r * 0.35, y - r * 0.4, 0, r * 1.4,
-          [0, rgba('#ffffff', 0.5), 0.35, rgba(a.c2, 0.25), 1, rgba(shade(a.c1, -0.4), 0.45)]);
+          [0, rgba(LIT, 0.5), 0.35, rgba(a.c2, 0.25), 1, rgba(shade(a.c1, -0.4), 0.45)]);
         g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
-        circle(g, x - r * 0.35, y - r * 0.42, r * 0.22, rgba('#ffffff', 0.85));
+        circle(g, x - r * 0.35, y - r * 0.42, r * 0.22, rgba(LIT, 0.85));
         /* The calyx star each berry keeps. */
         for (var s = 0; s < 4; s++) {
           var ang = s * TAU / 4 + 0.6;
@@ -2342,7 +2401,7 @@
       g.fillStyle = a.c1; g.fill();
       g.save(); g.clip();
       gradRect(g, cx - 22, cy - 18, 44, 34, linGrad(g, cx - 14, cy - 12, cx + 14, cy + 12,
-        [0, rgba('#ffffff', 0.32), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]));
+        [0, rgba(LIT, 0.32), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.3)]));
       /* Marbling and the grain of the muscle. */
       for (var i = 0; i < 9; i++) {
         var mx = cx + rs(a.rnd, 15), my = cy + rs(a.rnd, 10);
@@ -2352,7 +2411,7 @@
       grain(g, a.rnd, cx - 22, cy - 18, 44, 34, 0.14, 'overlay');
       g.restore();
       ell(g, cx + 2, cy - 9, 8, 3, -0.2, rgba(P.bone, 0.85));
-      ell(g, cx + 2, cy - 9.8, 6, 1.4, -0.2, rgba('#ffffff', 0.4));
+      ell(g, cx + 2, cy - 9.8, 6, 1.4, -0.2, rgba(LIT, 0.4));
     },
 
     meal: function (g, a) {
@@ -2363,7 +2422,7 @@
       circle(g, cx, cy, 20.5, P.linen);
       circle(g, cx, cy, 15, shade(P.linen, -0.1));
       g.fillStyle = radGrad(g, cx - 7, cy - 8, 2, 26,
-        [0, rgba('#ffffff', 0.5), 0.5, rgba('#ffffff', 0.05), 1, rgba('#000000', 0.16)]);
+        [0, rgba(LIT, 0.5), 0.5, rgba(LIT, 0.05), 1, rgba(DARK, 0.16)]);
       g.beginPath(); g.arc(cx, cy, 20.5, 0, TAU); g.fill();
       /* The food itself: a mound, a garnish and something sauced. */
       ell(g, cx - 4, cy + 1, 10, 7, -0.2, a.c1);
@@ -2380,7 +2439,7 @@
         ell(g, cx + 7, cy - 12, 3.4, 1.8, -0.6, shade(P.grass, 0.2));
         ell(g, cx + 4, cy - 9, 3, 1.6, -0.3, shade(P.grass, 0.2));
       }
-      ring(g, cx, cy, 20.5, 1.2, rgba('#000000', 0.3));
+      ring(g, cx, cy, 20.5, 1.2, rgba(DARK, 0.3));
     },
 
     kibble: function (g, a) {
@@ -2395,9 +2454,9 @@
         var x = cx + rs(a.rnd, 19), y = cy + rr(a.rnd, -10, 8);
         if (Math.abs(x - cx) > 19 - Math.abs(y - cy)) continue;
         var r = rr(a.rnd, 1.8, 3.2);
-        ell(g, x + 0.8, y + 0.9, r, r * 0.7, 0, rgba('#000000', 0.3));
+        ell(g, x + 0.8, y + 0.9, r, r * 0.7, 0, rgba(DARK, 0.3));
         ell(g, x, y, r, r * 0.7, a.rnd() * TAU, shade(a.c1, rr(a.rnd, -0.12, 0.16)));
-        ell(g, x - r * 0.3, y - r * 0.3, r * 0.4, r * 0.24, 0, rgba('#ffffff', 0.35));
+        ell(g, x - r * 0.3, y - r * 0.3, r * 0.4, r * 0.24, 0, rgba(LIT, 0.35));
       }
     },
 
@@ -2411,10 +2470,10 @@
       g.save(); g.translate(32, 32); g.rotate(-0.72);
       poly(g, [-4, -3, 22, -4, 27, 0, 22, 3, -4, 3], a.c1);
       poly(g, [-4, -3, 22, -4, 27, 0, 20, -1, -4, -1], shade(a.c1, 0.4));
-      stroke(g, [-4, 2.2, 22, 2.6], rgba('#000000', 0.35), 1.2);
+      stroke(g, [-4, 2.2, 22, 2.6], rgba(DARK, 0.35), 1.2);
       rrect(g, -22, -4, 18, 8, 3, a.c2);
       gradRect(g, -22, -4, 18, 8, linGrad(g, 0, -4, 0, 4,
-        [0, rgba('#ffffff', 0.3), 1, rgba('#000000', 0.3)]));
+        [0, rgba(LIT, 0.3), 1, rgba(DARK, 0.3)]));
       rrect(g, -5, -5, 3, 10, 1.5, shade(P.steel, -0.2));
       g.restore();
     },
@@ -2424,8 +2483,8 @@
       g.save(); g.translate(32, 32); g.rotate(-0.72);
       rrect(g, -24, -3.5, 30, 7, 3.5, a.c1);
       gradRect(g, -24, -3.5, 30, 7, linGrad(g, 0, -3.5, 0, 3.5,
-        [0, rgba('#ffffff', 0.28), 1, rgba('#000000', 0.3)]));
-      for (var i = 0; i < 4; i++) fill(g, -22 + i * 4, -3.5, 1.4, 7, rgba('#000000', 0.2));
+        [0, rgba(LIT, 0.28), 1, rgba(DARK, 0.3)]));
+      for (var i = 0; i < 4; i++) fill(g, -22 + i * 4, -3.5, 1.4, 7, rgba(DARK, 0.2));
       ell(g, 14, 0, 12, 9, 0, a.c2);
       ell(g, 11, -3, 7, 4.5, -0.3, shade(a.c2, 0.3));
       for (var k = 0; k < 5; k++) {
@@ -2440,7 +2499,7 @@
       g.save(); g.translate(32, 32); g.rotate(-0.72);
       rrect(g, -28, -2.4, 50, 4.8, 2.4, a.c1);
       gradRect(g, -28, -2.4, 50, 4.8, linGrad(g, 0, -2.4, 0, 2.4,
-        [0, rgba('#ffffff', 0.3), 1, rgba('#000000', 0.3)]));
+        [0, rgba(LIT, 0.3), 1, rgba(DARK, 0.3)]));
       poly(g, [21, -5, 34, 0, 21, 5, 24, 0], a.c2);
       poly(g, [21, -5, 34, 0, 24, 0], shade(a.c2, 0.4));
       for (var i = 0; i < 3; i++) stroke(g, [16 + i * 2, -2.4, 16 + i * 2, 2.4], rgba(P.sand, 0.7), 1.4);
@@ -2459,11 +2518,11 @@
       g.beginPath();
       g.moveTo(-3, -26);
       g.bezierCurveTo(11, -18, 13, 18, -3, 26);
-      g.strokeStyle = rgba('#ffffff', 0.2); g.lineWidth = 1.6; g.stroke();
+      g.strokeStyle = rgba(LIT, 0.2); g.lineWidth = 1.6; g.stroke();
       g.lineCap = 'butt';
       stroke(g, [-3, -26, -3, 26], a.c2, 1.2);
       rrect(g, 3, -7, 7, 14, 3, shade(a.c1, -0.35));
-      for (var i = 0; i < 4; i++) fill(g, 3, -6 + i * 3.4, 7, 1.2, rgba('#000000', 0.25));
+      for (var i = 0; i < 4; i++) fill(g, 3, -6 + i * 3.4, 7, 1.2, rgba(DARK, 0.25));
       g.restore();
     },
 
@@ -2473,11 +2532,11 @@
       /* Slide, frame, grip, trigger guard: a pistol silhouette. */
       rrect(g, -16, -7, 34, 9, 2, a.c1);
       gradRect(g, -16, -7, 34, 9, linGrad(g, 0, -7, 0, 2,
-        [0, rgba('#ffffff', 0.32), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]));
-      fill(g, -16, -7, 34, 1.4, rgba('#ffffff', 0.3));
-      for (var i = 0; i < 6; i++) fill(g, -14 + i * 2.2, -6, 1.1, 7, rgba('#000000', 0.22));
+        [0, rgba(LIT, 0.32), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.3)]));
+      fill(g, -16, -7, 34, 1.4, rgba(LIT, 0.3));
+      for (var i = 0; i < 6; i++) fill(g, -14 + i * 2.2, -6, 1.1, 7, rgba(DARK, 0.22));
       rrect(g, 14, -5, 8, 5, 1.5, shade(a.c1, -0.2));
-      circle(g, 21, -2.5, 1.6, rgba('#000000', 0.75));
+      circle(g, 21, -2.5, 1.6, rgba(DARK, 0.75));
       poly(g, [-14, 2, -4, 2, -8, 18, -17, 17], a.c2);
       poly(g, [-14, 2, -9, 2, -13, 17, -17, 17], shade(a.c2, 0.25));
       g.beginPath(); g.arc(-2, 4, 5, 0.1, Math.PI - 0.1);
@@ -2492,16 +2551,16 @@
       /* Barrel, receiver, magazine, stock - in that reading order. */
       rrect(g, -4, -3, 36, 6, 2, shade(a.c1, -0.1));
       gradRect(g, -4, -3, 36, 6, linGrad(g, 0, -3, 0, 3,
-        [0, rgba('#ffffff', 0.32), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]));
+        [0, rgba(LIT, 0.32), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.3)]));
       rrect(g, 26, -3.6, 7, 7.2, 2, shade(a.c1, 0.1));
-      circle(g, 32, 0, 1.8, rgba('#000000', 0.8));
+      circle(g, 32, 0, 1.8, rgba(DARK, 0.8));
       rrect(g, -18, -5, 22, 10, 2.5, a.c2);
       gradRect(g, -18, -5, 22, 10, linGrad(g, 0, -5, 0, 5,
-        [0, rgba('#ffffff', 0.26), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]));
+        [0, rgba(LIT, 0.26), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.3)]));
       rrect(g, -10, 4, 8, 13, 2, shade(a.c1, -0.25));
-      fill(g, -9, 5, 2, 11, rgba('#ffffff', 0.18));
+      fill(g, -9, 5, 2, 11, rgba(LIT, 0.18));
       poly(g, [-18, -5, -30, -1, -32, 6, -18, 5], a.c1);
-      poly(g, [-18, -5, -30, -1, -29, 1, -18, -2], rgba('#ffffff', 0.25));
+      poly(g, [-18, -5, -30, -1, -29, 1, -18, -2], rgba(LIT, 0.25));
       rrect(g, -6, -9, 14, 4, 1.5, shade(P.ink, 0.3));
       g.beginPath(); g.arc(-14, 6, 5, 0.2, Math.PI - 0.2);
       g.strokeStyle = a.c2; g.lineWidth = 1.8; g.stroke();
@@ -2514,14 +2573,14 @@
       /* Two barrels, which is the whole silhouette. */
       rrect(g, -6, -5, 38, 4.4, 2, shade(a.c1, -0.05));
       rrect(g, -6, -0.2, 38, 4.4, 2, shade(a.c1, -0.18));
-      fill(g, -6, -5, 38, 1.4, rgba('#ffffff', 0.3));
-      circle(g, 31, -2.8, 1.7, rgba('#000000', 0.8));
-      circle(g, 31, 2, 1.7, rgba('#000000', 0.8));
+      fill(g, -6, -5, 38, 1.4, rgba(LIT, 0.3));
+      circle(g, 31, -2.8, 1.7, rgba(DARK, 0.8));
+      circle(g, 31, 2, 1.7, rgba(DARK, 0.8));
       rrect(g, -20, -6, 16, 12, 3, a.c2);
       gradRect(g, -20, -6, 16, 12, linGrad(g, 0, -6, 0, 6,
-        [0, rgba('#ffffff', 0.26), 1, rgba('#000000', 0.3)]));
+        [0, rgba(LIT, 0.26), 1, rgba(DARK, 0.3)]));
       poly(g, [-20, -6, -33, -2, -34, 8, -20, 6], a.c1);
-      poly(g, [-20, -6, -33, -2, -32, 0, -20, -3], rgba('#ffffff', 0.25));
+      poly(g, [-20, -6, -33, -2, -32, 0, -20, -3], rgba(LIT, 0.25));
       g.beginPath(); g.arc(-15, 7, 5, 0.2, Math.PI - 0.2);
       g.strokeStyle = a.c2; g.lineWidth = 1.8; g.stroke();
       g.restore();
@@ -2540,18 +2599,18 @@
       g.save();
       poly(g, [cx - 11, cy - 16, cx + 11, cy - 16, cx + 21, cy - 8, cx + 17, cy + 1,
                cx + 11, cy - 3, cx + 11, cy + 17, cx - 11, cy + 17, cx - 11, cy - 3,
-               cx - 17, cy + 1, cx - 21, cy - 8], rgba('#000000', 0));
+               cx - 17, cy + 1, cx - 21, cy - 8], rgba(DARK, 0));
       g.clip();
       gradRect(g, cx - 24, cy - 20, 48, 40, linGrad(g, cx - 12, cy - 14, cx + 14, cy + 16,
-        [0, rgba('#ffffff', 0.28), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.26)]));
+        [0, rgba(LIT, 0.28), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.26)]));
       for (var i = 0; i < 4; i++) {
         whip(g, cx - 10, cy - 2 + i * 5, cx, cy + i * 5, cx + 10, cy - 2 + i * 5,
-          rgba('#000000', 0.12), 2);
+          rgba(DARK, 0.12), 2);
       }
       g.restore();
       ell(g, cx, cy - 15, 7, 4, 0, a.c2);
       ell(g, cx, cy - 16, 6, 3, 0, shade(a.c2, -0.25));
-      stroke(g, [cx, cy - 12, cx, cy + 16], rgba('#000000', 0.16), 1.4);
+      stroke(g, [cx, cy - 12, cx, cy + 16], rgba(DARK, 0.16), 1.4);
     },
 
     pants: function (g, a) {
@@ -2561,17 +2620,17 @@
                cx, cy + 2, cx - 3, cy + 18, cx - 13, cy + 18], a.c1);
       g.save();
       poly(g, [cx - 13, cy - 18, cx + 13, cy - 18, cx + 13, cy + 18, cx + 3, cy + 18,
-               cx, cy + 2, cx - 3, cy + 18, cx - 13, cy + 18], rgba('#000000', 0));
+               cx, cy + 2, cx - 3, cy + 18, cx - 13, cy + 18], rgba(DARK, 0));
       g.clip();
       gradRect(g, cx - 16, cy - 20, 32, 40, linGrad(g, cx - 10, cy - 14, cx + 12, cy + 16,
-        [0, rgba('#ffffff', 0.26), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.28)]));
+        [0, rgba(LIT, 0.26), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.28)]));
       for (var i = 0; i < 5; i++) {
         whip(g, cx - 12, cy - 4 + i * 5, cx, cy - 2 + i * 5, cx + 12, cy - 4 + i * 5,
-          rgba('#000000', 0.11), 2);
+          rgba(DARK, 0.11), 2);
       }
       g.restore();
       rrect(g, cx - 13, cy - 18, 26, 6, 1.5, a.c2);
-      fill(g, cx - 13, cy - 18, 26, 1.6, rgba('#ffffff', 0.3));
+      fill(g, cx - 13, cy - 18, 26, 1.6, rgba(LIT, 0.3));
       rrect(g, cx - 3, cy - 16.5, 6, 3, 1.5, shade(P.brass, 0.1));
     },
 
@@ -2584,18 +2643,18 @@
       g.save();
       poly(g, [cx - 13, cy - 17, cx + 13, cy - 17, cx + 23, cy - 8, cx + 19, cy + 3,
                cx + 13, cy - 2, cx + 13, cy + 18, cx - 13, cy + 18, cx - 13, cy - 2,
-               cx - 19, cy + 3, cx - 23, cy - 8], rgba('#000000', 0));
+               cx - 19, cy + 3, cx - 23, cy - 8], rgba(DARK, 0));
       g.clip();
       gradRect(g, cx - 26, cy - 20, 52, 42, linGrad(g, cx - 14, cy - 14, cx + 16, cy + 18,
-        [0, rgba('#ffffff', 0.26), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.28)]));
+        [0, rgba(LIT, 0.26), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.28)]));
       /* Lapels and the open front. */
       poly(g, [cx - 10, cy - 15, cx - 1, cy - 15, cx - 3, cy + 18, cx - 10, cy + 18], shade(a.c1, -0.18));
       poly(g, [cx + 10, cy - 15, cx + 1, cy - 15, cx + 3, cy + 18, cx + 10, cy + 18], shade(a.c1, -0.1));
       g.restore();
-      fill(g, cx - 1, cy - 14, 2, 32, rgba('#000000', 0.35));
+      fill(g, cx - 1, cy - 14, 2, 32, rgba(DARK, 0.35));
       for (var b = 0; b < 3; b++) {
         circle(g, cx - 5, cy - 6 + b * 9, 2.2, a.c2);
-        circle(g, cx - 5.6, cy - 6.6 + b * 9, 0.9, rgba('#ffffff', 0.45));
+        circle(g, cx - 5.6, cy - 6.6 + b * 9, 0.9, rgba(LIT, 0.45));
       }
       ell(g, cx, cy - 16, 8, 4, 0, shade(a.c1, -0.3));
     },
@@ -2609,15 +2668,15 @@
       g.save();
       poly(g, [cx - 15, cy - 14, cx + 15, cy - 14, cx + 24, cy - 5, cx + 20, cy + 6,
                cx + 15, cy + 1, cx + 15, cy + 18, cx - 15, cy + 18, cx - 15, cy + 1,
-               cx - 20, cy + 6, cx - 24, cy - 5], rgba('#000000', 0));
+               cx - 20, cy + 6, cx - 24, cy - 5], rgba(DARK, 0));
       g.clip();
       gradRect(g, cx - 26, cy - 18, 52, 40, linGrad(g, cx - 14, cy - 12, cx + 16, cy + 18,
-        [0, rgba('#ffffff', 0.24), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]));
+        [0, rgba(LIT, 0.24), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.3)]));
       /* Quilting: the channels a stuffed coat is sewn into. */
       for (var i = 0; i < 5; i++) {
         var qy = cy - 8 + i * 6;
-        whip(g, cx - 15, qy, cx, qy + 2, cx + 15, qy, rgba('#000000', 0.2), 1.6);
-        whip(g, cx - 15, qy + 2, cx, qy + 4, cx + 15, qy + 2, rgba('#ffffff', 0.14), 1.2);
+        whip(g, cx - 15, qy, cx, qy + 2, cx + 15, qy, rgba(DARK, 0.2), 1.6);
+        whip(g, cx - 15, qy + 2, cx, qy + 4, cx + 15, qy + 2, rgba(LIT, 0.14), 1.2);
       }
       g.restore();
       /* Fur-trimmed hood. */
@@ -2638,18 +2697,18 @@
       rrectPath(g, cx - 16, cy - 16, 32, 33, 5);
       g.save(); g.clip();
       gradRect(g, cx - 16, cy - 16, 32, 33, linGrad(g, cx - 10, cy - 12, cx + 12, cy + 14,
-        [0, rgba('#ffffff', 0.3), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]));
+        [0, rgba(LIT, 0.3), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.3)]));
       /* Armour plates with their seams. */
       for (var i = 0; i < 4; i++) {
-        fill(g, cx - 16, cy - 10 + i * 7, 32, 1.6, rgba('#000000', 0.32));
-        fill(g, cx - 16, cy - 8.4 + i * 7, 32, 1, rgba('#ffffff', 0.18));
+        fill(g, cx - 16, cy - 10 + i * 7, 32, 1.6, rgba(DARK, 0.32));
+        fill(g, cx - 16, cy - 8.4 + i * 7, 32, 1, rgba(LIT, 0.18));
       }
-      fill(g, cx - 2, cy - 16, 4, 33, rgba('#000000', 0.22));
+      fill(g, cx - 2, cy - 16, 4, 33, rgba(DARK, 0.22));
       g.restore();
       /* Shoulder straps. */
       rrect(g, cx - 21, cy - 14, 6, 14, 3, shade(a.c2, -0.1));
       rrect(g, cx + 15, cy - 14, 6, 14, 3, shade(a.c2, -0.1));
-      rrectLine(g, cx - 16, cy - 16, 32, 33, 5, rgba('#000000', 0.42), 1.3);
+      rrectLine(g, cx - 16, cy - 16, 32, 33, 5, rgba(DARK, 0.42), 1.3);
       circle(g, cx, cy + 12, 3, a.c2);
     },
 
@@ -2660,15 +2719,15 @@
       circle(g, cx, cy, 19, shade(a.c1, -0.3));
       circle(g, cx, cy, 17, a.c1);
       g.fillStyle = radGrad(g, cx - 6, cy - 7, 1, 24,
-        [0, rgba('#ffffff', 0.5), 0.35, rgba('#ffffff', 0.1), 1, rgba('#000000', 0.32)]);
+        [0, rgba(LIT, 0.5), 0.35, rgba(LIT, 0.1), 1, rgba(DARK, 0.32)]);
       g.beginPath(); g.arc(cx, cy, 17, 0, TAU); g.fill();
-      ring(g, cx, cy, 17, 2, rgba('#000000', 0.4));
+      ring(g, cx, cy, 17, 2, rgba(DARK, 0.4));
       /* Brow ridge and the strap. */
       g.beginPath(); g.arc(cx, cy, 13, 0.35, Math.PI - 0.35);
       g.strokeStyle = rgba(a.c2, 0.9); g.lineWidth = 4; g.stroke();
       g.beginPath(); g.arc(cx, cy, 13, 0.35, Math.PI - 0.35);
-      g.strokeStyle = rgba('#ffffff', 0.18); g.lineWidth = 1.4; g.stroke();
-      circle(g, cx - 5, cy - 6, 3.4, rgba('#ffffff', 0.35));
+      g.strokeStyle = rgba(LIT, 0.18); g.lineWidth = 1.4; g.stroke();
+      circle(g, cx - 5, cy - 6, 3.4, rgba(LIT, 0.35));
       circle(g, cx, cy - 15, 2.4, shade(a.c2, 0.2));
     },
 
@@ -2692,7 +2751,7 @@
       g.bezierCurveTo(cx - 3.4, cy + 2, cx - 3.4, cy - 6, cx, cy - 11);
       g.closePath();
       g.fillStyle = a.c1; g.fill();
-      stroke(g, [cx - 1.4, cy - 8, cx - 1.4, cy + 5], rgba('#ffffff', 0.6), 1.4);
+      stroke(g, [cx - 1.4, cy - 8, cx - 1.4, cy + 5], rgba(LIT, 0.6), 1.4);
       rrect(g, cx - 3.2, cy + 5, 6.4, 6, 1.5, a.c2);
       /* A short tracer tail so a shot reads as motion. */
       gradRect(g, cx - 2, cy + 10, 4, 14, linGrad(g, 0, cy + 10, 0, cy + 24,
@@ -2702,13 +2761,13 @@
     arrow: function (g, a) {
       var cx = PX / 2;
       stroke(g, [cx, 12, cx, 50], a.c1, 2.4);
-      stroke(g, [cx - 0.8, 12, cx - 0.8, 50], rgba('#ffffff', 0.25), 1);
+      stroke(g, [cx - 0.8, 12, cx - 0.8, 50], rgba(LIT, 0.25), 1);
       poly(g, [cx, 4, cx + 4.5, 15, cx, 12.5, cx - 4.5, 15], a.c2);
-      poly(g, [cx, 4, cx + 4.5, 15, cx, 12.5], rgba('#ffffff', 0.3));
+      poly(g, [cx, 4, cx + 4.5, 15, cx, 12.5], rgba(LIT, 0.3));
       for (var i = 0; i < 2; i++) {
         var s = i ? 1 : -1;
         poly(g, [cx, 40, cx + s * 6, 48, cx + s * 5, 53, cx, 47], P.linen);
-        poly(g, [cx, 40, cx + s * 6, 48, cx, 44], rgba('#000000', 0.16));
+        poly(g, [cx, 40, cx + s * 6, 48, cx, 44], rgba(DARK, 0.16));
       }
     }
   };
@@ -2743,34 +2802,43 @@
     g.moveTo(0, -len * 0.1);
     g.quadraticCurveTo(wide * 0.55, -len * 0.45, 0, -len * 0.9);
     g.closePath();
-    g.fillStyle = rgba('#ffffff', 0.16); g.fill();
+    g.fillStyle = rgba(LIT, 0.16); g.fill();
     g.restore();
   }
 
+  /* Wild grass grows on nearly every cell mapgen touches, so it is not a
+     thing the player has to notice - it is ground cover, and it belongs
+     with the terrain in the quiet half of the screen. Half the blades of
+     the old tuft, drawn wider, softer and a shade closer to the earth
+     under them, so a field of it reads as a green field rather than as a
+     thousand separate sprites. Crops and trees keep their definition;
+     they are things you act on. */
   function paintGrassPlant(g, rnd, def, stage, variant) {
     var c1 = def.color, c2 = def.color2 || shade(c1, 0.12);
     var tall = def.id === 'tallGrass';
-    var base = 50, spread = tall ? 22 : 18;
-    var h = (tall ? 34 : 22) * (0.5 + stage * 0.25);
-    blobEll(g, PX / 2 + 2, base + 3, spread, 5, '#000000', 0.22, 0.2);
-    var tones = [c1, c2, shade(c1, -0.18), mix(c1, P.foliageLight, 0.35)];
-    var n = tall ? 22 : 16;
+    var cx = PX / 2 + ((variant & 1) ? 8 : -8) + rs(rnd, 4);
+    var base = 50 + ((variant & 2) ? 5 : -5);
+    var spread = tall ? 20 : 16;
+    var h = (tall ? 30 : 19) * (0.5 + stage * 0.25);
+    blobEll(g, cx + 2, base + 3, spread, 5, DARK, 0.13, 0.2);
+    var tones = [c1, c2, shade(c1, -0.14), mix(c1, P.foliageLight, 0.28)];
+    var n = tall ? 11 : 8;
     for (var i = 0; i < n; i++) {
-      var x = PX / 2 + rs(rnd, spread);
+      var x = cx + rs(rnd, spread);
       var y = base + rs(rnd, 5);
-      var bh = h * rr(rnd, 0.55, 1.1);
+      var bh = h * rr(rnd, 0.6, 1.1);
       var lean = rs(rnd, bh * 0.45) + (variant - 1) * 2;
       whip(g, x, y, x + lean * 0.35, y - bh * 0.6, x + lean, y - bh,
-        tones[(rnd() * tones.length) | 0], rr(rnd, 1.2, 2.4));
-      if (bh > 16 && rnd() < 0.4) {
+        rgba(tones[(rnd() * tones.length) | 0], 0.88), rr(rnd, 2, 3.2));
+      if (bh > 16 && rnd() < 0.3) {
         /* A seed head on the longest blades. */
-        ell(g, x + lean, y - bh, 1.6, 3.4, lean * 0.04, rgba(shade(c2, 0.18), 0.85));
+        ell(g, x + lean, y - bh, 1.8, 3.4, lean * 0.04, rgba(shade(c2, 0.14), 0.7));
       }
     }
-    for (var t = 0; t < 6; t++) {
-      var tx = PX / 2 + rs(rnd, spread);
+    for (var t = 0; t < 2; t++) {
+      var tx = cx + rs(rnd, spread);
       whip(g, tx, base, tx + rs(rnd, 4), base - h * 0.5, tx + rs(rnd, 8), base - h * 0.95,
-        rgba(shade(c2, 0.28), 0.6), 1);
+        rgba(shade(c2, 0.22), 0.45), 1.4);
     }
   }
 
@@ -2778,7 +2846,7 @@
     var c1 = def.color, c2 = def.color2 || shade(c1, 0.15);
     var s = [0.5, 0.78, 1][stage];
     var cx = PX / 2, cy = PX / 2 + 5, r = 22 * s;
-    blobEll(g, cx + 3, cy + r * 0.62, r * 0.95, r * 0.3, '#000000', 0.3, 0.25);
+    blobEll(g, cx + 3, cy + r * 0.62, r * 0.95, r * 0.32, DARK, 0.24, 0.25);
     /* Woody stems first, then three tones of foliage in clumps. */
     for (var st = 0; st < 4; st++) {
       var ang = -Math.PI / 2 + rs(rnd, 1.1);
@@ -2796,7 +2864,7 @@
       }
     }
     /* Individual leaves around the rim break the blob silhouette. */
-    for (var l = 0; l < 14; l++) {
+    for (var l = 0; l < 7; l++) {
       var la = rnd() * TAU, ld = r * rr(rnd, 0.55, 0.95);
       leaf(g, cx + Math.cos(la) * ld * 0.8, cy + Math.sin(la) * ld * 0.6,
         r * 0.32, r * 0.13, la + Math.PI / 2,
@@ -2816,9 +2884,9 @@
     } else if (ripe) {
       for (var b = 0; b < 12; b++) {
         var bx2 = cx + rs(rnd, r * 0.8), by2 = cy + rs(rnd, r * 0.62);
-        circle(g, bx2 + 0.8, by2 + 1, 3.4, rgba('#000000', 0.3));
+        circle(g, bx2 + 0.8, by2 + 1, 3.4, rgba(DARK, 0.3));
         circle(g, bx2, by2, 3.2, c2);
-        circle(g, bx2 - 1, by2 - 1.2, 1.1, rgba('#ffffff', 0.7));
+        circle(g, bx2 - 1, by2 - 1.2, 1.1, rgba(LIT, 0.7));
       }
     }
   }
@@ -2837,7 +2905,7 @@
 
     /* The shadow the canopy throws, south-east of the trunk. */
     blobEll(g, cx + canopyR * 0.42, base - canopyR * 0.1, canopyR * 0.95, canopyR * 0.4,
-      '#000000', 0.34, 0.25);
+      DARK, 0.34, 0.25);
 
     /* Trunk: tapered, with bark running up it and roots flaring out. */
     var tw = (pine ? 7 : 8) * scale + 2;
@@ -2851,7 +2919,7 @@
     g.save(); g.clip();
     gradRect(g, cx - tw - 2, top - 2, tw * 2 + 4, trunkH + 4,
       linGrad(g, cx - tw, 0, cx + tw, 0,
-        [0, rgba('#ffffff', 0.26), 0.35, rgba('#ffffff', 0.02), 1, rgba('#000000', 0.34)]));
+        [0, rgba(LIT, 0.26), 0.35, rgba(LIT, 0.02), 1, rgba(DARK, 0.34)]));
     for (var b = 0; b < 7; b++) {
       var bx = cx + rs(rnd, tw);
       whip(g, bx, base, bx + rs(rnd, 2.5), base - trunkH * 0.5, bx + rs(rnd, 2), top,
@@ -2878,7 +2946,7 @@
           var dist = tr * rr(rnd, 0.35, 1);
           var nx = cx + Math.cos(ang) * dist, ny = ty - Math.abs(Math.sin(ang)) * tr * 0.4;
           stroke(g, [nx, ny + 5, nx + Math.cos(ang) * 6, ny + 9],
-            rnd() < 0.4 ? mix(tone, '#000000', 0.2) : tone, rr(rnd, 1.6, 3.2));
+            rnd() < 0.4 ? mix(tone, DARK, 0.2) : tone, rr(rnd, 1.6, 3.2));
         }
         ell(g, cx - tr * 0.2, ty - tr * 0.36, tr * 0.5, tr * 0.22, -0.15,
           rgba(mix(leafC, P.foliageLight, 0.5), 0.5));
@@ -2897,7 +2965,7 @@
       }
       for (var k = 0; k < clumps.length; k++) {
         ell(g, clumps[k][0] + 2, clumps[k][1] + 3, clumps[k][2], clumps[k][2] * 0.86,
-          0, mix(leafC, '#000000', 0.42));
+          0, mix(leafC, DARK, 0.42));
       }
       for (var k2 = 0; k2 < clumps.length; k2++) {
         ell(g, clumps[k2][0], clumps[k2][1], clumps[k2][2], clumps[k2][2] * 0.86, 0, leafC);
@@ -2912,14 +2980,14 @@
         var la = rnd() * TAU, ld = canopyR * rr(rnd, 0.72, 1.05);
         var lx = cx + Math.cos(la) * ld, ly = cy + Math.sin(la) * ld * 0.84;
         leaf(g, lx, ly, canopyR * 0.28, canopyR * 0.11, la + Math.PI / 2,
-          rnd() < 0.45 ? mix(leafC, P.foliageLight, 0.35) : mix(leafC, '#000000', 0.2), false);
+          rnd() < 0.45 ? mix(leafC, P.foliageLight, 0.35) : mix(leafC, DARK, 0.2), false);
       }
       /* Dapple: the holes the sun comes through. */
       for (var d2 = 0; d2 < 12; d2++) {
         var da = rnd() * TAU, dd = canopyR * rr(rnd, 0.1, 0.8);
         blob(g, cx + Math.cos(da) * dd, cy + Math.sin(da) * dd * 0.84,
           canopyR * rr(rnd, 0.08, 0.18),
-          rnd() < 0.5 ? '#ffffff' : '#000000', rr(rnd, 0.06, 0.16), 0.1);
+          rnd() < 0.5 ? LIT : DARK, rr(rnd, 0.06, 0.16), 0.1);
       }
     }
   }
@@ -2929,13 +2997,13 @@
     var id = def.id;
     var cx = PX / 2, base = 54;
     var s = [0.34, 0.66, 1][stage];
-    blobEll(g, cx + 2, base + 2, 20 * s + 5, 4.5, '#000000', 0.24, 0.2);
+    blobEll(g, cx + 2, base + 2, 20 * s + 5, 4.5, DARK, 0.24, 0.2);
 
     if (id === 'plantCorn') {
       /* One tall stalk with broad arching leaves; cobs when ripe. */
       var h = 46 * s;
       stroke(g, [cx, base, cx + 1, base - h * 0.5, cx - 1, base - h], shade(c1, -0.15), 3.4 * s + 1);
-      stroke(g, [cx - 1, base, cx, base - h * 0.5, cx - 2, base - h], rgba('#ffffff', 0.2), 1.2);
+      stroke(g, [cx - 1, base, cx, base - h * 0.5, cx - 2, base - h], rgba(LIT, 0.2), 1.2);
       for (var i = 0; i < 6; i++) {
         var side = i & 1 ? 1 : -1, ly = base - h * (0.2 + i * 0.13);
         var len = (26 - i * 2) * s;
@@ -3008,7 +3076,7 @@
             ell(g, bx + Math.cos(la2) * 3, by + Math.sin(la2) * 3, 4.4, 3.6, la2,
               rgba(c2, 0.95));
           }
-          circle(g, bx, by, 3.4, '#ffffff');
+          circle(g, bx, by, 3.4, LIT);
           for (var hk = 0; hk < 4; hk++) {
             var ha = hk * TAU / 4 + 0.4 + Math.PI / 4;
             stroke(g, [bx, by, bx + Math.cos(ha) * 6, by + Math.sin(ha) * 6],
@@ -3037,9 +3105,9 @@
            shouldering out of the soil at the base. */
         for (var t3 = 0; t3 < 3; t3++) {
           var tx = cx + rs(rnd, 13), ty = base + rr(rnd, -2, 3);
-          ell(g, tx + 1, ty + 1.5, 6, 4, 0.3, rgba('#000000', 0.3));
+          ell(g, tx + 1, ty + 1.5, 6, 4, 0.3, rgba(DARK, 0.3));
           ell(g, tx, ty, 6, 4, 0.3, mix(P.sand, P.soil, 0.45));
-          ell(g, tx - 1.6, ty - 1.2, 2.6, 1.6, 0.3, rgba('#ffffff', 0.25));
+          ell(g, tx - 1.6, ty - 1.2, 2.6, 1.6, 0.3, rgba(LIT, 0.25));
         }
       }
       for (var f4 = 0; f4 < 3; f4++) {
@@ -3048,9 +3116,9 @@
     } else if (stage === 2) {
       for (var b2 = 0; b2 < 5; b2++) {
         var bx3 = cx + rs(rnd, 13), by3 = base - rr(rnd, 6, 20);
-        circle(g, bx3 + 0.7, by3 + 1, 3.2, rgba('#000000', 0.25));
+        circle(g, bx3 + 0.7, by3 + 1, 3.2, rgba(DARK, 0.25));
         circle(g, bx3, by3, 3, c2);
-        circle(g, bx3 - 1, by3 - 1, 1, rgba('#ffffff', 0.6));
+        circle(g, bx3 - 1, by3 - 1, 1, rgba(LIT, 0.6));
       }
     }
   }
@@ -3143,7 +3211,7 @@
     g.closePath();
     g.fillStyle = c1; g.fill();
     g.fillStyle = radGrad(g, cx - r * 0.3, cy - r * 0.3, 0, r * 1.5,
-      [0, rgba('#ffffff', 0.22), 0.5, rgba(dark, 0.1), 1, rgba(dark, 0.55)]);
+      [0, rgba(LIT, 0.22), 0.5, rgba(dark, 0.1), 1, rgba(dark, 0.55)]);
     g.fill();
     /* Fingers thrown in the direction of travel. */
     for (var f = 0; f < 5; f++) {
@@ -3173,7 +3241,7 @@
       blob(g, cx + Math.cos(ang) * d, cy + Math.sin(ang) * d * 0.9,
         size * rr(rnd, 0.5, 0.8), tone, rr(rnd, 0.16, 0.3), 0.08);
     }
-    blob(g, cx - size * 0.18, cy - size * 0.2, size * 0.42, mix(tone, '#ffffff', 0.5), 0.14, 0.05);
+    blob(g, cx - size * 0.18, cy - size * 0.2, size * 0.42, mix(tone, LIT, 0.5), 0.14, 0.05);
   }
 
   function paintExplosion(g, rnd, frame) {
@@ -3185,7 +3253,7 @@
       /* The flash: all the light at once, before anything is visible. */
       g.globalCompositeOperation = 'lighter';
       blob(g, cx, cy, r * (frame ? 2.6 : 1.9), '#fff4c4', frame ? 0.5 : 0.85, 0.15);
-      blob(g, cx, cy, r * 1.2, '#ffffff', 0.95, 0.5);
+      blob(g, cx, cy, r * 1.2, LIT, 0.95, 0.5);
       g.globalCompositeOperation = 'source-over';
     }
     if (frame >= 1 && frame <= 4) {
@@ -3257,7 +3325,7 @@
       var x1 = cx + Math.cos(ang) * d, y1 = cy + Math.sin(ang) * d;
       stroke(g, [x0, y0, x1, y1], rgba(i % 3 ? P.ember : '#fff4c4', 0.9 - frame * 0.2),
         rr(rnd, 1, 2.2));
-      circle(g, x1, y1, rr(rnd, 0.8, 1.6), rgba('#ffffff', 0.8 - frame * 0.2));
+      circle(g, x1, y1, rr(rnd, 0.8, 1.6), rgba(LIT, 0.8 - frame * 0.2));
     }
     g.globalCompositeOperation = 'source-over';
   }
@@ -3283,7 +3351,7 @@
     /* The ring on the surface, then the crown, then the thrown drops. */
     g.beginPath();
     g.ellipse(cx, cy, r, r * 0.42, 0, 0, TAU);
-    g.strokeStyle = rgba(mix(P.water, '#ffffff', 0.55), 0.55 - frame * 0.1);
+    g.strokeStyle = rgba(mix(P.water, LIT, 0.55), 0.55 - frame * 0.1);
     g.lineWidth = 2.4 - frame * 0.4;
     g.stroke();
     for (var i = 0; i < 8; i++) {
@@ -3291,21 +3359,21 @@
       var hx = cx + Math.cos(ang) * r * 0.55, hy = cy + Math.sin(ang) * r * 0.24;
       var top = cy - (10 - frame * 2) - Math.abs(Math.sin(ang)) * 3;
       whip(g, hx, hy, hx + Math.cos(ang) * 3, (hy + top) / 2, hx + Math.cos(ang) * 6, top,
-        rgba(mix(P.water, '#ffffff', 0.45), 0.7 - frame * 0.12), 2.2);
+        rgba(mix(P.water, LIT, 0.45), 0.7 - frame * 0.12), 2.2);
     }
     for (var d = 0; d < 7; d++) {
       var da = rnd() * TAU, dd = r * rr(rnd, 0.8, 1.5);
       var dx = cx + Math.cos(da) * dd, dy = cy + Math.sin(da) * dd * 0.5 - frame * 3;
       ell(g, dx, dy, rr(rnd, 1, 2.2), rr(rnd, 1.6, 3), 0,
-        rgba(mix(P.water, '#ffffff', 0.6), 0.75 - frame * 0.12));
+        rgba(mix(P.water, LIT, 0.6), 0.75 - frame * 0.12));
     }
-    blobEll(g, cx, cy, r * 0.8, r * 0.3, '#ffffff', 0.2 - frame * 0.04, 0.1);
+    blobEll(g, cx, cy, r * 0.8, r * 0.3, LIT, 0.2 - frame * 0.04, 0.1);
   }
 
   function paintSnow(g, rnd, frame) {
     var cx = PX / 2, cy = PX / 2;
     var r = 3 + frame * 1.6;
-    blob(g, cx, cy, r * 2.2, '#ffffff', 0.2, 0.05);
+    blob(g, cx, cy, r * 2.2, LIT, 0.2, 0.05);
     g.strokeStyle = 'rgba(255,255,255,0.95)';
     g.lineWidth = 1.2;
     g.lineCap = 'round';
@@ -3323,7 +3391,7 @@
       g.stroke();
     }
     g.lineCap = 'butt';
-    circle(g, cx, cy, r * 0.22, '#ffffff');
+    circle(g, cx, cy, r * 0.22, LIT);
   }
 
   function paintRain(g, rnd, frame) {
@@ -3336,11 +3404,11 @@
     g.lineTo(cx - 1.4, cy - len / 2);
     g.quadraticCurveTo(cx + 1, cy, cx + 0.6, cy + len / 2);
     g.closePath();
-    g.fillStyle = rgba(mix(P.water, '#ffffff', 0.6), 0.55);
+    g.fillStyle = rgba(mix(P.water, LIT, 0.6), 0.55);
     g.fill();
     stroke(g, [cx - 2.4, cy + len / 2 - 2, cx - 2.4, cy - len / 2 + 4],
-      rgba('#ffffff', 0.4), 0.9);
-    ell(g, cx - 1, cy + len / 2, 2.4, 1.6, 0, rgba(mix(P.water, '#ffffff', 0.7), 0.7));
+      rgba(LIT, 0.4), 0.9);
+    ell(g, cx - 1, cy + len / 2, 2.4, 1.6, 0, rgba(mix(P.water, LIT, 0.7), 0.7));
   }
 
   /* ------------------------------------------------------------------
@@ -3403,7 +3471,7 @@
     stroke(g, [x0, y0, x1, y1], shade(c, -0.3), w);
     stroke(g, [x0, y0, x1, y1], c, w - 1.6);
     stroke(g, [x0 - w * 0.18, y0 - w * 0.18, x1 - w * 0.18, y1 - w * 0.18],
-      rgba('#ffffff', 0.18), w * 0.35);
+      rgba(LIT, 0.18), w * 0.35);
   }
 
   function paintHumanLying(g, s, dead) {
@@ -3413,19 +3481,20 @@
     var legC = dead ? drained(s.leg) : s.leg;
     var hair = dead ? drained(s.hair) : s.hair;
     var cx = 34, cy = 34;
+    blobEll(g, cx + 3, cy + 5, 22, 9, DARK, 0.36, 0.22);
     /* Head to the west, legs to the east, arms thrown out. */
     limb(g, cx + 4, cy + 4, cx + 22, cy + 12, 9, legC);
     limb(g, cx + 4, cy - 4, cx + 24, cy - 6, 9, legC);
     ell(g, cx, cy, 15, 11, 0.04, cloth);
     ell(g, cx - 2, cy - 3, 11, 6, 0.04, shade(cloth, 0.2));
-    ell(g, cx + 6, cy + 5, 10, 5, 0.1, rgba('#000000', 0.2));
+    ell(g, cx + 6, cy + 5, 10, 5, 0.1, rgba(DARK, 0.2));
     limb(g, cx - 6, cy - 6, cx - 2, cy - 20, 7.5, cloth);
     limb(g, cx - 6, cy + 6, cx + 4, cy + 19, 7.5, cloth);
     circle(g, cx - 2, cy - 21, 3.6, skin);
     circle(g, cx + 5, cy + 20, 3.6, skin);
     circle(g, cx - 17, cy - 2, 11, skin);
     g.fillStyle = radGrad(g, cx - 21, cy - 6, 1, 15,
-      [0, rgba('#ffffff', 0.32), 0.55, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]);
+      [0, rgba(LIT, 0.32), 0.55, rgba(LIT, 0), 1, rgba(DARK, 0.3)]);
     g.beginPath(); g.arc(cx - 17, cy - 2, 11, 0, TAU); g.fill();
     /* Hair falls to the side the head is turned. */
     g.beginPath();
@@ -3460,6 +3529,13 @@
     var shoulderY = 27 + bob, headY = 15 + bob;
     var halfW = (side ? 8 : 11) + s.build;
 
+    /* The contact shadow, drawn before anything else so the whole pawn
+       sits on top of it. It is the one mark that stops a colonist
+       looking pasted onto the map, and now that the ground underneath
+       has stopped shouting it can afford to be a little stronger than it
+       was - a calm field is exactly what lets a silhouette read. */
+    blobEll(g, cx + 2, footY + 2, 15, 5.5, DARK, 0.42, 0.22);
+
     /* ---- legs ---- */
     var legW = 9;
     if (side) {
@@ -3488,25 +3564,25 @@
     g.save(); g.clip();
     gradRect(g, cx - halfW - 2, shoulderY - 8, halfW * 2 + 4, hipY - shoulderY + 16,
       linGrad(g, cx - halfW, shoulderY - 6, cx + halfW, hipY + 4,
-        [0, rgba('#ffffff', 0.3), 0.42, rgba('#ffffff', 0.02), 1, rgba('#000000', 0.3)]));
+        [0, rgba(LIT, 0.3), 0.42, rgba(LIT, 0.02), 1, rgba(DARK, 0.3)]));
     if (s.over) {
       /* A jacket hangs open over the shirt beneath it. */
       fill(g, cx - 2.2, shoulderY - 6, 4.4, hipY - shoulderY + 12, rgba(s.top, 0.95));
-      fill(g, cx - 2.6, shoulderY - 6, 1, hipY - shoulderY + 12, rgba('#000000', 0.3));
-      fill(g, cx + 1.8, shoulderY - 6, 1, hipY - shoulderY + 12, rgba('#000000', 0.3));
+      fill(g, cx - 2.6, shoulderY - 6, 1, hipY - shoulderY + 12, rgba(DARK, 0.3));
+      fill(g, cx + 1.8, shoulderY - 6, 1, hipY - shoulderY + 12, rgba(DARK, 0.3));
     }
     if (s.vest) {
       rrect(g, cx - halfW * 0.95, shoulderY - 4, halfW * 1.9, hipY - shoulderY + 6, 3, s.vest);
       gradRect(g, cx - halfW, shoulderY - 4, halfW * 2, hipY - shoulderY + 8,
         linGrad(g, cx - halfW, shoulderY, cx + halfW, hipY,
-          [0, rgba('#ffffff', 0.28), 1, rgba('#000000', 0.28)]));
+          [0, rgba(LIT, 0.28), 1, rgba(DARK, 0.28)]));
       for (var v = 0; v < 3; v++) {
-        fill(g, cx - halfW, shoulderY + v * 5, halfW * 2, 1.4, rgba('#000000', 0.3));
+        fill(g, cx - halfW, shoulderY + v * 5, halfW * 2, 1.4, rgba(DARK, 0.3));
       }
     }
     g.restore();
     /* Belt at the hip, which separates torso from legs at any zoom. */
-    fill(g, cx - halfW * 0.86, hipY - 1, halfW * 1.72, 3, rgba('#000000', 0.35));
+    fill(g, cx - halfW * 0.86, hipY - 1, halfW * 1.72, 3, rgba(DARK, 0.35));
 
     /* ---- arms ---- */
     var armW = 7.5, shX = halfW - 1;
@@ -3534,10 +3610,10 @@
     var hx = cx + (side ? (dir === 1 ? 2 : -2) : 0);
     circle(g, hx, headY, hr, s.skin);
     g.fillStyle = radGrad(g, hx - 4, headY - 5, 1, hr * 1.5,
-      [0, rgba('#ffffff', 0.34), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]);
+      [0, rgba(LIT, 0.34), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.3)]);
     g.beginPath(); g.arc(hx, headY, hr, 0, TAU); g.fill();
     /* Neck shadow, so the head sits on the shoulders. */
-    ell(g, hx, headY + hr - 1, hr * 0.7, 2.6, 0, rgba('#000000', 0.22));
+    ell(g, hx, headY + hr - 1, hr * 0.7, 2.6, 0, rgba(DARK, 0.22));
 
     if (!s.head) {
       /* Hair: a cap of it, with the hairline where the facing needs it. */
@@ -3560,7 +3636,7 @@
         }
         if (s.style === 3) ell(g, hx, headY - hr * 0.72, hr * 0.95, hr * 0.5, 0, hair);
         ell(g, hx - hr * 0.3, headY - hr * 0.66, hr * 0.4, hr * 0.22, -0.3,
-          rgba('#ffffff', 0.18));
+          rgba(LIT, 0.18));
       }
       g.restore();
     }
@@ -3572,15 +3648,15 @@
       if (dir === 2) {
         ell(g, hx - ex, ey, 1.7, 2, 0, P.ink);
         ell(g, hx + ex, ey, 1.7, 2, 0, P.ink);
-        ell(g, hx - ex - 0.5, ey - 0.7, 0.7, 0.7, 0, rgba('#ffffff', 0.7));
-        ell(g, hx + ex - 0.5, ey - 0.7, 0.7, 0.7, 0, rgba('#ffffff', 0.7));
+        ell(g, hx - ex - 0.5, ey - 0.7, 0.7, 0.7, 0, rgba(LIT, 0.7));
+        ell(g, hx + ex - 0.5, ey - 0.7, 0.7, 0.7, 0, rgba(LIT, 0.7));
         stroke(g, [hx - 2.4, headY + 5.6, hx + 2.4, headY + 5.6],
           rgba(shade(s.skin, -0.45), 0.7), 1.2);
         ell(g, hx, headY + 3.4, 1, 1.6, 0, rgba(shade(s.skin, -0.25), 0.5));
       } else {
         var f = dir === 1 ? 1 : -1;
         ell(g, hx + f * ex * 0.9, ey, 1.7, 2, 0, P.ink);
-        ell(g, hx + f * ex * 0.4, ey - 0.7, 0.7, 0.7, 0, rgba('#ffffff', 0.6));
+        ell(g, hx + f * ex * 0.4, ey - 0.7, 0.7, 0.7, 0, rgba(LIT, 0.6));
         ell(g, hx + f * (hr - 1), headY + 3, 1.6, 1.2, 0, rgba(shade(s.skin, -0.2), 0.6));
         stroke(g, [hx + f * 1, headY + 5.6, hx + f * 4, headY + 5.6],
           rgba(shade(s.skin, -0.45), 0.6), 1.2);
@@ -3592,15 +3668,15 @@
       var hc = s.head;
       circle(g, hx, headY - 1.5, hr + 1.2, hc);
       g.fillStyle = radGrad(g, hx - 4, headY - 7, 1, hr * 1.6,
-        [0, rgba('#ffffff', 0.4), 0.5, rgba('#ffffff', 0.04), 1, rgba('#000000', 0.34)]);
+        [0, rgba(LIT, 0.4), 0.5, rgba(LIT, 0.04), 1, rgba(DARK, 0.34)]);
       g.beginPath(); g.arc(hx, headY - 1.5, hr + 1.2, 0, TAU); g.fill();
       if (!back) {
         g.beginPath();
         g.ellipse(hx, headY + 4, hr + 2.5, 3.4, 0, Math.PI, TAU);
         g.fillStyle = shade(hc, -0.3); g.fill();
-        ell(g, hx, headY + 3, hr * 0.9, 1.6, 0, rgba('#000000', 0.3));
+        ell(g, hx, headY + 3, hr * 0.9, 1.6, 0, rgba(DARK, 0.3));
       }
-      ring(g, hx, headY - 1.5, hr + 1.2, 1.2, rgba('#000000', 0.35));
+      ring(g, hx, headY - 1.5, hr + 1.2, 1.2, rgba(DARK, 0.35));
     }
   }
 
@@ -3613,7 +3689,7 @@
     g.moveTo(cx - 9, y - 4);
     g.lineTo(cx, y + 2);
     g.lineTo(cx + 9, y - 4);
-    g.strokeStyle = rgba('#000000', 0.5); g.lineWidth = 4.5;
+    g.strokeStyle = rgba(DARK, 0.5); g.lineWidth = 4.5;
     g.lineJoin = 'round'; g.lineCap = 'round';
     g.stroke();
     g.strokeStyle = P.gold; g.lineWidth = 2.6;
@@ -3651,6 +3727,9 @@
     var swing = Math.sin((frame & 3) * Math.PI / 2);
     var legW = Math.max(2.5, S * a.legW), legL = S * 0.2;
 
+    /* The contact shadow first, so every leg and the barrel sit on it. */
+    blobEll(g, cx + S * 0.035, bodyY + ry * 0.62, rx * 1.3, ry * 0.5, DARK, 0.36, 0.22);
+
     /* Legs first: front pair and back pair on opposite phases. */
     var pairs = [[bodyY - ry * 0.55, swing], [bodyY + ry * 0.55, -swing]];
     for (var p = 0; p < 2; p++) {
@@ -3677,7 +3756,7 @@
     g.save();
     g.beginPath(); g.ellipse(cx, bodyY, rx, ry, 0, 0, TAU); g.clip();
     g.fillStyle = radGrad(g, cx - rx * 0.4, bodyY - ry * 0.45, 1, rx * 2,
-      [0, rgba('#ffffff', 0.26), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.3)]);
+      [0, rgba(LIT, 0.26), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.3)]);
     g.fillRect(cx - rx, bodyY - ry, rx * 2, ry * 2);
     ell(g, cx, bodyY + ry * 0.45, rx * 0.72, ry * 0.4, 0, rgba(belly, 0.5));
     if (a.shag) {
@@ -3701,7 +3780,7 @@
        quadruped shape. */
     ell(g, cx - rx * 0.62, bodyY + ry * 0.4, rx * 0.5, ry * 0.36, 0.3, rgba(shade(body, 0.1), 0.6));
     ell(g, cx + rx * 0.62, bodyY + ry * 0.4, rx * 0.5, ry * 0.36, -0.3, rgba(shade(body, 0.1), 0.6));
-    stroke(g, [cx, bodyY - ry * 0.8, cx, bodyY + ry * 0.8], rgba('#ffffff', 0.12), rx * 0.3);
+    stroke(g, [cx, bodyY - ry * 0.8, cx, bodyY + ry * 0.8], rgba(LIT, 0.12), rx * 0.3);
 
     /* Neck, then the head. */
     limb(g, cx, bodyY - ry * 0.7, cx, headY + hr * 0.5, hr * 1.1, body);
@@ -3709,7 +3788,7 @@
     g.save();
     g.beginPath(); g.ellipse(cx, headY, hr, hr * 1.05, 0, 0, TAU); g.clip();
     g.fillStyle = radGrad(g, cx - hr * 0.4, headY - hr * 0.5, 1, hr * 2,
-      [0, rgba('#ffffff', 0.26), 0.5, rgba('#ffffff', 0), 1, rgba('#000000', 0.26)]);
+      [0, rgba(LIT, 0.26), 0.5, rgba(LIT, 0), 1, rgba(DARK, 0.26)]);
     g.fillRect(cx - hr, headY - hr * 1.1, hr * 2, hr * 2.2);
     g.restore();
 
@@ -3735,7 +3814,7 @@
           cx + s3 * hr * 1.9, headY - hr * 1.9);
         g.strokeStyle = P.bone; g.lineWidth = Math.max(2.5, hr * 0.32);
         g.lineCap = 'round'; g.stroke();
-        g.strokeStyle = rgba('#ffffff', 0.3); g.lineWidth = Math.max(1, hr * 0.12);
+        g.strokeStyle = rgba(LIT, 0.3); g.lineWidth = Math.max(1, hr * 0.12);
         g.stroke();
         g.lineCap = 'butt';
       }
@@ -3754,7 +3833,7 @@
       for (var s5 = -1; s5 <= 1; s5 += 2) {
         ell(g, cx + s5 * hr * 0.48, headY - hr * 0.15, hr * 0.17, hr * 0.2, 0, P.ink);
         ell(g, cx + s5 * hr * 0.48 - hr * 0.06, headY - hr * 0.22, hr * 0.07, hr * 0.07, 0,
-          rgba('#ffffff', 0.8));
+          rgba(LIT, 0.8));
       }
     } else {
       for (var s6 = -1; s6 <= 1; s6 += 2) {
@@ -3933,21 +4012,193 @@
      a frame is a garbage collector pause the player can feel. */
   var terrainCache = new Map();
 
+  function buildTerrain(def, variant) {
+    return cached('ter|' + def.id + '|' + variant, PX, PX,
+      function (g, rnd) { paintTerrain(g, rnd, def, variant); });
+  }
+
   Art.terrain = function (def, variant) {
     variant = (variant | 0) & 3;
     var row = terrainCache.get(def);
     if (!row) terrainCache.set(def, (row = [null, null, null, null]));
-    return row[variant] || (row[variant] = cached('ter|' + def.id + '|' + variant, PX, PX,
-      function (g, rnd) { paintTerrain(g, rnd, def, variant); }));
+    return row[variant] || (row[variant] = buildTerrain(def, variant));
   };
 
-  /* Integer mixing, so scrolling over new ground allocates nothing. */
+  /* Integer mixing, so scrolling over new ground allocates nothing.
+     U.hash is the string-keyed sibling of this and is what the sprite
+     cache seeds from; a per-cell lookup cannot afford to build the
+     string, so the same avalanche is done on the two integers. */
   function cellHash(x, y) {
     var h = (x * 374761393 + y * 668265263) | 0;
     return Math.imul(h ^ (h >>> 13), 1274126177);
   }
 
-  Art.terrainVariant = function (x, y) { return (cellHash(x, y) >>> 15) & 3; };
+  function hash01(x, y) {
+    var h = cellHash(x, y);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+
+  /* Value noise on a coarse lattice: one sample every `cell` tiles,
+     smoothstepped between. This is the whole of point 2 at the top of
+     the terrain section - it is what turns the variant from per-cell
+     white noise into a field with patches in it. */
+  function patchNoise(x, y, cell) {
+    var fx = x / cell, fy = y / cell;
+    var ix = Math.floor(fx), iy = Math.floor(fy);
+    var tx = fx - ix, ty = fy - iy;
+    tx = tx * tx * (3 - 2 * tx);
+    ty = ty * ty * (3 - 2 * ty);
+    var a = hash01(ix, iy), b = hash01(ix + 1, iy);
+    var c = hash01(ix, iy + 1), d = hash01(ix + 1, iy + 1);
+    var top = a + (b - a) * tx, bot = c + (d - c) * tx;
+    return top + (bot - top) * ty;
+  }
+
+  /* Two bits with two different jobs. The high bit is the slow field -
+     seven tiles across, with a three-tile wobble on it - and decides the
+     tone, so a dozen neighbouring tiles agree and the ground reads as
+     patches rather than as a grid of arguing cells. The low bit is
+     per-cell and only swaps which arrangement of marks the tile uses,
+     which is what stops a patch from showing its own grid. */
+  Art.terrainVariant = function (x, y) {
+    var n = patchNoise(x, y, 7) * 0.68 + patchNoise(x + 131, y + 57, 3) * 0.32;
+    return (n > 0.5 ? 2 : 0) | ((cellHash(x, y) >>> 17) & 1);
+  };
+
+  /* ------------------------------------------------------------------
+     Edge masks - the cure for "too crisp"
+
+     Two terrains must not meet along a ruled line, and art.js cannot fix
+     that by itself: a tile sprite has no idea what its neighbours are.
+     The renderer does, so art.js cuts the shapes and render.js stamps
+     them. render.js already asks for these by calling
+
+         Art.terrainEdge(bits, variant | (reach << 2))
+
+     and its half of the contract is: draw the neighbouring ground into a
+     scratch tile, cut it to this mask with `destination-in`, and stamp
+     the result over the cell it has just painted, higher-ranked ground
+     last. Art.terrainBlend below does the first two of those three in
+     one call for anyone who wants it done here instead.
+
+     `bits` names which neighbours are the other ground, in render.js's
+     order, which is art.js's wall-join order extended to the diagonals:
+     1 N, 2 E, 4 S, 8 W, 16 NE, 32 SE, 64 SW, 128 NW. `variant` is 0..3
+     and only reshuffles the tearing, so two cells of the same shoreline
+     are not stamped from the same picture. `reach` is 0 or 1: nought
+     unpicks a ruled line between two shades of one earth, one is the
+     crumbling bank a shoreline or a cliff foot wants, about a third of a
+     tile deep. Anything wider than the step it hides would be a smudge;
+     anything narrower draws an outline around the staircase instead of
+     dissolving it.
+
+     Masks are authored at the resolution render.js uses them at rather
+     than at PX. They are pure alpha ramps with no detail finer than a
+     few pixels, so the extra sixteen-fold of memory would buy nothing,
+     and there are a few hundred of them. */
+
+  var EDGE_PX = 32;
+  var EDGE_LO = [0.08, 0.30], EDGE_SPAN = [0.11, 0.34];
+  var edgeKeys = [];
+  var EDGE_CACHE_MAX = 512;
+
+  /* One side of the tile: an opaque band against the seam whose inner
+     boundary wanders, then a hand of grains thrown past it. Drawn as the
+     north edge and rotated, so all four sides tear the same way. */
+  function edgeBand(g, rnd, dir, reach) {
+    var E = EDGE_PX, n = 4, dep = [], i, deep = 0;
+    var lo = E * EDGE_LO[reach], span = E * EDGE_SPAN[reach];
+    g.save();
+    g.translate(E * 0.5, E * 0.5);
+    g.rotate(dir * (Math.PI / 2));
+    g.translate(-E * 0.5, -E * 0.5);
+    for (i = 0; i <= n; i++) {
+      dep.push(lo + rnd() * span);
+      if (dep[i] > deep) deep = dep[i];
+    }
+    /* Opaque where the two grounds actually touch, gone a few pixels
+       later. A translucent wash over the whole band would read as a
+       second line drawn in tracing paper. */
+    g.fillStyle = linGrad(g, 0, -1, 0, deep + E * 0.07,
+      [0, rgba(LIT, 1), 0.6, rgba(LIT, 0.94), 1, rgba(LIT, 0)]);
+    g.beginPath();
+    g.moveTo(-2, -2);
+    g.lineTo(E + 2, -2);
+    g.lineTo(E + 2, dep[n]);
+    for (i = n - 1; i >= 0; i--) {
+      g.quadraticCurveTo(((i + 0.5) / n) * E,
+        (dep[i] + dep[i + 1]) * 0.5 + rs(rnd, span * 0.45),
+        (i / n) * E, dep[i]);
+    }
+    g.lineTo(-2, dep[0]);
+    g.closePath();
+    g.fill();
+    for (i = 0; i < 3; i++) {
+      var r = E * rr(rnd, 0.025, 0.06);
+      blob(g, rnd() * E, deep + r + rnd() * span, r * 1.5, LIT, 0.45 - i * 0.1, 0.4);
+    }
+    g.restore();
+  }
+
+  /* A corner neighbour with no shared edge: a soft bite out of the
+     corner, which is what stops a diagonal coast reading as stairs. */
+  function edgeCorner(g, rnd, dir, reach) {
+    var E = EDGE_PX;
+    var cx = ((dir === 4 || dir === 5) ? 1 : 0) * E;
+    var cy = ((dir === 5 || dir === 6) ? 1 : 0) * E;
+    var r = E * (EDGE_LO[reach] + EDGE_SPAN[reach] * rr(rnd, 0.7, 1.2)) * 1.5;
+    /* It has to fall away the whole way from the corner. A plateau here
+       floods the cell and the neighbour arrives as a blot rather than as
+       a bite taken out of the corner. */
+    g.fillStyle = radGrad(g, cx, cy, 0, r,
+      [0, rgba(LIT, 0.95), 0.45, rgba(LIT, 0.62), 1, rgba(LIT, 0)]);
+    g.beginPath();
+    g.ellipse(cx, cy, r * rr(rnd, 0.85, 1.15), r * rr(rnd, 0.85, 1.15), 0, 0, TAU);
+    g.fill();
+  }
+
+  Art.terrainEdge = function (bits, packed) {
+    bits = (bits | 0) & 255;
+    var variant = (packed | 0) & 3, reach = ((packed | 0) >> 2) & 1;
+    var key = 'te|' + bits + '|' + variant + '|' + reach;
+    var hit = cache.get(key);
+    if (hit) return hit;
+    var made = cached(key, EDGE_PX, EDGE_PX, function (g, rnd) {
+      var d;
+      for (d = 0; d < 4; d++) if (bits & (1 << d)) edgeBand(g, rnd, d, reach);
+      for (d = 4; d < 8; d++) if (bits & (1 << d)) edgeCorner(g, rnd, d, reach);
+    });
+    /* Two hundred and fifty-six masks times four variants times two
+       reaches is more than any one map asks for, but it is not bounded
+       by anything else, so the oldest fall out and the table settles. */
+    edgeKeys.push(key);
+    while (edgeKeys.length > EDGE_CACHE_MAX) cache.delete(edgeKeys.shift());
+    return made;
+  };
+
+  /* The same mask already filled with `def`'s ground: one drawImage over
+     the cell and the seam is done. */
+  var blendKeys = [];
+  var BLEND_CACHE_MAX = 384;
+
+  Art.terrainBlend = function (def, bits, packed) {
+    bits = (bits | 0) & 255;
+    if (!def || !bits) return null;
+    var variant = (packed | 0) & 3, reach = ((packed | 0) >> 2) & 1;
+    var key = 'tb|' + def.id + '|' + bits + '|' + variant + '|' + reach;
+    var hit = cache.get(key);
+    if (hit) return hit;
+    var src = Art.terrain(def, variant), mask = Art.terrainEdge(bits, packed);
+    var made = cached(key, EDGE_PX, EDGE_PX, function (g) {
+      g.drawImage(src, 0, 0, EDGE_PX, EDGE_PX);
+      g.globalCompositeOperation = 'destination-in';
+      g.drawImage(mask, 0, 0);
+      g.globalCompositeOperation = 'source-over';
+    });
+    blendKeys.push(key);
+    while (blendKeys.length > BLEND_CACHE_MAX) cache.delete(blendKeys.shift());
+    return made;
+  };
 
   function isWallLike(map, x, y) {
     /* Off-map reads as wall so a mountain running off the edge does not
@@ -4065,8 +4316,12 @@
     var ripe = stage === 2 && !!pl.harvestedThing;
     var tree = !!pl.isTree;
     /* A tuft of grass differs from its neighbour; a tree does not need
-       to, because at 2x2 the silhouette already carries the variety. */
-    var variant = tree ? 0 : (thing && thing.id ? thing.id : 0) % 3;
+       to, because at 2x2 the silhouette already carries the variety.
+       Four arrangements rather than three, and the grass painter moves
+       its tuft off centre by variant, because mapgen puts a plant on
+       almost every cell and a sprite that always sits in the middle of
+       its tile turns that into a visible grid. */
+    var variant = tree ? 0 : (thing && thing.id ? thing.id : 0) % 4;
     var blighted = !!(thing && thing.blighted);
     var key = 'pl|' + def.id + '|' + stage + '|' + variant + (ripe ? 'r' : '') +
       (blighted ? 'b' : '');
@@ -4426,7 +4681,7 @@
     var hit = cache.get(ck);
     if (hit) return hit;
     return centred(cached(ck, s, s, function (g) {
-      blobEll(g, s / 2, s / 2, s * 0.46, s * 0.24, '#000000', 0.42, 0.18);
+      blobEll(g, s / 2, s / 2, s * 0.46, s * 0.24, DARK, 0.5, 0.18);
     }, (PX - s) / 2, (PX - s) / 2), s / 2, s / 2);
   };
 
@@ -4487,7 +4742,7 @@
     Defs.all('thing').forEach(function (d) {
       if (d.category === 'plant') {
         for (var s = 0; s < 3; s++) {
-          for (var v = 0; v < 3; v++) {
+          for (var v = 0; v < 4; v++) {
             Art.thing(d, { id: v, growth: [0.1, 0.6, 1][s] });
           }
         }

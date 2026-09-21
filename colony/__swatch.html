@@ -1,0 +1,28 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>swatch</title>
+<style>body{margin:0;background:#0a0c12;color:#e8e2d4;font:12px monospace}canvas{display:block;margin:6px}</style></head>
+<body><canvas id="c" width="1180" height="800"></canvas>
+<script src="js/utils.js"></script><script src="js/defs.js"></script>
+<script src="js/def_terrain.js"></script><script src="js/def_things.js"></script>
+<script src="js/def_plants.js"></script><script src="js/def_pawns.js"></script>
+<script src="js/def_recipes.js"></script><script src="js/art.js"></script>
+<script>
+var c = document.getElementById('c'), g = c.getContext('2d');
+g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+var T = Defs.all('terrain'), TS = 32, N = 6;   /* six cells of each, as a field */
+g.font = '11px monospace';
+var col = 0, row = 0;
+T.forEach(function (def, i) {
+  var bx = 8 + (i % 4) * 290, by = 22 + ((i / 4) | 0) * 190;
+  g.fillStyle = '#e8e2d4'; g.fillText(def.id, bx, by - 4);
+  for (var y = 0; y < 4; y++) for (var x = 0; x < 8; x++) {
+    var a = Art.terrain(def, Art.terrainVariant(x + i * 13, y + i * 7));
+    g.drawImage(a, bx + x * TS, by + y * TS, TS, TS);
+  }
+  /* the same field at zoom 1, where a tile is sixteen screen pixels */
+  for (var y2 = 0; y2 < 4; y2++) for (var x2 = 0; x2 < 8; x2++) {
+    var a2 = Art.terrain(def, Art.terrainVariant(x2 + i * 13, y2 + i * 7));
+    g.drawImage(a2, bx + 8 * TS + 10 + x2 * 16, by + y2 * 16, 16, 16);
+  }
+});
+window.__done = { cache: Art.cacheSize(), terrains: T.length };
+</script></body></html>

@@ -2,6 +2,20 @@
    ui.js - every panel, menu, tab, alert and letter, and the only
    place in the project that touches localStorage.
 
+   The layout is the one section 12 of the contract froze:
+
+     resources (top left) | colonist boxes (top centre) | alerts (right)
+                                                        | letters (right)
+     messages (bottom left)                             | date, time,
+     architect: a category column and the command grid  | speed (btm rt)
+     [ Architect | Work | Schedule | Assign | Animals | Research | World | Menu ]
+
+   index.html's container ids are frozen, so the bottom tab bar lives
+   in #topbar, the resource readout shares #colonist-bar with the
+   colonist boxes, and the clock sits at the foot of #letters. Nothing
+   here creates a panel of its own; CSS puts each container where the
+   diagram says it goes.
+
    Two rules shape this file.
 
    First, UI.update() runs on every animation frame. Rebuilding a
@@ -26,23 +40,34 @@
   var SAVE_KEY = 'rimdaun.save.v1';
   var MESSAGE_MS = 15000;        /* how long a log line stays up, real time */
   var ALERT_FRAMES = 90;         /* alerts are a scan of the map: keep it rare */
+  var RESOURCE_FRAMES = 30;      /* so is counting every stack in the colony */
   var INSPECT_FRAMES = 8;
-  var CHIP_FRAMES = 6;
+  var BOX_FRAMES = 6;
   var TAB_FRAMES = 20;
 
   var WORK_COLORS = ['', 'p1', 'p2', 'p3', 'p4'];
   var SCHEDULE_KINDS = ['anything', 'work', 'recreation', 'sleep'];
+
+  /* The architect's categories, in the order they run down the column. */
   var ARCH_CATEGORIES = [
     { id: 'orders', label: 'Orders', icon: 'cat-orders' },
     { id: 'zones', label: 'Zones', icon: 'cat-zone' },
     { id: 'structure', label: 'Structure', icon: 'cat-structure' },
-    { id: 'furniture', label: 'Furniture', icon: 'cat-furniture' },
     { id: 'production', label: 'Production', icon: 'cat-production' },
+    { id: 'furniture', label: 'Furniture', icon: 'cat-furniture' },
     { id: 'power', label: 'Power', icon: 'cat-power' },
     { id: 'security', label: 'Security', icon: 'cat-security' },
     { id: 'floor', label: 'Floors', icon: 'cat-floor' },
     { id: 'misc', label: 'Misc', icon: 'cat-misc' }
   ];
+
+  /* The bottom bar: the game's primary navigation. */
+  var BOTTOM_TABS = [
+    ['architect', 'Architect'], ['work', 'Work'], ['schedule', 'Schedule'],
+    ['assign', 'Assign'], ['animals', 'Animals'], ['research', 'Research'],
+    ['world', 'World'], ['menu', 'Menu']
+  ];
+
   var DESIGNATIONS = [
     ['mine', 'Mine', 'Mark rock and ore for a miner to dig out.'],
     ['chop', 'Chop wood', 'Mark trees to be felled for wood.'],
@@ -56,25 +81,51 @@
   ];
   var OVERLAYS = ['none', 'zones', 'power', 'rooms', 'beauty', 'temperature'];
 
+  /* The resource readout, in the order it reads down the top left. A
+     group is one line: nobody wants rice, corn, potatoes, berries and
+     meat as five separate counters when what they need to know is
+     whether there is food. Anything storable that no group claims is
+     appended after these, so a new def still shows up. */
+  var RESOURCE_GROUPS = [
+    { key: 'silver', label: 'Silver', ids: ['silver'] },
+    { key: 'wood', label: 'Wood', ids: ['wood'] },
+    { key: 'steel', label: 'Steel', ids: ['steel'] },
+    { key: 'blocks', label: 'Stone blocks', ids: ['stoneBlocks'] },
+    { key: 'chunks', label: 'Stone chunks', ids: ['stoneChunk'] },
+    { key: 'components', label: 'Components', ids: ['components'] },
+    { key: 'chemfuel', label: 'Chemfuel', ids: ['chemfuel'] },
+    { key: 'cloth', label: 'Cloth', ids: ['cloth'] },
+    { key: 'leather', label: 'Leather', ids: ['leather'] },
+    { key: 'wool', label: 'Wool', ids: ['wool'] },
+    { key: 'medicine', label: 'Medicine', ids: ['herbalMedicine', 'medicine'] },
+    { key: 'meals', label: 'Meals', ids: ['mealSimple', 'mealFine', 'mealEgg'] },
+    { key: 'rawFood', label: 'Raw food',
+      ids: ['riceRaw', 'potatoRaw', 'cornRaw', 'berries', 'meatRaw', 'milk', 'eggs', 'cheese'] },
+    { key: 'feed', label: 'Animal feed', ids: ['kibble', 'hay'] }
+  ];
+
   /* Panel elements, filled in by init. */
   var P = {};
 
   /* Per-panel caches. Each holds the signature of the last render. */
   var sig = {
-    top: '', chipRoster: '', inspect: '', arch: '',
-    alerts: '', letters: '', tab: ''
+    clock: '', bar: '', boxRoster: '', res: '', resRoster: '', inspect: '',
+    arch: '', alerts: '', letters: '', tab: ''
   };
 
   var frame = 0;
   var inspectTab = 'needs';
   var archCategory = 'orders';
+  var archOpen = true;
+  var archSearch = '';
   var openTabName = null;
   var billsBuilding = null;
-  var chipMap = new Map();
+  var boxMap = new Map();
   var liveMessages = [];
   var messageScratch = [];
   var seenMessages = new WeakSet();
   var alertCache = [];
+  var resourceCache = [];
   var lastAutosaveDay = -1;
   var floatCloser = null;
   var paintingSchedule = null;
@@ -108,41 +159,60 @@
     return node;
   }
 
-  /* Art hands back one cached canvas per icon key, and a DOM node can
-     only be in one place at a time, so every use gets its own copy. The
-     copy stays 16x16 and CSS scales it with pixelated rendering. */
+  /* Art hands back one cached canvas per key, and a DOM node can only be
+     in one place at a time, so every use gets its own copy. Sprites are
+     authored far larger than the size they are shown at here, so the
+     copy is drawn smoothly rather than with nearest-neighbour: a 32px
+     icon crushed to 14 by point sampling is the hard, speckled look the
+     player asked us to stop doing. */
+  function drawInto(c, src, px) {
+    var w = src ? src.width : 16, h = src ? src.height : 16;
+    var big = Math.max(w, h) || 16;
+    c.width = w;
+    c.height = h;
+    if (px) {
+      c.style.width = Math.round(px * w / big) + 'px';
+      c.style.height = Math.round(px * h / big) + 'px';
+    }
+    if (!src) return c;
+    var g = c.getContext('2d');
+    if (!g) return c;
+    g.clearRect(0, 0, w, h);
+    g.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high';
+    g.drawImage(src, 0, 0);
+    return c;
+  }
+
   function iconEl(key, px) {
     var c = el('canvas', 'ico');
-    var src = root.Art && Art.icon ? Art.icon(key) : null;
-    c.width = src ? src.width : 16;
-    c.height = src ? src.height : 16;
-    if (px) { c.style.width = px + 'px'; c.style.height = px + 'px'; }
-    if (src) {
-      var g = c.getContext('2d');
-      g.imageSmoothingEnabled = false;
-      g.drawImage(src, 0, 0);
-    }
-    return c;
+    return drawInto(c, root.Art && Art.icon ? Art.icon(key) : null, px || 16);
   }
 
   function spriteEl(defId, stuffId, px) {
     var c = el('canvas', 'ico');
-    var src = root.Art && Art.ghost ? Art.ghost(defId, 0, stuffId || null) : null;
-    c.width = src ? src.width : 16;
-    c.height = src ? src.height : 16;
-    if (px) {
-      /* A two-tile bed is a 16x32 sprite; scaling both sides to px would
-         make it a square nothing in the game looks like. */
-      var big = Math.max(c.width, c.height) || 16;
-      c.style.width = Math.round(px * c.width / big) + 'px';
-      c.style.height = Math.round(px * c.height / big) + 'px';
+    var src = null;
+    if (root.Art && Art.ghost) {
+      try { src = Art.ghost(defId, 0, stuffId || null); } catch (e) { src = null; }
     }
-    if (src) {
-      var g = c.getContext('2d');
-      g.imageSmoothingEnabled = false;
-      g.drawImage(src, 0, 0);
-    }
+    return drawInto(c, src, px || 20);
+  }
+
+  /* A colonist's own sprite, scaled down into a portrait box. It is the
+     same body the map draws, which is the point: the face in the box and
+     the person on the ground have to be recognisably one colonist. */
+  function portraitEl(pawn, px) {
+    var c = el('canvas', 'ico pbox-face');
+    paintPortrait(c, pawn, px);
     return c;
+  }
+
+  function paintPortrait(c, pawn, px) {
+    var src = null;
+    if (root.Art && Art.pawn) {
+      try { src = Art.pawn(pawn, 0, 0); } catch (e) { src = null; }
+    }
+    return drawInto(c, src, px || 34);
   }
 
   /* The fill is handed back on the wrapper as well as inside it, so a
@@ -186,6 +256,20 @@
     return null;
   }
 
+  function colonists() { return Game.colonists ? Game.colonists() : []; }
+
+  function tameAnimals() {
+    var m = Game.map, out = [];
+    if (!m || !m.pawns) return out;
+    for (var i = 0; i < m.pawns.length; i++) {
+      var p = m.pawns[i];
+      if (!p.isAnimal || !p.tame || p.dead) continue;
+      if (p.faction && p.faction !== 'player') continue;
+      out.push(p);
+    }
+    return out;
+  }
+
   function moodOf(p) {
     if (root.Needs && Needs.mood) return U.clamp01(Needs.mood(p));
     return typeof p.mood === 'number' ? U.clamp01(p.mood) : 0.5;
@@ -218,6 +302,19 @@
     }
     return p.drafted ? 'Standing by' : 'Idle';
   }
+
+  /* One word for the state that has to be obvious from across the room. */
+  function pawnState(p) {
+    if (p.dead) return 'dead';
+    if (p.downed || (p.health && p.health.downed)) return 'downed';
+    if (p.mentalState) return 'breaking';
+    if (p.drafted) return 'drafted';
+    return '';
+  }
+  var STATE_LABEL = {
+    dead: 'Dead', downed: 'Down', breaking: 'Breaking', drafted: 'Drafted'
+  };
+
   function backstoryLine(p) {
     if (p.isAnimal) {
       var k = p.kind;
@@ -343,66 +440,111 @@
 
   UI.setOverlay = function (name) {
     UI.overlay = OVERLAYS.indexOf(name) >= 0 ? name : 'none';
-    sig.top = '';
+    sig.clock = '';
   };
 
   /* ------------------------------------------------------------------
-     Top bar
+     The bottom tab bar - the primary navigation
      ------------------------------------------------------------------ */
 
-  var topEls = {};
+  var tabButtons = {};
 
-  function buildTopbar() {
+  function worldOpen() {
+    return !!(root.WorldView && WorldView.isOpen && WorldView.isOpen());
+  }
+
+  function closeWorld() {
+    if (root.WorldView && WorldView.close) WorldView.close();
+  }
+
+  /* Exactly one entry in the bar reads as active, and which one is a
+     question about what is actually on screen rather than a flag kept
+     in step by hand. */
+  function activeBottom() {
+    if (worldOpen()) return 'world';
+    if (openTabName) return openTabName;
+    if (archOpen) return 'architect';
+    return '';
+  }
+
+  function pressBottom(name) {
+    if (name === 'menu') { UI.showMenu(); return; }
+    if (name === 'architect') {
+      if (openTabName) UI.closeTab();
+      closeWorld();
+      archOpen = !archOpen;
+      sig.arch = '';
+      syncArchitectVisibility();
+      return;
+    }
+    if (name === 'world') {
+      if (worldOpen()) { closeWorld(); return; }
+      if (!root.WorldView || !WorldView.open) { UI.toast('The world map is not loaded.'); return; }
+      WorldView.open();
+      return;
+    }
+    closeWorld();
+    UI.openTab(name);
+  }
+
+  function buildTabBar() {
     var bar = P.topbar;
     clear(bar);
+    tabButtons = {};
+    BOTTOM_TABS.forEach(function (t) {
+      var b = btn(t[1], 'nav-btn', function () { pressBottom(t[0]); });
+      tabButtons[t[0]] = b;
+      bar.appendChild(b);
+    });
+  }
 
-    var left = el('div', 'tb-group');
-    topEls.date = el('div', 'tb-stat');
-    topEls.clock = el('div', 'tb-stat');
-    topEls.temp = el('div', 'tb-stat');
-    topEls.wealth = el('div', 'tb-stat');
-    left.appendChild(tip(topEls.date, 'Day, season and year. Seasons are 15 days long.'));
-    left.appendChild(tip(topEls.clock, 'Colony time. Colonists wake at 06:00 and sleep at 22:00 by default.'));
-    left.appendChild(tip(topEls.temp, 'Outdoor temperature. Crops stop growing below 0 C.'));
-    left.appendChild(tip(topEls.wealth, 'Colony wealth in silver. The storyteller sizes raids from it.'));
-    bar.appendChild(left);
+  function updateTabBar() {
+    var active = activeBottom();
+    var s = active + '|' + (Game.started ? '1' : '0');
+    if (s === sig.bar) return;
+    sig.bar = s;
+    for (var k in tabButtons) tabButtons[k].classList.toggle('on', k === active);
+  }
 
-    var mid = el('div', 'tb-group tb-speed');
-    topEls.speed = [];
+  /* ------------------------------------------------------------------
+     Date, time, temperature, wealth and the speed controls
+     ------------------------------------------------------------------ */
+
+  var clockEls = {};
+
+  function buildClock() {
+    var box = el('div', 'clock');
+    clockEls.date = el('div', 'clock-date', '');
+    var timeRow = el('div', 'clock-time');
+    clockEls.time = el('span', 'clock-hm', '');
+    clockEls.temp = el('span', 'clock-temp', '');
+    timeRow.appendChild(clockEls.time);
+    timeRow.appendChild(clockEls.temp);
+    clockEls.wealth = el('div', 'clock-wealth', '');
+    box.appendChild(tip(clockEls.date, 'Day, season and year. A season is 15 days.'));
+    box.appendChild(tip(timeRow,
+      'Colony time and the outdoor temperature. Crops stop growing below 0 C.'));
+    box.appendChild(tip(clockEls.wealth,
+      'Colony wealth in silver. The storyteller sizes raids from it.'));
+
+    var speeds = el('div', 'speed-row');
+    clockEls.speed = [];
     ['Pause', '1x', '2x', '3x', '6x'].forEach(function (label, i) {
-      var b = btn('', 'speed-btn', function () { Game.setSpeed(i); sig.top = ''; });
+      var b = btn('', 'speed-btn', function () { Game.setSpeed(i); sig.clock = ''; });
       b.appendChild(iconEl('speed' + i, 16));
       tip(b, label + (i === 0 ? ' (space)' : ' (key ' + i + ')'));
-      mid.appendChild(b);
-      topEls.speed.push(b);
+      speeds.appendChild(b);
+      clockEls.speed.push(b);
     });
-    bar.appendChild(mid);
+    box.appendChild(speeds);
 
-    var right = el('div', 'tb-group tb-right');
-    [['work', 'Work', 'tab-work'], ['research', 'Research', 'tab-research'],
-     ['colonists', 'Colonists', 'tab-colonists'], ['schedule', 'Schedule', 'tab-schedule']
-    ].forEach(function (t) {
-      var b = btn(t[1], 'tab-btn', function () { UI.openTab(t[0]); });
-      b.insertBefore(iconEl(t[2], 14), b.firstChild);
-      right.appendChild(b);
-    });
-    if (root.WorldView) {
-      right.appendChild(btn('World', 'tab-btn', function () {
-        if (WorldView.open) WorldView.open();
-      }));
-    }
-    var ov = btn('Overlay', 'tab-btn', function () {
+    clockEls.overlay = btn('Overlay', 'ovl-btn', function () {
       var i = OVERLAYS.indexOf(UI.overlay);
       UI.setOverlay(OVERLAYS[(i + 1) % OVERLAYS.length]);
     });
-    topEls.overlay = ov;
-    tip(ov, 'Cycle the map overlay: zones, power, rooms, beauty, temperature.');
-    right.appendChild(ov);
-    right.appendChild(btn('Save', 'tab-btn', function () {
-      UI.toast(UI.save() ? 'Colony saved.' : 'Could not save - storage is unavailable.');
-    }));
-    right.appendChild(btn('Menu', 'tab-btn', function () { UI.showMenu(); }));
-    bar.appendChild(right);
+    tip(clockEls.overlay, 'Cycle the map overlay: zones, power, rooms, beauty, temperature.');
+    box.appendChild(clockEls.overlay);
+    return box;
   }
 
   function timeName(h) {
@@ -414,100 +556,205 @@
     return 'night';
   }
 
-  function updateTopbar() {
+  function updateClock() {
     var day = Game.day(), season = Game.season();
     var clock = Game.timeString ? Game.timeString() : '';
     var temp = Math.round(Game.outdoorTemp());
     var wealth = Math.round(Game.wealth || 0);
     var s = day + '|' + season + '|' + clock + '|' + temp + '|' + wealth + '|' +
       Game.speed + '|' + UI.overlay;
-    if (s === sig.top) return;
-    sig.top = s;
+    if (s === sig.clock) return;
+    sig.clock = s;
 
     var year = Math.floor(day / 60) + 1;
-    topEls.date.textContent = 'Day ' + (day + 1) + '  ' + U.cap(season) + '  Y' + year;
-    topEls.clock.textContent = clock + '  ' + timeName(Game.hour());
-    topEls.temp.textContent = temp + '\u00b0C';
-    topEls.temp.className = 'tb-stat' + (temp <= 0 ? ' cold' : (temp >= 32 ? ' hot' : ''));
-    topEls.wealth.textContent = wealth.toLocaleString ? wealth.toLocaleString('en') + ' silver'
-      : wealth + ' silver';
-    for (var i = 0; i < topEls.speed.length; i++) {
-      topEls.speed[i].classList.toggle('on', Game.speed === i);
+    clockEls.date.textContent = 'Day ' + (day + 1) + ' · ' + U.cap(season) + ' · Y' + year;
+    clockEls.time.textContent = clock + ' ' + timeName(Game.hour());
+    clockEls.temp.textContent = temp + '°C';
+    clockEls.temp.className = 'clock-temp' + (temp <= 0 ? ' cold' : (temp >= 32 ? ' hot' : ''));
+    clockEls.wealth.textContent = (wealth.toLocaleString ? wealth.toLocaleString('en') : wealth) +
+      ' silver of colony';
+    for (var i = 0; i < clockEls.speed.length; i++) {
+      clockEls.speed[i].classList.toggle('on', Game.speed === i);
     }
-    topEls.overlay.classList.toggle('on', UI.overlay !== 'none');
-    topEls.overlay.textContent = UI.overlay === 'none' ? 'Overlay' : U.cap(UI.overlay);
+    clockEls.overlay.classList.toggle('on', UI.overlay !== 'none');
+    clockEls.overlay.textContent = UI.overlay === 'none' ? 'Overlay' : U.cap(UI.overlay);
   }
 
   /* ------------------------------------------------------------------
-     Colonist bar
+     Resource readout - top left
      ------------------------------------------------------------------ */
 
-  function chipClick(pawn) {
+  var resourceRows = new Map();
+  var extraGroups = null;
+
+  /* Every storable def no curated group already covers, so a def added
+     later still reaches the readout instead of silently vanishing. */
+  function resourceGroups() {
+    if (extraGroups) return extraGroups;
+    var claimed = {};
+    RESOURCE_GROUPS.forEach(function (g) {
+      g.ids.forEach(function (id) { claimed[id] = true; });
+    });
+    extraGroups = RESOURCE_GROUPS.slice();
+    var Z = root.Zones;
+    var items = (root.Defs && Defs.items) ? Defs.items() : [];
+    for (var i = 0; i < items.length; i++) {
+      var d = items[i];
+      if (claimed[d.id]) continue;
+      var cat = Z && Z.categoryOf ? Z.categoryOf(d) : null;
+      /* Weapons, apparel, corpses and chunks of a raid are inventory,
+         not stock: counting them here would bury the numbers that the
+         readout exists for. */
+      if (cat !== 'resources' && cat !== 'manufactured' && cat !== 'textiles') continue;
+      extraGroups.push({ key: d.id, label: d.label || d.id, ids: [d.id] });
+    }
+    return extraGroups;
+  }
+
+  function stockpiled(map, t) {
+    var Z = root.Zones;
+    if (!Z || !Z.zoneAt) return false;
+    var z = Z.zoneAt(map, t.x, t.y);
+    return !!(z && z.kind === 'stockpile');
+  }
+
+  function computeResources() {
+    var map = Game.map, out = [];
+    if (!map || !map.byDef) return out;
+    var groups = resourceGroups();
+    for (var i = 0; i < groups.length; i++) {
+      var g = groups[i], total = 0, stored = 0, iconId = null;
+      for (var j = 0; j < g.ids.length; j++) {
+        var list = map.byDef(g.ids[j]);
+        if (!list || !list.length) continue;
+        if (!iconId) iconId = g.ids[j];
+        for (var k = 0; k < list.length; k++) {
+          var t = list[k];
+          var n = t.stack || 1;
+          total += n;
+          if (stockpiled(map, t)) stored += n;
+        }
+      }
+      if (total <= 0) continue;
+      out.push({ key: g.key, label: g.label, count: total, stored: stored, iconId: iconId });
+    }
+    return out;
+  }
+
+  function renderResources() {
+    var list = resourceCache;
+    var s = '';
+    for (var i = 0; i < list.length; i++) s += list[i].key + ':' + list[i].count + ';';
+    if (s === sig.res) return;
+
+    /* The set of lines changes rarely; the numbers on them change all
+       the time. Rebuild only when a line appears or disappears. */
+    var roster = '';
+    for (i = 0; i < list.length; i++) roster += list[i].key + ',';
+    if (roster !== sig.resRoster) {
+      sig.resRoster = roster;
+      clear(P.resources);
+      resourceRows.clear();
+      for (i = 0; i < list.length; i++) {
+        var r = list[i];
+        var row = el('div', 'res-row');
+        row.appendChild(spriteEl(r.iconId, null, 18));
+        var n = el('span', 'res-n', '');
+        row.appendChild(n);
+        P.resources.appendChild(row);
+        resourceRows.set(r.key, { row: row, n: n, tipText: '' });
+      }
+    }
+    sig.res = s;
+    for (i = 0; i < list.length; i++) {
+      var d = list[i], cell = resourceRows.get(d.key);
+      if (!cell) continue;
+      cell.n.textContent = String(d.count);
+      var text = d.label + ': ' + d.count +
+        (d.stored < d.count ? ' (' + d.stored + ' in stockpiles)' : '');
+      if (text !== cell.tipText) {
+        cell.tipText = text;
+        cell.row.setAttribute('data-tip', text);
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------
+     Colonist boxes - top centre
+     ------------------------------------------------------------------ */
+
+  function boxClick(pawn) {
     var already = Game.selection.length === 1 && Game.selection[0] === pawn;
     if (already) lookAt(pawn.x, pawn.y);
     else UI.selectThing(pawn);
   }
 
-  function buildChip(pawn) {
-    var rootEl = el('div', 'chip');
-    var face = iconEl('mood-' + moodLevel(pawn), 26);
-    face.classList.add('chip-face');
-    var body = el('div', 'chip-body');
-    var name = el('div', 'chip-name', nameOf(pawn));
-    var job = el('div', 'chip-job', '');
-    var bars = el('div', 'chip-bars');
-    var hp = el('i', 'hbar'), mood = el('i', 'mbar');
-    var hpFill = el('b', ''), moodFill = el('b', '');
+  function buildBox(pawn) {
+    var rootEl = el('div', 'pbox');
+    var face = portraitEl(pawn, 34);
+    var body = el('div', 'pbox-body');
+    var name = el('div', 'pbox-name', nameOf(pawn));
+    var flag = el('div', 'pbox-flag', '');
+    var head = el('div', 'pbox-head');
+    head.appendChild(name);
+    head.appendChild(flag);
+
+    var hp = el('div', 'pbox-bar hp'), mood = el('div', 'pbox-bar mood');
+    var hpFill = el('i', ''), moodFill = el('i', '');
     hp.appendChild(hpFill); mood.appendChild(moodFill);
-    bars.appendChild(hp); bars.appendChild(mood);
-    body.appendChild(name); body.appendChild(job); body.appendChild(bars);
-    rootEl.appendChild(face); rootEl.appendChild(body);
-    rootEl.addEventListener('click', function () { chipClick(pawn); });
-    P.colonistBar.appendChild(rootEl);
+    body.appendChild(head);
+    body.appendChild(hp);
+    body.appendChild(mood);
+    rootEl.appendChild(face);
+    rootEl.appendChild(body);
+    rootEl.addEventListener('click', function () { boxClick(pawn); });
+    P.pawnRow.appendChild(rootEl);
     return {
-      root: rootEl, face: face, name: name, job: job,
-      hpFill: hpFill, moodFill: moodFill, last: '', level: -1
+      root: rootEl, face: face, flag: flag,
+      hpFill: hpFill, moodFill: moodFill, last: '', pose: ''
     };
   }
 
-  function syncColonistBar() {
-    var list = Game.colonists ? Game.colonists() : [];
+  function syncColonistBoxes() {
+    var list = colonists();
     var roster = list.length + '|';
     for (var i = 0; i < list.length; i++) roster += list[i].id + ',';
-    if (roster !== sig.chipRoster) {
-      sig.chipRoster = roster;
-      clear(P.colonistBar);
-      chipMap.clear();
-      for (i = 0; i < list.length; i++) chipMap.set(list[i].id, buildChip(list[i]));
+    if (roster !== sig.boxRoster) {
+      sig.boxRoster = roster;
+      clear(P.pawnRow);
+      boxMap.clear();
+      for (i = 0; i < list.length; i++) boxMap.set(list[i].id, buildBox(list[i]));
     }
 
     for (i = 0; i < list.length; i++) {
-      var pawn = list[i], chip = chipMap.get(pawn.id);
-      if (!chip) continue;
-      var level = moodLevel(pawn);
+      var pawn = list[i], box = boxMap.get(pawn.id);
+      if (!box) continue;
       var hp = healthFraction(pawn);
-      var state = pawn.dead ? 'dead' : (pawn.downed || (pawn.health && pawn.health.downed) ? 'downed'
-        : (pawn.mentalState ? 'broken' : (pawn.drafted ? 'drafted' : '')));
+      var mood = moodOf(pawn);
+      var state = pawnState(pawn);
       var selected = Game.selection.indexOf(pawn) >= 0;
-      var report = jobReport(pawn);
-      var s = level + '|' + Math.round(hp * 20) + '|' + state + '|' + selected + '|' + report;
-      if (s === chip.last) continue;
-      chip.last = s;
-      if (level !== chip.level) {
-        chip.level = level;
-        var src = root.Art ? Art.icon('mood-' + level) : null;
-        if (src) {
-          var g = chip.face.getContext('2d');
-          g.clearRect(0, 0, chip.face.width, chip.face.height);
-          g.imageSmoothingEnabled = false;
-          g.drawImage(src, 0, 0);
-        }
+      var s = Math.round(hp * 20) + '|' + Math.round(mood * 20) + '|' + state + '|' +
+        (selected ? 's' : '') + '|' + nameOf(pawn);
+      if (s === box.last) continue;
+      box.last = s;
+
+      /* The portrait only changes when the body does - drafted, downed,
+         dead - and repainting it otherwise is a canvas blit per box per
+         frame for a picture that did not move. */
+      var pose = state + (pawn.carried ? 'c' : '');
+      if (pose !== box.pose) {
+        box.pose = pose;
+        paintPortrait(box.face, pawn, 34);
       }
-      chip.job.textContent = report;
-      chip.hpFill.style.width = Math.round(hp * 100) + '%';
-      chip.hpFill.className = hp < 0.4 ? 'low' : (hp < 0.75 ? 'mid' : '');
-      chip.moodFill.style.width = Math.round(moodOf(pawn) * 100) + '%';
-      chip.root.className = 'chip' + (state ? ' ' + state : '') + (selected ? ' sel' : '');
+      box.flag.textContent = STATE_LABEL[state] || '';
+      box.hpFill.style.width = Math.round(hp * 100) + '%';
+      box.hpFill.className = hp < 0.4 ? 'low' : (hp < 0.75 ? 'mid' : '');
+      box.moodFill.style.width = Math.round(mood * 100) + '%';
+      box.moodFill.className = mood < 0.25 ? 'low' : (mood < 0.4 ? 'mid' : '');
+      box.root.className = 'pbox' + (state ? ' ' + state : '') + (selected ? ' sel' : '');
+      box.root.setAttribute('data-tip', fullName(pawn) + ' — ' + jobReport(pawn) +
+        '. Health ' + Math.round(hp * 100) + '%, mood ' + Math.round(mood * 100) +
+        '%. Click to select, click again to jump there.');
     }
   }
 
@@ -724,7 +971,7 @@
       var room = root.Regions && Regions.roomAt ? Regions.roomAt(map, t.x, t.y) : null;
       if (room) {
         rows.push(row('kv', 'Room', (room.outdoor ? 'outdoors' : room.role || 'room') + ', ' +
-          Math.round(room.temperature) + '\u00b0C, ' + room.size + ' tiles', 0));
+          Math.round(room.temperature) + '°C, ' + room.size + ' tiles', 0));
       }
       if (t.isPlant && t.isPlant()) {
         rows.push(row('bar', 'Growth', Math.round((t.growth || 0) * 100) + '%', t.growth || 0,
@@ -740,6 +987,10 @@
       }
       if (t.bills && t.bills.length) {
         rows.push(row('kv', 'Bills', t.bills.length + ' queued', 0));
+      }
+      if (t.ownerId) {
+        var owner = pawnById(t.ownerId);
+        if (owner) rows.push(row('kv', 'Assigned to', nameOf(owner), 0));
       }
     }
     var d = { kind: 'thing', thing: t, title: U.cap(t.label()), sub: def.label || def.id, rows: rows };
@@ -965,7 +1216,7 @@
   };
 
   /* ------------------------------------------------------------------
-     Architect
+     Architect - a category column down the left, the command grid right
      ------------------------------------------------------------------ */
 
   function buildablesIn(category) {
@@ -980,6 +1231,13 @@
     });
   }
 
+  function everyBuildable() {
+    var out = Defs.all('thing').filter(function (d) { return !!d.buildCategory; });
+    return out.concat(Defs.all('terrain').filter(function (d) {
+      return d.buildCategory === 'floor';
+    }));
+  }
+
   function costText(defId, stuffId) {
     if (!root.Construct || !Construct.totalCost) return '';
     var cost = Construct.totalCost(defId, stuffId), parts = [];
@@ -990,51 +1248,87 @@
     return parts.join(', ') || 'free';
   }
 
+  var archEls = {};
+
   function buildArchitect() {
     clear(P.architect);
+
+    var side = el('div', 'arch-side');
+    var search = el('input', 'arch-search');
+    search.type = 'text';
+    search.placeholder = 'Search';
+    search.addEventListener('input', function () {
+      archSearch = String(search.value || '').trim().toLowerCase();
+      sig.arch = '';
+    });
+    /* The map's hotkeys are not wanted while a word is being typed. */
+    search.addEventListener('keydown', function (e) {
+      if (e.stopPropagation) e.stopPropagation();
+      if (e.key === 'Escape') { search.value = ''; archSearch = ''; sig.arch = ''; search.blur(); }
+    });
+    side.appendChild(search);
+
     var cats = el('div', 'arch-cats');
     ARCH_CATEGORIES.forEach(function (c) {
       var b = btn(c.label, 'arch-cat' + (archCategory === c.id ? ' on' : ''), function () {
         archCategory = c.id;
+        if (archSearch) { archSearch = ''; search.value = ''; }
         sig.arch = '';
       });
-      b.insertBefore(iconEl(c.icon, 14), b.firstChild);
+      b.insertBefore(iconEl(c.icon, 16), b.firstChild);
       cats.appendChild(b);
     });
-    P.architect.appendChild(cats);
-    P.architect.appendChild(el('div', 'arch-items'));
-    P.architect.appendChild(el('div', 'arch-hint'));
+    side.appendChild(cats);
+    P.architect.appendChild(side);
+
+    var main = el('div', 'arch-main');
+    var grid = el('div', 'arch-grid');
+    var hint = el('div', 'arch-hint');
+    main.appendChild(grid);
+    main.appendChild(hint);
+    P.architect.appendChild(main);
+
+    archEls = { search: search, cats: cats, grid: grid, hint: hint };
+    syncArchitectVisibility();
+  }
+
+  function syncArchitectVisibility() {
+    if (!P.architect) return;
+    P.architect.classList.toggle('hidden', !archOpen);
   }
 
   function renderArchitect() {
+    if (!archOpen) return;
     var doneCount = root.Research && Research.done ? Research.done.size : 0;
     var t = UI.tool;
-    var s = archCategory + '|' + doneCount + '|' + t.kind + '|' + (t.defId || '') + '|' +
-      (t.designation || '') + '|' + (t.zoneKind || '') + '|' + (t.stuffId || '');
+    var s = archCategory + '|' + archSearch + '|' + doneCount + '|' + t.kind + '|' +
+      (t.defId || '') + '|' + (t.designation || '') + '|' + (t.zoneKind || '') + '|' +
+      (t.stuffId || '');
     if (s === sig.arch) return;
     sig.arch = s;
 
-    var cats = P.architect.firstChild;
+    var cats = archEls.cats;
     for (var i = 0; i < cats.childNodes.length; i++) {
-      cats.childNodes[i].classList.toggle('on', ARCH_CATEGORIES[i].id === archCategory);
+      cats.childNodes[i].classList.toggle('on',
+        !archSearch && ARCH_CATEGORIES[i].id === archCategory);
     }
-    var items = P.architect.childNodes[1];
-    clear(items);
 
-    if (archCategory === 'orders') renderOrders(items);
-    else if (archCategory === 'zones') renderZoneTools(items);
-    else renderBuildables(items);
+    var grid = archEls.grid;
+    clear(grid);
+    if (archSearch) renderSearch(grid);
+    else if (archCategory === 'orders') renderOrders(grid);
+    else if (archCategory === 'zones') renderZoneTools(grid);
+    else renderBuildables(grid, buildablesIn(archCategory));
 
-    var hint = P.architect.childNodes[2];
+    var hint = archEls.hint;
     clear(hint);
     if (t.kind === 'build' && t.defId) {
       var def = Defs.maybe('thing', t.defId) || Defs.maybe('terrain', t.defId);
       hint.appendChild(el('span', 'arch-hint-text',
-        U.cap((def && def.label) || t.defId) + ' - ' + costText(t.defId, t.stuffId) +
+        U.cap((def && def.label) || t.defId) + ' — ' + costText(t.defId, t.stuffId) +
         '. Drag to place a line, R rotates, escape cancels.'));
       if (def && def.stuffable && root.Construct) {
-        var stuffs = Construct.stuffOptions(t.defId);
-        stuffs.forEach(function (sid) {
+        Construct.stuffOptions(t.defId).forEach(function (sid) {
           var sd = Defs.maybe('thing', sid);
           hint.appendChild(btn((sd && sd.label) || sid, 'mini' + (t.stuffId === sid ? ' on' : ''),
             function () { UI.tool.stuffId = sid; sig.arch = ''; }));
@@ -1043,6 +1337,9 @@
     } else if (t.kind !== 'select') {
       hint.appendChild(el('span', 'arch-hint-text',
         'Drag over the map to apply. Escape cancels the tool.'));
+    } else {
+      hint.appendChild(el('span', 'arch-hint-text dim',
+        'Pick a category, then a thing to place. Escape puts the tool down.'));
     }
   }
 
@@ -1068,29 +1365,28 @@
   function renderOrders(items) {
     DESIGNATIONS.forEach(function (d) {
       var active = UI.tool.kind === 'designate' && UI.tool.designation === d[0];
-      items.appendChild(tip(archButton(iconEl('des-' + d[0], 20), d[1], null, active, function () {
+      items.appendChild(tip(archButton(iconEl('des-' + d[0], 22), d[1], null, active, function () {
         UI.setTool({ kind: 'designate', designation: d[0] });
       }), d[2]));
     });
-    items.appendChild(tip(archButton(iconEl('des-cancel', 20), 'Cancel', null,
+    items.appendChild(tip(archButton(iconEl('des-cancel', 22), 'Cancel', null,
       UI.tool.kind === 'cancel', function () { UI.setTool({ kind: 'cancel' }); }),
       'Remove designations and unbuilt plans you drag over. ' +
       'Select a zone and use Delete zone to get rid of one of those.'));
   }
 
   function renderZoneTools(items) {
-    items.appendChild(tip(archButton(iconEl('cat-zone', 20), 'Stockpile', 'storage',
+    items.appendChild(tip(archButton(iconEl('cat-zone', 22), 'Stockpile', 'storage',
       UI.tool.kind === 'zone' && UI.tool.zoneKind === 'stockpile', function () {
         UI.setTool({ kind: 'zone', zoneKind: 'stockpile' });
       }), 'Paint a stockpile. Haulers carry loose items into it.'));
-    items.appendChild(tip(archButton(iconEl('work-grow', 20), 'Growing zone', 'crops',
+    items.appendChild(tip(archButton(iconEl('work-grow', 22), 'Growing zone', 'crops',
       UI.tool.kind === 'zone' && UI.tool.zoneKind === 'growing', function () {
         UI.setTool({ kind: 'zone', zoneKind: 'growing' });
       }), 'Paint a field. Growers sow it and harvest it when it is ripe.'));
   }
 
-  function renderBuildables(items) {
-    var list = buildablesIn(archCategory);
+  function renderBuildables(items, list) {
     if (!list.length) {
       items.appendChild(el('div', 'line dim', 'Nothing here yet.'));
       return;
@@ -1102,13 +1398,51 @@
       }
       var stuff = root.Construct && Construct.defaultStuff ? Construct.defaultStuff(def.id) : null;
       var active = UI.tool.kind === 'build' && UI.tool.defId === def.id;
-      var b = archButton(spriteEl(def.id, stuff, 20), def.label || def.id,
+      var b = archButton(spriteEl(def.id, stuff, 22), def.label || def.id,
         costText(def.id, stuff), active, function () {
           UI.setTool({ kind: 'build', defId: def.id, rot: 0, stuffId: stuff });
         }, reason);
       if (!reason && def.description) tip(b, def.description);
       items.appendChild(b);
     });
+  }
+
+  /* The search box looks across every category at once, orders and zone
+     tools included, because "where did they put the vent" is exactly the
+     question a nine-item column cannot answer. */
+  function renderSearch(items) {
+    var q = archSearch, found = 0;
+    DESIGNATIONS.forEach(function (d) {
+      if (d[1].toLowerCase().indexOf(q) < 0) return;
+      found++;
+      var active = UI.tool.kind === 'designate' && UI.tool.designation === d[0];
+      items.appendChild(tip(archButton(iconEl('des-' + d[0], 22), d[1], null, active, function () {
+        UI.setTool({ kind: 'designate', designation: d[0] });
+      }), d[2]));
+    });
+    if ('stockpile'.indexOf(q) === 0 || 'storage'.indexOf(q) === 0) {
+      found++;
+      items.appendChild(archButton(iconEl('cat-zone', 22), 'Stockpile', 'storage',
+        UI.tool.kind === 'zone' && UI.tool.zoneKind === 'stockpile', function () {
+          UI.setTool({ kind: 'zone', zoneKind: 'stockpile' });
+        }));
+    }
+    if ('growing zone'.indexOf(q) === 0 || 'crops'.indexOf(q) === 0) {
+      found++;
+      items.appendChild(archButton(iconEl('work-grow', 22), 'Growing zone', 'crops',
+        UI.tool.kind === 'zone' && UI.tool.zoneKind === 'growing', function () {
+          UI.setTool({ kind: 'zone', zoneKind: 'growing' });
+        }));
+    }
+    var hits = everyBuildable().filter(function (d) {
+      return String(d.label || d.id).toLowerCase().indexOf(q) >= 0;
+    });
+    found += hits.length;
+    renderBuildables(items, hits);
+    if (!found) {
+      clear(items);
+      items.appendChild(el('div', 'line dim', 'Nothing matches “' + archSearch + '”.'));
+    }
   }
 
   /* The architect category hotkeys in input.js (B, E, P, U, Y, L) come
@@ -1118,37 +1452,62 @@
     for (var i = 0; i < ARCH_CATEGORIES.length; i++) {
       if (ARCH_CATEGORIES[i].id !== category) continue;
       archCategory = category;
+      archSearch = '';
+      if (archEls.search) archEls.search.value = '';
+      if (!archOpen) { archOpen = true; syncArchitectVisibility(); }
+      if (openTabName) UI.closeTab();
+      closeWorld();
       sig.arch = '';
+      sig.bar = '';
       return true;
     }
     return false;
   };
 
   /* ------------------------------------------------------------------
-     Overlay tabs: work, research, colonists, schedule, bills
+     Overlay tabs: work, research, colonists, schedule, assign, animals,
+     bills
      ------------------------------------------------------------------ */
+
+  var TAB_TITLES = {
+    work: 'Work priorities', research: 'Research', colonists: 'Colonists',
+    schedule: 'Schedule', assign: 'Assign', animals: 'Animals'
+  };
 
   UI.openTab = function (name) {
     if (openTabName === name && name !== 'bills') return UI.closeTab();
+    closeWorld();
     openTabName = name;
     sig.tab = '';
+    sig.bar = '';
     P.tabPanel.classList.remove('hidden');
+    P.tabPanel.classList.remove('compact');
     renderTab();
   };
 
   UI.closeTab = function () {
+    /* Escape reaches here through input.js whenever #tab-panel is up,
+       and the world screen is renting that panel. Closing it properly
+       is WorldView's job; tearing its DOM out from under it is not. */
+    if (worldOpen()) { closeWorld(); sig.bar = ''; return true; }
     openTabName = null;
     billsBuilding = null;
     resProgress = null;
+    sig.bar = '';
     P.tabPanel.classList.add('hidden');
+    P.tabPanel.classList.remove('compact');
+    clear(P.tabPanel);
   };
 
   UI.openBills = function (building) {
     if (!root.Production || !building) { UI.toast('Nothing can be produced here.'); return; }
+    closeWorld();
     billsBuilding = building;
     openTabName = 'bills';
     sig.tab = '';
+    sig.bar = '';
     P.tabPanel.classList.remove('hidden');
+    P.tabPanel.classList.add('compact');
     renderTab();
   };
 
@@ -1174,11 +1533,12 @@
 
   function renderTab() {
     if (!openTabName) return;
-    var colonists = Game.colonists ? Game.colonists() : [];
-    var s = openTabName + '|' + colonists.length + '|';
+    var list = colonists();
+    var s = openTabName + '|' + list.length + '|';
+    var i;
     if (openTabName === 'work') {
-      for (var i = 0; i < colonists.length; i++) {
-        s += colonists[i].id + ':' + JSON.stringify(colonists[i].workPriority || {}) + ';';
+      for (i = 0; i < list.length; i++) {
+        s += list[i].id + ':' + JSON.stringify(list[i].workPriority || {}) + ';';
       }
     } else if (openTabName === 'research') {
       /* The banked points climb every tick, and they drive one line of
@@ -1191,23 +1551,29 @@
         (root.Research && Research.done ? Research.done.size : 0);
       syncResearchProgress();
     } else if (openTabName === 'colonists') {
-      for (i = 0; i < colonists.length; i++) {
-        s += colonists[i].id + ':' + Math.round(moodOf(colonists[i]) * 20) + ':' +
-          jobReport(colonists[i]) + ';';
+      for (i = 0; i < list.length; i++) {
+        s += list[i].id + ':' + Math.round(moodOf(list[i]) * 20) + ':' +
+          jobReport(list[i]) + ';';
       }
     } else if (openTabName === 'schedule') {
-      for (i = 0; i < colonists.length; i++) s += scheduleOf(colonists[i]).join('') + ';';
+      for (i = 0; i < list.length; i++) s += scheduleOf(list[i]).join('') + ';';
       s += Math.floor(Game.hour());
+    } else if (openTabName === 'assign') {
+      s += assignSig(list);
+    } else if (openTabName === 'animals') {
+      s += animalsSig();
     } else if (openTabName === 'bills') {
       s += billsBuilding ? billsBuilding.id + ':' + JSON.stringify(billsBuilding.bills || []) : '-';
     }
     if (s === sig.tab) return;
     sig.tab = s;
 
-    if (openTabName === 'work') renderWork(colonists);
+    if (openTabName === 'work') renderWork(list);
     else if (openTabName === 'research') renderResearch();
-    else if (openTabName === 'colonists') renderColonists(colonists);
-    else if (openTabName === 'schedule') renderSchedule(colonists);
+    else if (openTabName === 'colonists') renderColonists(list);
+    else if (openTabName === 'schedule') renderSchedule(list);
+    else if (openTabName === 'assign') renderAssign(list);
+    else if (openTabName === 'animals') renderAnimals();
     else if (openTabName === 'bills') renderBills();
 
     if (pendingScroll) {
@@ -1217,23 +1583,23 @@
     }
   }
 
-  function renderWork(colonists) {
-    var body = tabFrame('Work priorities');
+  function renderWork(list) {
+    var body = tabFrame(TAB_TITLES.work);
     body.appendChild(el('div', 'tp-note',
       '1 is done first, 4 last, blank means never. Click a cell to lower its priority; ' +
       'right-click clears it. A colonist works down their list and then finds something to do.'));
     var types = workTypes();
-    if (!types.length || !colonists.length) {
+    if (!types.length || !list.length) {
       body.appendChild(el('div', 'line dim', 'No colonists to assign work to.'));
       return;
     }
     var grid = el('div', 'work-grid');
-    grid.style.gridTemplateColumns = '140px repeat(' + types.length + ', minmax(30px, 1fr))';
+    grid.style.gridTemplateColumns = '150px repeat(' + types.length + ', minmax(34px, 1fr))';
 
     grid.appendChild(el('div', 'wg-corner', 'Colonist'));
     types.forEach(function (t) {
       var h = el('div', 'wg-head');
-      h.appendChild(iconEl('work-' + t.id, 14));
+      h.appendChild(iconEl('work-' + t.id, 16));
       h.appendChild(el('span', null, t.label || t.id));
       var skills = (t.skills || []).map(function (sk) {
         var d = Defs.maybe('skill', sk);
@@ -1244,7 +1610,7 @@
       grid.appendChild(h);
     });
 
-    colonists.forEach(function (p) {
+    list.forEach(function (p) {
       if (!p.workPriority) p.workPriority = {};
       var dis = disabledWork(p);
       var nameCell = el('div', 'wg-name', nameOf(p));
@@ -1320,7 +1686,7 @@
     var cur = root.Research && Research.current ? Research.current() : null;
     if (!cur || cur.id !== resProgress.id) { sig.tab = ''; return; }
     var prog = researchProgress(), cost = cur.cost || 1;
-    resProgress.head.textContent = 'Researching ' + (cur.label || cur.id) + ' - ' +
+    resProgress.head.textContent = 'Researching ' + (cur.label || cur.id) + ' — ' +
       Math.round(prog) + ' / ' + Math.round(cost) + ' work';
     if (resProgress.fill) {
       resProgress.fill.style.width = Math.round(U.clamp01(prog / cost) * 100) + '%';
@@ -1328,13 +1694,13 @@
   }
 
   function renderResearch() {
-    var body = tabFrame('Research');
+    var body = tabFrame(TAB_TITLES.research);
     var cur = root.Research && Research.current ? Research.current() : null;
     var head = el('div', 'tp-note');
     resProgress = null;
     if (cur) {
       var prog = researchProgress(), cost = cur.cost || 1;
-      head.textContent = 'Researching ' + (cur.label || cur.id) + ' - ' +
+      head.textContent = 'Researching ' + (cur.label || cur.id) + ' — ' +
         Math.round(prog) + ' / ' + Math.round(cost) + ' work';
       body.appendChild(head);
       var bar = barEl('wide', prog / cost);
@@ -1384,7 +1750,7 @@
   /* The tree is only a tree if you can see the prerequisites, so the
      links are drawn once, after layout, from the cards' own positions.
      Three absolutely positioned rules per link rather than an SVG: the
-     elbows suit the pixel-art look, and it needs nothing but a div. */
+     elbows suit the flat look, and it needs nothing but a div. */
   function linkSeg(parent, cls, x, y, w, h) {
     var d = el('i', cls);
     d.style.left = x + 'px';
@@ -1417,9 +1783,9 @@
     });
   }
 
-  function renderColonists(colonists) {
-    var body = tabFrame('Colonists');
-    if (!colonists.length) {
+  function renderColonists(list) {
+    var body = tabFrame(TAB_TITLES.colonists);
+    if (!list.length) {
       body.appendChild(el('div', 'line dim', 'Nobody left.'));
       return;
     }
@@ -1436,7 +1802,7 @@
     table.appendChild(thead);
 
     var tbody = el('tbody');
-    colonists.forEach(function (p) {
+    list.forEach(function (p) {
       var tr = el('tr');
       var nameTd = el('td', 'cname', nameOf(p));
       nameTd.addEventListener('click', function () { UI.selectThing(p); lookAt(p.x, p.y); });
@@ -1477,10 +1843,10 @@
 
   var schedulePaint = 'work';
 
-  function renderSchedule(colonists) {
-    var body = tabFrame('Schedule');
+  function renderSchedule(list) {
+    var body = tabFrame(TAB_TITLES.schedule);
     body.appendChild(el('div', 'tp-note',
-      'Pick a kind of hour, then drag across a colonist\u2019s day to paint it. ' +
+      'Pick a kind of hour, then drag across a colonist’s day to paint it. ' +
       'Anything lets them choose; Work keeps them at their jobs; Sleep sends them to bed.'));
     var pal = el('div', 'sc-pal');
     SCHEDULE_KINDS.forEach(function (k) {
@@ -1498,7 +1864,7 @@
       grid.appendChild(el('div', 'sc-hour' + (Math.floor(Game.hour()) === h ? ' now' : ''),
         h % 2 === 0 ? String(h) : ''));
     }
-    colonists.forEach(function (p) {
+    list.forEach(function (p) {
       var sched = scheduleOf(p);
       var nameCell = el('div', 'sc-name', nameOf(p));
       nameCell.addEventListener('click', function () { UI.selectThing(p); });
@@ -1524,10 +1890,330 @@
     body.appendChild(grid);
   }
 
+  /* ------------------------------------------------------------------
+     Assign - who sleeps where, and which role they hold
+     ------------------------------------------------------------------ */
+
+  function bedsOnMap() {
+    var map = Game.map, out = [];
+    if (!map || !map.byDef) return out;
+    ['bed', 'sleepingSpot'].forEach(function (id) {
+      var list = map.byDef(id);
+      for (var i = 0; i < list.length; i++) {
+        var b = list[i];
+        if (b.isGhost && b.isGhost()) continue;
+        if (b.forPrisoners) continue;
+        out.push(b);
+      }
+    });
+    return out;
+  }
+
+  function bedOf(p) {
+    var map = Game.map;
+    if (!map || !p.ownedBedId) return null;
+    var b = map.thing ? map.thing(p.ownedBedId) : null;
+    return (b && b.ownerId === p.id) ? b : null;
+  }
+
+  /* No module owns this pairing - jobs.js sets both fields when a
+     patient claims a bed - so the UI sets the same two fields, and
+     clears whatever either side was pointing at first. */
+  function assignBed(p, bed) {
+    var old = bedOf(p);
+    if (old && old !== bed) old.ownerId = null;
+    p.ownedBedId = null;
+    if (!bed) return true;
+    if (bed.ownerId && bed.ownerId !== p.id) {
+      var other = pawnById(bed.ownerId);
+      if (other && !other.dead) other.ownedBedId = null;
+    }
+    bed.ownerId = p.id;
+    p.ownedBedId = bed.id;
+    return true;
+  }
+
+  function ideologyRoles() {
+    var I = root.Ideology;
+    if (!I || !I.all || !I.colony) return [];
+    var existing = [];
+    try { existing = I.all() || []; } catch (e) { return []; }
+    if (!existing.length) return [];
+    var ideo = null;
+    try { ideo = I.colony(); } catch (e) { return []; }
+    return (ideo && ideo.roles) ? ideo.roles : [];
+  }
+
+  function assignSig(list) {
+    var s = '';
+    for (var i = 0; i < list.length; i++) {
+      var b = bedOf(list[i]);
+      s += list[i].id + ':' + (b ? b.id : '-') + ';';
+    }
+    s += '|beds' + bedsOnMap().length;
+    var roles = ideologyRoles();
+    for (i = 0; i < roles.length; i++) {
+      var holder = root.Ideology.roleHolder ? Ideology.roleHolder(roles[i].id, Game.map) : null;
+      s += '|' + roles[i].id + ':' + (holder ? holder.id : '-');
+    }
+    return s;
+  }
+
+  function renderAssign(list) {
+    var body = tabFrame(TAB_TITLES.assign);
+    body.appendChild(el('div', 'tp-note',
+      'Who sleeps where, and who holds which role. A colonist with no bed of their own ' +
+      'takes whatever is free, which is how two of them end up fighting over one mattress.'));
+
+    if (!list.length) {
+      body.appendChild(el('div', 'line dim', 'Nobody left to assign.'));
+      return;
+    }
+
+    var beds = bedsOnMap();
+    body.appendChild(el('div', 'head', 'Beds'));
+    if (!beds.length) {
+      body.appendChild(el('div', 'line dim',
+        'There is not one bed on this map. Build them under Architect / Furniture.'));
+    }
+
+    var table = el('table', 'ctable');
+    var thead = el('thead'), hr = el('tr');
+    ['Colonist', 'Bed', 'Room', ''].forEach(function (h) { hr.appendChild(el('th', null, h)); });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    var tbody = el('tbody');
+
+    list.forEach(function (p) {
+      var tr = el('tr');
+      var nameTd = el('td', 'cname', nameOf(p));
+      nameTd.addEventListener('click', function () { UI.selectThing(p); lookAt(p.x, p.y); });
+      tr.appendChild(nameTd);
+
+      var mine = bedOf(p);
+      var pick = el('select', 'mini-select');
+      var none = el('option', null, 'no bed of their own');
+      none.value = '';
+      pick.appendChild(none);
+      beds.forEach(function (b) {
+        var owner = b.ownerId ? pawnById(b.ownerId) : null;
+        if (owner && owner !== p && !owner.dead) return;    /* somebody else's */
+        var o = el('option', null, U.cap(b.label()) + ' (' + b.x + ', ' + b.y + ')');
+        o.value = String(b.id);
+        if (mine && mine.id === b.id) o.selected = true;
+        pick.appendChild(o);
+      });
+      pick.addEventListener('change', function () {
+        var id = parseInt(pick.value, 10);
+        var bed = null;
+        for (var i = 0; i < beds.length; i++) if (beds[i].id === id) bed = beds[i];
+        assignBed(p, bed);
+        sig.tab = '';
+      });
+      var bedTd = el('td');
+      bedTd.appendChild(pick);
+      tr.appendChild(bedTd);
+
+      var roomText = '—';
+      if (mine && root.Regions && Regions.roomAt) {
+        var rm = Regions.roomAt(Game.map, mine.x, mine.y);
+        if (rm) {
+          roomText = (rm.outdoor ? 'outdoors' : (rm.role || 'room')) + ', ' +
+            Math.round(rm.temperature) + '°C';
+        }
+      }
+      tr.appendChild(el('td', mine && roomText.indexOf('outdoors') === 0 ? 'bad' : 'dim', roomText));
+
+      var actTd = el('td');
+      if (mine) {
+        actTd.appendChild(btn('Unassign', 'mini', function () {
+          assignBed(p, null);
+          sig.tab = '';
+        }));
+      }
+      tr.appendChild(actTd);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    body.appendChild(table);
+
+    var roles = ideologyRoles();
+    if (roles.length) {
+      body.appendChild(el('div', 'head', 'Roles'));
+      body.appendChild(el('div', 'tp-note',
+        'A role is held by one colonist and carries its own duties and moods.'));
+      roles.forEach(function (slot) {
+        var def = root.Ideology.role ? Ideology.role(slot.id) : null;
+        var holder = root.Ideology.roleHolder ? Ideology.roleHolder(slot.id, Game.map) : null;
+        var line = el('div', 'kv');
+        line.appendChild(el('span', 'kv-l', (def && def.label) || slot.id));
+        var pick = el('select', 'mini-select');
+        var none = el('option', null, 'nobody');
+        none.value = '';
+        pick.appendChild(none);
+        list.forEach(function (p) {
+          var o = el('option', null, nameOf(p));
+          o.value = String(p.id);
+          if (holder && holder.id === p.id) o.selected = true;
+          pick.appendChild(o);
+        });
+        pick.addEventListener('change', function () {
+          var id = parseInt(pick.value, 10);
+          if (holder && root.Ideology.unassignRole) Ideology.unassignRole(holder);
+          if (id) {
+            var p = pawnById(id);
+            if (p && root.Ideology.assignRole && !Ideology.assignRole(p, slot.id)) {
+              UI.toast('They cannot hold that role.');
+            }
+          }
+          sig.tab = '';
+        });
+        var val = el('span', 'kv-v');
+        val.appendChild(pick);
+        line.appendChild(val);
+        body.appendChild(line);
+      });
+    }
+
+    body.appendChild(el('div', 'tp-foot'));
+    body.lastChild.appendChild(btn('Colonist overview', 'mini', function () {
+      UI.openTab('colonists');
+    }));
+  }
+
+  /* ------------------------------------------------------------------
+     Animals - the herd, what it knows and who it loves
+     ------------------------------------------------------------------ */
+
+  function husbandry() { return root.Husbandry || null; }
+
+  function animalsSig() {
+    var H = husbandry(), list = tameAnimals(), s = list.length + '|';
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i];
+      s += a.id + ':' + (H && H.trainingSummary ? H.trainingSummary(a) : '') + ':' +
+        (a.master || '-') + ':' + ((a.husbandry && a.husbandry.bondId) || '-') + ';';
+    }
+    if (H && H.policies) {
+      try { s += '|' + JSON.stringify(H.policies()); } catch (e) { s += '|p'; }
+    }
+    return s;
+  }
+
+  function renderAnimals() {
+    var body = tabFrame(TAB_TITLES.animals);
+    var H = husbandry();
+    var list = tameAnimals();
+    body.appendChild(el('div', 'tp-note',
+      'Tame animals, what they have been taught and who they have taken to. ' +
+      'Training rots if nobody keeps it up, so a handler is a standing job.'));
+
+    if (!list.length) {
+      body.appendChild(el('div', 'line dim',
+        'No tame animals. Mark one with the Tame order and put somebody on Handle.'));
+      return;
+    }
+
+    var people = colonists();
+    var table = el('table', 'ctable');
+    var thead = el('thead'), hr = el('tr');
+    ['Name', 'Kind', 'Stage', 'Training', 'Bonded to', 'Master', 'Doing']
+      .forEach(function (h) { hr.appendChild(el('th', null, h)); });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    var tbody = el('tbody');
+
+    list.forEach(function (a) {
+      var tr = el('tr');
+      var nameTd = el('td', 'cname', nameOf(a));
+      nameTd.addEventListener('click', function () { UI.selectThing(a); lookAt(a.x, a.y); });
+      tr.appendChild(nameTd);
+      tr.appendChild(el('td', 'dim', (a.kind && a.kind.label) || a.kindId || 'animal'));
+      tr.appendChild(el('td', 'dim',
+        H && H.lifeStage ? H.lifeStage(a) : (a.ageYears ? Math.floor(a.ageYears) + 'y' : '—')));
+
+      var training = H && H.trainingSummary ? H.trainingSummary(a) : 'unknown';
+      tr.appendChild(el('td', training === 'untrainable' ? 'faint' : '', training));
+
+      var bond = null;
+      if (H && H.bond) { try { bond = H.bond(a); } catch (e) { bond = null; } }
+      tr.appendChild(el('td', bond ? 'good' : 'faint', bond ? nameOf(bond) : '—'));
+
+      var masterTd = el('td');
+      var pick = el('select', 'mini-select');
+      var none = el('option', null, 'nobody');
+      none.value = '';
+      pick.appendChild(none);
+      var master = H && H.masterOf ? H.masterOf(a) : null;
+      people.forEach(function (p) {
+        var o = el('option', null, nameOf(p));
+        o.value = String(p.id);
+        if (master && master.id === p.id) o.selected = true;
+        pick.appendChild(o);
+      });
+      pick.addEventListener('change', function () {
+        var id = parseInt(pick.value, 10);
+        var human = id ? pawnById(id) : null;
+        if (H && H.setMaster && !H.setMaster(a, human)) {
+          UI.toast(nameOf(a) + ' has to learn obedience first.');
+        }
+        sig.tab = '';
+      });
+      masterTd.appendChild(pick);
+      tr.appendChild(masterTd);
+
+      tr.appendChild(el('td', 'cjob', jobReport(a)));
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    body.appendChild(table);
+
+    if (!H || !H.policy) return;
+
+    /* One herd rule per kind you actually keep: how many breeders to
+       hold on to before the surplus is marked for slaughter. */
+    var kinds = {};
+    list.forEach(function (a) { if (a.kindId) kinds[a.kindId] = a; });
+    var kindIds = Object.keys(kinds);
+    if (!kindIds.length) return;
+
+    body.appendChild(el('div', 'head', 'Herd policies'));
+    body.appendChild(el('div', 'tp-note',
+      'With a policy on, the surplus above these numbers is marked for slaughter. ' +
+      'A bonded or pregnant animal is never picked.'));
+    kindIds.forEach(function (kid) {
+      var pol = H.policy(kid);
+      var sample = kinds[kid];
+      var rowEl = el('div', 'pol-row');
+      rowEl.appendChild(el('span', 'pol-name',
+        U.cap((sample.kind && sample.kind.label) || kid)));
+      rowEl.appendChild(btn(pol.enabled ? 'On' : 'Off', 'mini' + (pol.enabled ? ' on' : ''),
+        function () { H.setPolicy(kid, { enabled: !pol.enabled }); sig.tab = ''; }));
+      [['females', 'females'], ['males', 'males']].forEach(function (f) {
+        rowEl.appendChild(el('span', 'pol-label', f[1]));
+        rowEl.appendChild(btn('-', 'mini', function () {
+          var o = {}; o[f[0]] = pol[f[0]] - 1;
+          H.setPolicy(kid, o); sig.tab = '';
+        }));
+        rowEl.appendChild(el('span', 'pol-n', String(pol[f[0]])));
+        rowEl.appendChild(btn('+', 'mini', function () {
+          var o = {}; o[f[0]] = pol[f[0]] + 1;
+          H.setPolicy(kid, o); sig.tab = '';
+        }));
+      });
+      rowEl.appendChild(btn(pol.keepYoung ? 'Keep young' : 'Cull young',
+        'mini' + (pol.keepYoung ? ' on' : ''), function () {
+          H.setPolicy(kid, { keepYoung: !pol.keepYoung });
+          sig.tab = '';
+        }));
+      body.appendChild(rowEl);
+    });
+  }
+
   function renderBills() {
     var b = billsBuilding;
     if (!b) { UI.closeTab(); return; }
-    var body = tabFrame('Bills - ' + U.cap(b.label()));
+    var body = tabFrame('Bills — ' + U.cap(b.label()));
     if (!b.bills) b.bills = [];
 
     var add = el('div', 'bill-add');
@@ -1553,7 +2239,7 @@
       body.appendChild(el('div', 'line dim', 'No bills. Nothing will be made here until you add one.'));
       return;
     }
-    b.bills.forEach(function (bill, i) {
+    b.bills.forEach(function (bill) {
       var recipe = Defs.maybe('recipe', bill.recipeId);
       var wrap = el('div', 'bill' + (bill.suspended ? ' suspended' : ''));
       var head = el('div', 'bill-head');
@@ -1618,11 +2304,11 @@
   function computeAlerts() {
     var out = [], map = Game.map;
     if (!map) return out;
-    var colonists = map.colonists();
+    var list = map.colonists();
 
     var hungry = null, tend = null, low = null;
-    for (var i = 0; i < colonists.length; i++) {
-      var p = colonists[i];
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
       if (!hungry && p.needs && p.needs.food <= 0.15) hungry = p;
       if (!tend && root.Health && Health.needsTending && Health.needsTending(p)) tend = p;
       if (!low && moodOf(p) <= (p.breakThresholds ? p.breakThresholds.major : 0.25)) low = p;
@@ -1633,15 +2319,16 @@
 
     var nutrition = 0, foods = foodDefs();
     for (i = 0; i < foods.length; i++) {
-      var list = map.byDef(foods[i].id);
-      for (var j = 0; j < list.length; j++) nutrition += foods[i].nutrition * list[j].stack;
+      var stacks = map.byDef(foods[i].id);
+      for (var j = 0; j < stacks.length; j++) nutrition += foods[i].nutrition * stacks[j].stack;
     }
-    if (colonists.length && nutrition < colonists.length * 1.6) {
-      out.push({ label: nutrition <= 0 ? 'No food stored' : 'Low food stores', severity: nutrition <= 0 ? 'high' : 'medium' });
+    if (list.length && nutrition < list.length * 1.6) {
+      out.push({ label: nutrition <= 0 ? 'No food stored' : 'Low food stores',
+        severity: nutrition <= 0 ? 'high' : 'medium' });
     }
 
     var beds = map.byDef('bed').concat(map.byDef('sleepingSpot'));
-    if (colonists.length && beds.length < colonists.length) {
+    if (list.length && beds.length < list.length) {
       out.push({ label: 'Not enough beds', severity: 'medium', lookAt: beds[0] || null });
     }
     for (i = 0; i < beds.length; i++) {
@@ -1732,14 +2419,14 @@
     for (var k = 0; k < list.length; k++) s += list[k].id + ',';
     if (s === sig.letters) return;
     sig.letters = s;
-    clear(P.letters);
+    clear(P.letterStack);
     for (var i = list.length - 1; i >= 0 && i >= list.length - 8; i--) {
       (function (letter) {
         var node = el('div', 'letter ' + letter.kind);
         node.appendChild(iconEl('letter-' + letter.kind, 18));
         node.appendChild(el('span', null, letter.title));
         node.addEventListener('click', function () { openLetter(letter); });
-        P.letters.appendChild(node);
+        P.letterStack.appendChild(node);
       })(list[i]);
     }
   }
@@ -1782,7 +2469,7 @@
       live.fading = true;
       live.node.classList.add('fade');
     }
-    while (liveMessages.length > 10) {
+    while (liveMessages.length > 8) {
       var extra = liveMessages.shift();
       if (extra.node.parentNode) extra.node.parentNode.removeChild(extra.node);
     }
@@ -1824,7 +2511,7 @@
     menu.style.top = Math.max(2, Math.min(y, maxY)) + 'px';
 
     floatCloser = function (e) {
-      if (menu.contains(e.target)) return;
+      if (menu.contains && menu.contains(e.target)) return;
       UI.closeFloatMenu();
     };
     /* Deferred so the click that opened the menu does not close it. */
@@ -1858,7 +2545,11 @@
       var node = e.target && e.target.closest ? e.target.closest('[data-tip]') : null;
       if (!node) { UI.tooltip(null); return; }
       var r = node.getBoundingClientRect();
-      UI.tooltip(node.getAttribute('data-tip'), r.left, r.bottom + 4);
+      /* Below the control normally, above it for anything sitting on the
+         bottom edge, so the tab bar's own tips are not drawn off-screen. */
+      var below = r.bottom + 6;
+      var y = below + 90 > P.app.clientHeight ? Math.max(4, r.top - 34) : below;
+      UI.tooltip(node.getAttribute('data-tip'), r.left, y);
     });
     P.app.addEventListener('mouseout', function (e) {
       if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('[data-tip]')) {
@@ -1905,7 +2596,7 @@
         if (v) {
           if (!p.name) p.name = { first: v, nick: v, last: '' };
           else p.name.nick = v;
-          sig.chipRoster = '';
+          sig.boxRoster = '';
           sig.inspect = '';
         }
         closeModal();
@@ -2047,6 +2738,12 @@
     a.appendChild(el('p', null,
       'Everything else follows from that: they get hungry, so someone has to cook; they get ' +
       'tired, so someone has to build beds; wealth attracts raiders, so someone has to shoot.'));
+    a.appendChild(el('h3', null, 'The screen'));
+    a.appendChild(el('p', null,
+      'What you are holding reads down the top left. Your colonists are the boxes across the ' +
+      'top: click one to select them, click again to jump the camera to them. Alerts and event ' +
+      'letters stack down the right, and the date, the clock and the speed controls sit above ' +
+      'them at the bottom right. The row of tabs along the bottom is the rest of the game.'));
     a.appendChild(el('h3', null, 'Your first five minutes'));
     var ol = el('ol');
     [
@@ -2112,7 +2809,7 @@
     var wrap = el('div', 'doc');
     wrap.appendChild(el('p', null,
       'RIMDAUN is an original colony simulation written in plain JavaScript, inspired by ' +
-      'Ludeon Studios\u2019 RimWorld. It is not affiliated with or endorsed by Ludeon.'));
+      'Ludeon Studios’ RimWorld. It is not affiliated with or endorsed by Ludeon.'));
     wrap.appendChild(el('p', null,
       'Every sprite in the game is drawn in code at load time - there are no image files, no ' +
       'fonts to download and no network requests. The page works from a file:// URL.'));
@@ -2127,6 +2824,7 @@
     Game.setSpeed(0);
     buildMenu();
     P.menu.classList.remove('hidden');
+    closeWorld();
     UI.closeTab();
     UI.closeFloatMenu();
   };
@@ -2154,22 +2852,27 @@
   };
 
   function centerOnColony() {
-    var list = Game.colonists ? Game.colonists() : [];
+    var list = colonists();
     if (list.length) lookAt(list[0].x, list[0].y);
     else if (Game.map) lookAt(Game.map.w >> 1, Game.map.h >> 1);
   }
   UI.home = centerOnColony;
 
   function resetPanels() {
-    sig.top = ''; sig.chipRoster = ''; sig.inspect = '';
+    sig.clock = ''; sig.bar = ''; sig.boxRoster = ''; sig.inspect = '';
     sig.arch = ''; sig.alerts = ''; sig.letters = ''; sig.tab = '';
-    chipMap.clear();
-    clear(P.colonistBar);
+    sig.res = ''; sig.resRoster = '';
+    boxMap.clear();
+    resourceRows.clear();
+    clear(P.pawnRow);
+    clear(P.resources);
     clear(P.messages);
     clear(P.alerts);
-    clear(P.letters);
+    clear(P.letterStack);
     alertCache = [];
+    resourceCache = [];
     liveMessages.length = 0;
+    syncArchitectVisibility();
   }
 
   /* ------------------------------------------------------------------
@@ -2261,7 +2964,22 @@
     P.menu = doc.getElementById('menu');
     P.modal = doc.getElementById('modal');
 
-    buildTopbar();
+    /* index.html's container ids are frozen, so the two groups that have
+       no container of their own are built as sections of one that does:
+       the resource readout leads the top band, and the clock closes the
+       right-hand rail. */
+    clear(P.colonistBar);
+    P.resources = el('div', 'res-list');
+    P.pawnRow = el('div', 'pawn-row');
+    P.colonistBar.appendChild(P.resources);
+    P.colonistBar.appendChild(P.pawnRow);
+
+    clear(P.letters);
+    P.letterStack = el('div', 'letter-stack');
+    P.letters.appendChild(P.letterStack);
+    P.letters.appendChild(buildClock());
+
+    buildTabBar();
     buildInspect();
     buildArchitect();
     buildMenu();
@@ -2285,8 +3003,13 @@
     }
     if (Game.gameOver && P.modal.classList.contains('hidden')) deathScreen();
 
-    updateTopbar();
-    if (frame % CHIP_FRAMES === 0) syncColonistBar();
+    updateClock();
+    updateTabBar();
+    if (frame % RESOURCE_FRAMES === 0) {
+      resourceCache = computeResources();
+      renderResources();
+    }
+    if (frame % BOX_FRAMES === 0) syncColonistBoxes();
     var sel = Game.selection[0] || null;
     if (sel !== lastSelected) { lastSelected = sel; sig.inspect = ''; }
     if (frame % INSPECT_FRAMES === 0 || sig.inspect === '') updateInspect();
