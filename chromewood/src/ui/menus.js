@@ -7,7 +7,24 @@
    once and shown or hidden.
    ============================================================ */
 
-import { SKILLS, SKILL_BRANCHES, BEACON_UPGRADES } from '../game/defs.js';
+
+import { drawText, textWidth } from './font.js';
+
+/* The title is drawn with the game's own bitmap font rather than
+   set in a web font, so the menu and the HUD are visibly the same
+   piece of software. */
+function titleCanvas(text, scale, color) {
+  const c = document.createElement('canvas');
+  const w = textWidth(text, scale) + scale * 4;
+  c.width = w; c.height = 7 * scale + scale * 4;
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  drawText(g, text, scale * 2, scale * 2, { scale, color, shadow: '#2a1b46', shadowOffset: 2 });
+  c.style.width = w + 'px';
+  c.style.imageRendering = 'pixelated';
+  c.className = 'title-canvas';
+  return c;
+}
 
 const el = (tag, cls, html) => {
   const e = document.createElement(tag);
@@ -24,8 +41,6 @@ export class Menus {
     this.current = null;
     this._buildMain();
     this._buildPause();
-    this._buildSkills();
-    this._buildBeacon();
     this._buildOver();
     this._buildSettings();
     this._buildChat();
@@ -48,8 +63,6 @@ export class Menus {
       if (first && id !== 'skills') setTimeout(() => first.focus(), 20);
     }
     this.current = id || null;
-    if (id === 'skills') this.refreshSkills();
-    if (id === 'beacon') this.refreshBeacon();
   }
 
   close() { this.open(null); }
@@ -60,11 +73,14 @@ export class Menus {
     const s = this._screen('main');
     const card = el('div', 'card');
     card.innerHTML = `
-      <h1 class="title">CHROMEWOOD</h1>
+      <div id="title-slot"></div>
       <p class="subtitle">ARCANE MACHINE SURVIVAL</p>
-      <p>The forest grew back through the machines, and something in the rift
-         started sending things out at night. Hold the beacon, salvage what you
-         can while it is light, and come back stronger.</p>
+      <p>You wake on a shore with nothing, and a dead beacon inland. Cut wood,
+         break stone, make a fire before dark. Repair the beacon and it wakes
+         the core in your chest. Then start closing the rift gates, one at a
+         time, while the nights get worse.</p>
+      <p class="warnline">Everything you do is heard. The louder you work, the
+         better the night knows where to look.</p>
       <label class="field"><span>RUNNER NAME</span>
         <input id="in-name" type="text" maxlength="12" value="RUNNER" autocomplete="off" spellcheck="false"></label>
       <div class="row2">
@@ -91,14 +107,19 @@ export class Menus {
       <button class="ghost" id="btn-settings-main">SETTINGS</button>
       <h3>CONTROLS</h3>
       <table class="keys">
-        <tr><td><span class="keycap">W</span><span class="keycap">A</span><span class="keycap">S</span><span class="keycap">D</span></td><td>move</td></tr>
-        <tr><td>mouse / <span class="keycap">LMB</span></td><td>aim and fire</td></tr>
-        <tr><td><span class="keycap">SPACE</span></td><td>dash (i-frames)</td></tr>
-        <tr><td><span class="keycap">Q</span><span class="keycap">E</span><span class="keycap">R</span><span class="keycap">F</span></td><td>abilities</td></tr>
-        <tr><td><span class="keycap">G</span></td><td>interact / revive an ally</td></tr>
-        <tr><td><span class="keycap">TAB</span></td><td>skills</td></tr>
+        <tr><td><span class="keycap">W</span><span class="keycap">A</span><span class="keycap">S</span><span class="keycap">D</span> · <span class="keycap">SHIFT</span></td><td>move · sprint</td></tr>
+        <tr><td><span class="keycap">LMB</span></td><td>swing, mine, chop, build</td></tr>
+        <tr><td><span class="keycap">1</span>–<span class="keycap">6</span></td><td>hotbar</td></tr>
+        <tr><td><span class="keycap">TAB</span></td><td>pack and crafting</td></tr>
+        <tr><td><span class="keycap">B</span></td><td>build menu &nbsp; <span class="keycap">RMB</span> cancel</td></tr>
+        <tr><td><span class="keycap">G</span></td><td>use, deliver, revive an ally</td></tr>
+        <tr><td><span class="keycap">Q</span></td><td>eat the best thing you have</td></tr>
+        <tr><td><span class="keycap">SPACE</span></td><td>dash &nbsp; <span class="keycap">E</span><span class="keycap">R</span><span class="keycap">F</span> abilities</td></tr>
+        <tr><td><span class="keycap">K</span> · <span class="keycap">J</span></td><td>core · log</td></tr>
         <tr><td><span class="keycap">ENTER</span></td><td>chat &nbsp; <span class="keycap">ESC</span> pause</td></tr>
       </table>`;
+    const slot = card.querySelector('#title-slot');
+    if (slot) slot.appendChild(titleCanvas('CHROMEWOOD', 8, '#efe6ff'));
     s.appendChild(card);
 
     card.querySelector('#btn-solo').onclick = () => this.hooks.startSolo(this.readForm());
@@ -140,124 +161,16 @@ export class Menus {
       <h2>PAUSED</h2>
       <p id="pause-info" class="muted"></p>
       <button class="primary" id="btn-resume">RESUME</button>
-      <button id="btn-pause-skills">SKILLS <span class="hint">TAB</span></button>
       <button id="btn-pause-settings">SETTINGS</button>
       <button id="btn-quit">ABANDON RUN</button>`;
     s.appendChild(card);
     card.querySelector('#btn-resume').onclick = () => this.hooks.resume();
-    card.querySelector('#btn-pause-skills').onclick = () => this.open('skills');
     card.querySelector('#btn-pause-settings').onclick = () => this.open('settings');
     card.querySelector('#btn-quit').onclick = () => this.hooks.quit();
     this.pauseInfo = card.querySelector('#pause-info');
   }
 
   setPauseInfo(text) { if (this.pauseInfo) this.pauseInfo.textContent = text; }
-
-  /* ----------------------------------------------------- skill tree */
-  _buildSkills() {
-    const s = this._screen('skills', 'pane');
-    const card = el('div', 'card full');
-    card.innerHTML = `
-      <div class="spread">
-        <h2>NEURAL LATTICE</h2>
-        <div><span class="tag" id="sk-points">0 POINTS</span></div>
-      </div>
-      <p class="muted">Every level buys a point. Nodes need the node above them.
-         Unlocks drop into the next free ability slot.</p>
-      <div class="tree" id="sk-tree"></div>
-      <button class="primary" id="btn-sk-close" style="margin-top:14px">BACK <span class="hint">TAB / ESC</span></button>`;
-    s.appendChild(card);
-    card.querySelector('#btn-sk-close').onclick = () => this.hooks.resume();
-    this.skillTree = card.querySelector('#sk-tree');
-    this.skillPoints = card.querySelector('#sk-points');
-  }
-
-  refreshSkills() {
-    const me = this.hooks.getPlayer();
-    if (!me) return;
-    this.skillPoints.textContent = `${me.skillPoints} POINT${me.skillPoints === 1 ? '' : 'S'}`;
-    this.skillTree.innerHTML = '';
-    for (const branch of SKILL_BRANCHES) {
-      const col = el('div', 'branch');
-      col.appendChild(el('h4', '', `<span style="color:${branch.color}">${branch.name}</span>`));
-      col.appendChild(el('div', 'blurb', branch.blurb));
-      const nodes = Object.entries(SKILLS)
-        .filter(([, v]) => v.branch === branch.id)
-        .sort((a, b) => a[1].tier - b[1].tier);
-      for (const [key, def] of nodes) {
-        const owned = !!me.skills[key];
-        const reqOk = !def.req || !!me.skills[def.req];
-        const affordable = me.skillPoints >= def.cost;
-        const state = owned ? 'owned' : (reqOk && affordable) ? 'available' : 'locked';
-        const node = el('div', `node ${state}`);
-        node.innerHTML =
-          `<span class="n-cost">${owned ? '✓' : def.cost + 'p'}</span>` +
-          `<div class="n-name" style="color:${owned ? branch.color : ''}">${def.name}</div>` +
-          `<div class="n-desc">${def.desc}</div>`;
-        if (state === 'available') {
-          node.onclick = () => { this.hooks.learnSkill(key); this.refreshSkills(); };
-          node.tabIndex = 0;
-          node.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') node.onclick(); };
-        } else if (!reqOk && !owned) {
-          node.title = 'Requires ' + SKILLS[def.req].name;
-        }
-        col.appendChild(node);
-      }
-      this.skillTree.appendChild(col);
-    }
-  }
-
-  /* --------------------------------------------------- beacon panel */
-  _buildBeacon() {
-    const s = this._screen('beacon', 'pane');
-    const card = el('div', 'card wide');
-    card.innerHTML = `
-      <div class="spread"><h2>BEACON CONSOLE</h2><span class="tag" id="bc-int">INTEGRITY</span></div>
-      <p class="muted">Salvage is pooled: whatever anyone picks up is spent here,
-         and everything bought helps the whole run.</p>
-      <div class="stock" id="bc-stock"></div>
-      <div id="bc-list"></div>
-      <button class="primary" id="btn-bc-close" style="margin-top:12px">BACK <span class="hint">ESC</span></button>`;
-    s.appendChild(card);
-    card.querySelector('#btn-bc-close').onclick = () => this.hooks.resume();
-    this.bcList = card.querySelector('#bc-list');
-    this.bcStock = card.querySelector('#bc-stock');
-    this.bcInt = card.querySelector('#bc-int');
-  }
-
-  refreshBeacon() {
-    const sim = this.hooks.getSim();
-    if (!sim) return;
-    const res = sim.beacon.res;
-    this.bcStock.innerHTML =
-      `<span style="color:var(--amber)">⛭ SCRAP <b>${res.scrap}</b></span>` +
-      `<span style="color:var(--arcane)">✧ ESSENCE <b>${res.essence}</b></span>` +
-      `<span style="color:#ff4fd8">◆ CORES <b>${res.cores}</b></span>`;
-    this.bcInt.textContent = `INTEGRITY ${Math.round(sim.beacon.hp)} / ${sim.beacon.maxHp}`;
-    this.bcList.innerHTML = '';
-    for (const [key, def] of Object.entries(BEACON_UPGRADES)) {
-      const level = sim.beacon.upgrades[key];
-      const maxed = level >= def.max;
-      const cost = maxed ? null : def.cost(level);
-      const canAfford = cost && Object.entries(cost).every(([r, a]) => (res[r] || 0) >= a);
-      const row = el('div', 'upg');
-      /* "1 CORES" reads as a bug, so singularise on the way out. */
-      const unit = (r, a) => (a === 1 && r === 'cores' ? 'CORE' : r.toUpperCase());
-      const costText = maxed ? 'MAXED'
-        : Object.entries(cost).map(([r, a]) => `${a} ${unit(r, a)}`).join(' + ');
-      row.innerHTML =
-        `<div>
-           <div class="u-name">${def.icon} ${def.name.toUpperCase()}</div>
-           <div class="u-desc">${maxed ? 'Fully upgraded.' : def.desc(level)}</div>
-           <div class="u-pips">${pips(level, def.max)}</div>
-         </div>`;
-      const btn = el('button', canAfford ? 'primary' : '', costText);
-      btn.disabled = maxed || !canAfford;
-      btn.onclick = () => { this.hooks.buyUpgrade(key); this.refreshBeacon(); };
-      row.appendChild(btn);
-      this.bcList.appendChild(row);
-    }
-  }
 
   /* ------------------------------------------------------- game over */
   _buildOver() {
@@ -274,19 +187,22 @@ export class Menus {
     this.overBody = card.querySelector('#over-body');
   }
 
-  showOver(sim, localId) {
+  showOver(sim, localId, won) {
     const me = sim.players.get(localId);
-    this.overTitle.textContent = 'THE BEACON IS DARK';
+    this.overTitle.textContent = won ? 'THE RIFT IS QUIET' : 'THE BEACON IS DARK';
     const rows = [...sim.players.values()].map(p =>
       `<tr><td>${p.name}${p.id === localId ? ' (you)' : ''}</td><td>lv ${p.level} · ${p.kills} kills · ${p.deaths} deaths</td></tr>`).join('');
     this.overBody.innerHTML = `
-      <p>You held for <b style="color:#fff">${sim.night}</b> night${sim.night === 1 ? '' : 's'}.
-         ${sim.night < 3 ? 'The rift barely noticed.'
-        : sim.night < 6 ? 'Long enough to be remembered.'
-        : 'Long enough that something out there learned your name.'}</p>
+      <p>${won
+        ? 'Every gate sealed and the Heart with them. The wood is only a wood again.'
+        : `You held for <b style="color:#fff">${sim.night}</b> night${sim.night === 1 ? '' : 's'}. ` +
+          (sim.night < 3 ? 'The rift barely noticed.'
+            : sim.night < 6 ? 'Long enough to be remembered.'
+            : 'Long enough that something out there learned your name.')}</p>
       <table class="keys">${rows}
+        <tr><td>gates sealed</td><td>${sim.stats.gatesSealed} of ${sim.gates.length}</td></tr>
+        <tr><td>built</td><td>${sim.buildings.length} pieces</td></tr>
         <tr><td>damage dealt</td><td>${me ? Math.round(me.damageDealt).toLocaleString() : 0}</td></tr>
-        <tr><td>salvage banked</td><td>${sim.beacon.res.scrap} scrap · ${sim.beacon.res.essence} essence</td></tr>
       </table>`;
     this.open('over');
   }

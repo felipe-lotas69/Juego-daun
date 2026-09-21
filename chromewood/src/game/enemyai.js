@@ -15,12 +15,31 @@ import { BEACON, COMBAT, LEVEL_STEP, PLAYER } from '../core/config.js';
 import { damp, dist, dist2, TAU } from '../core/util.js';
 
 const AGGRO_RANGE = 22;
+/* How far something will cross a map for a person it cannot hear. */
+const SEEK_RANGE = 46;
 
 export function pickEnemyTarget(sim, e) {
   const p = sim.nearestPlayer(e.x, e.z, AGGRO_RANGE);
   if (p) return { kind: 'player', ref: p, x: p.x, z: p.z, y: p.y };
-  const b = sim.beacon;
-  return { kind: 'beacon', ref: b, x: b.x, z: b.z, y: b.y };
+  /* An unlit beacon is a ruin, not a target. Before it is repaired
+     the night comes for whoever made the noise, wherever they are. */
+  if (sim.beacon.lit) {
+    const b = sim.beacon;
+    return { kind: 'beacon', ref: b, x: b.x, z: b.z, y: b.y };
+  }
+  /* Noise before people. A whole map's worth of enemies converging
+     on you from any distance is not tension, it is a treadmill;
+     they walk toward the last loud thing and find you there. */
+  const hot = sim.resonance.hotspot();
+  if (hot) return { kind: 'noise', ref: hot, x: hot.x, z: hot.z, y: 0 };
+  const far = sim.nearestPlayer(e.x, e.z, SEEK_RANGE);
+  if (far) return { kind: 'player', ref: far, x: far.x, z: far.z, y: far.y };
+  if (e.wanderX === undefined || Math.hypot(e.wanderX - e.x, e.wanderZ - e.z) < 2) {
+    const a = sim.rng() * Math.PI * 2;
+    e.wanderX = e.x + Math.cos(a) * 14;
+    e.wanderZ = e.z + Math.sin(a) * 14;
+  }
+  return { kind: 'noise', ref: e, x: e.wanderX, z: e.wanderZ, y: e.y };
 }
 
 export function stepEnemy(sim, e, dt) {
@@ -106,7 +125,7 @@ function steer(sim, e, tx, tz, speed, dt, stopAt = 0) {
   if (sim.world.blockedAt(e.x + nx * probe, e.z + nz * probe, level)) {
     /* Pick whichever tangent is clear; keep a consistent handedness
        per enemy so they do not jitter left and right forever. */
-    if (e.dodge === undefined) e.dodge = Math.random() < 0.5 ? 1 : -1;
+    if (e.dodge === undefined) e.dodge = sim.rng() < 0.5 ? 1 : -1;
     for (const sign of [e.dodge, -e.dodge]) {
       const ax = -nz * sign, az = nx * sign;
       if (!sim.world.blockedAt(e.x + ax * probe, e.z + az * probe, level)) {
@@ -130,9 +149,9 @@ function tryAttack(sim, e, target, d) {
   e.facing = Math.atan2(target.z - e.z, target.x - e.x);
   if (target.kind === 'player') {
     damagePlayer(sim, target.ref, e.damage, e, { melee: true });
-  } else {
+  } else if (target.kind === 'beacon') {
     sim.damageBeacon(e.damage * BEACON.structureResist);
-  }
+  } else return false;
   sim.emit({ t: 'swipe', id: e.id, x: e.x, y: e.y + e.def.height * 0.6, z: e.z, facing: e.facing });
   return true;
 }
@@ -153,7 +172,7 @@ function rangedAi(sim, e, target, d, speed, dt) {
     steer(sim, e, target.x, target.z, speed, dt);
   } else {
     /* Strafe, which makes them awkward to hit with slow projectiles. */
-    if (e.strafe === undefined) e.strafe = Math.random() < 0.5 ? 1 : -1;
+    if (e.strafe === undefined) e.strafe = sim.rng() < 0.5 ? 1 : -1;
     const ang = Math.atan2(target.z - e.z, target.x - e.x) + Math.PI / 2 * e.strafe;
     steer(sim, e, e.x + Math.cos(ang) * 3, e.z + Math.sin(ang) * 3, speed * 0.7, dt);
     e.facing = Math.atan2(target.z - e.z, target.x - e.x);
@@ -218,7 +237,7 @@ function bossSlamAi(sim, e, target, d, speed, dt) {
         { hostile: true, color: 0xff4fd8, shake: 1.1 });
       /* And the ground coughs up more of them. */
       for (let i = 0; i < 3; i++) {
-        const a = Math.random() * TAU;
+        const a = sim.rng() * TAU;
         sim.spawnEnemy(e.def.summon, false,
           { x: e.x + Math.cos(a) * 3, z: e.z + Math.sin(a) * 3, fromRift: true });
       }
@@ -237,7 +256,7 @@ function bossSlamAi(sim, e, target, d, speed, dt) {
 function bossCasterAi(sim, e, target, d, speed, dt) {
   if (d > e.def.range * 0.8) steer(sim, e, target.x, target.z, speed, dt);
   else {
-    if (e.strafe === undefined) e.strafe = Math.random() < 0.5 ? 1 : -1;
+    if (e.strafe === undefined) e.strafe = sim.rng() < 0.5 ? 1 : -1;
     const ang = Math.atan2(target.z - e.z, target.x - e.x) + Math.PI / 2 * e.strafe;
     steer(sim, e, e.x + Math.cos(ang) * 4, e.z + Math.sin(ang) * 4, speed * 0.8, dt);
     e.facing = Math.atan2(target.z - e.z, target.x - e.x);
@@ -258,9 +277,9 @@ function bossCasterAi(sim, e, target, d, speed, dt) {
         color: 0xff4fd8, kind: 'hostile',
       });
     }
-    if (Math.random() < 0.35) {
+    if (sim.rng() < 0.35) {
       for (let i = 0; i < 2; i++) {
-        const a = Math.random() * TAU;
+        const a = sim.rng() * TAU;
         sim.spawnEnemy(e.def.summon, false,
           { x: e.x + Math.cos(a) * 2.5, z: e.z + Math.sin(a) * 2.5, fromRift: true });
       }

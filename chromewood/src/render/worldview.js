@@ -14,9 +14,10 @@
 import * as THREE from '../../vendor/three.module.js';
 import { MeshBuilder } from './geom.js';
 import { makeToonMaterial } from './materials.js';
-import { buildProp, propLight, GROUND_COLORS, WATER_COLOR, GLOW_SCALE, lerpHex } from './props.js';
+import { buildProp, propLight, GROUND_COLORS, GROUND_TEX, WATER_COLOR, DEEP_COLOR, GLOW_SCALE, lerpHex } from './props.js';
+import { TEX } from './textures.js';
 import { buildStructure } from './structures.js';
-import { BIOME, FLAG, PROP } from '../world/worldgen.js';
+import { BIOME, FLAG, PROP, SEA_LEVEL } from '../world/worldgen.js';
 import { CHUNK, TILE, LEVEL_STEP } from '../core/config.js';
 import { LAYER_WORLD } from './pipeline.js';
 
@@ -35,7 +36,7 @@ export class WorldView {
     this.solidMat = makeToonMaterial({ vertexColors: true, rim: 0.55 });
     this.glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, fog: false });
     this.waterMat = makeToonMaterial({
-      vertexColors: true, transparent: true, opacity: 0.78,
+      vertexColors: true, transparent: true, opacity: 0.80,
       emissive: 0x11525e, emissiveIntensity: 0.9, rim: 1.6, depthWrite: false,
     });
 
@@ -175,9 +176,14 @@ export class WorldView {
         const wx = w.tileToWorldX(tx), wz = w.tileToWorldZ(ty);
 
         const pal = GROUND_COLORS[biome] || GROUND_COLORS[BIOME.VERDANT];
+        const tex = GROUND_TEX[biome] || GROUND_TEX[BIOME.VERDANT];
+        let topTex = tex[0];
+        if (flags & FLAG.ROAD) topTex = TEX.GRAVEL;
         let top = ((tx + ty) & 1) ? pal[0] : pal[1];
         if (flags & FLAG.ROAD) top = lerpHex(top, 0xa79db1, 0.72);
         /* A little per-tile drift stops large flats looking painted. */
+        /* Snow settles on top of anything high and flat. */
+        if (biome === BIOME.SNOW && level >= 13) top = lerpHex(top, 0xffffff, 0.22);
         const drift = ((w.variant[i] & 15) / 15 - 0.5) * 0.032;
         top = lerpHex(top, drift > 0 ? 0xffffff : 0x000000, Math.abs(drift));
 
@@ -194,6 +200,8 @@ export class WorldView {
           b.at(wx, base, wz).rot(0).sc(1);
           b.box(TILE, y - base, TILE, sideCol, {
             topColor: top,
+            topTex,
+            tex: tex[1],
             faces: { ny: false, nx: nW < level, px: nE < level, nz: nN < level, pz: nS < level },
           });
           /* Darker band right under the lip: cheap ambient occlusion
@@ -201,24 +209,30 @@ export class WorldView {
           if (y - base > LEVEL_STEP * 0.9) {
             b.at(wx, base, wz);
             b.box(TILE * 1.001, (y - base) * 0.3, TILE * 1.001, lerpHex(pal[3], 0x000000, 0.25), {
+              tex: tex[1],
               faces: { ny: false, py: false, nx: nW < level, px: nE < level, nz: nN < level, pz: nS < level },
             });
           }
         } else {
           b.at(wx, y, wz).rot(0).sc(1);
-          b.ground(TILE, TILE, top, { yOff: 0 });
+          b.ground(TILE, TILE, top, { yOff: 0, tex: topTex });
         }
 
         /* The outer rim drops away into nothing, so give it a skirt
            rather than letting the camera see under the world. */
         if (tx === 0 || ty === 0 || tx === w.size - 1 || ty === w.size - 1) {
           b.at(wx, y - SKIRT, wz);
-          b.box(TILE, SKIRT, TILE, pal[3], { faces: { py: false, ny: false } });
+          b.box(TILE, SKIRT, TILE, pal[3], { tex: TEX.ROCK, faces: { py: false, ny: false } });
         }
 
         if (flags & FLAG.WATER) {
-          water.at(wx, y + 0.17, wz).rot(0).sc(1);
-          water.ground(TILE, TILE, WATER_COLOR, { yOff: 0 });
+          /* One surface for the whole sea, at sea level, rather than
+             a sheet following the floor: that is what makes shallows
+             read as shallow and the deep read as deep. */
+          const surface = (flags & FLAG.RIVER) ? y + 0.22 : SEA_LEVEL * LEVEL_STEP + 0.20;
+          const depth = Math.max(0, surface - y);
+          water.at(wx, surface, wz).rot(0).sc(1);
+          water.ground(TILE, TILE, depth > 0.9 ? DEEP_COLOR : WATER_COLOR, { yOff: 0, tex: TEX.WATER });
         }
 
         const prop = w.prop[i];

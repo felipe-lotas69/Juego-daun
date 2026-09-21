@@ -9,6 +9,7 @@
    ============================================================ */
 
 import { vrand } from './props.js';
+import { TEX } from './textures.js';
 
 export function buildStructure(b, g, kind, x, y, z, variant) {
   switch (kind) {
@@ -17,6 +18,8 @@ export function buildStructure(b, g, kind, x, y, z, variant) {
     case 'rift': return riftGate(b, g, x, y, z, variant);
     case 'shrine': return shrine(b, g, x, y, z, variant);
     case 'wreck': return wreck(b, g, x, y, z, variant);
+    case 'camp': return camp(b, g, x, y, z, variant);
+    case 'mine': return mine(b, g, x, y, z, variant);
     default: return null;
   }
 }
@@ -124,6 +127,65 @@ function shrine(b, g, x, y, z, variant) {
   }
   g.rot(0);
   return [{ x, y: y + 1.3, z, color: 0x7ee8ff, intensity: 2.0, range: 8 }];
+}
+
+/* An abandoned camp: someone else tried this, and their firepit
+   and lean-to are still here. Good early salvage. */
+function camp(b, g, x, y, z, variant) {
+  const spin = vrand(variant, 1) * Math.PI * 2;
+  /* Firepit. */
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    b.at(x + Math.cos(a) * 0.62, y, z + Math.sin(a) * 0.62).rot(a);
+    b.taper(0.24, 0.16, 0.22, 0.8, 0x8d95a4, { topColor: 0xb0b8c4, tex: TEX.ROCK });
+  }
+  b.at(x, y, z).rot(0);
+  b.ground(1.0, 1.0, 0x2a2420, { yOff: 0.02, tex: TEX.ASH });
+  for (let i = 0; i < 3; i++) {
+    b.at(x + (vrand(variant, 10 + i) - 0.5) * 0.5, y + 0.05, z + (vrand(variant, 20 + i) - 0.5) * 0.5)
+      .rot(vrand(variant, 30 + i) * 3.1);
+    b.box(0.44, 0.09, 0.09, 0x4a3a2e, { centered: true, tex: TEX.BARK });
+  }
+  /* Lean-to. */
+  b.at(x + Math.cos(spin) * 1.8, y, z + Math.sin(spin) * 1.8).rot(spin);
+  b.box(1.5, 0.12, 1.2, 0x7a5a3c, { topColor: 0x9a7550, tex: TEX.THATCH, yOff: 0.85 });
+  for (const side of [-1, 1]) {
+    b.at(x + Math.cos(spin) * 1.8 + Math.cos(spin + Math.PI / 2) * 0.55 * side,
+         y, z + Math.sin(spin) * 1.8 + Math.sin(spin + Math.PI / 2) * 0.55 * side).rot(spin);
+    b.taper(0.13, 0.9, 0.13, 0.8, 0x5c452f, { topColor: 0x7a5c3e, tex: TEX.BARK });
+  }
+  b.rot(0);
+  return [{ x, y: y + 0.3, z, color: 0xffb03a, intensity: 0.6, range: 4 }];
+}
+
+/* A mine mouth cut into a cliff: timbered frame, spoil heap,
+   and the good ore is all around it. */
+function mine(b, g, x, y, z, variant) {
+  const spin = vrand(variant, 1) * Math.PI * 2;
+  b.at(x, y, z).rot(spin).sc(1);
+  b.box(3.0, 0.14, 3.0, 0x6d6960, { topColor: 0x8a857b, tex: TEX.GRAVEL });
+  /* Frame. */
+  for (const side of [-1, 1]) {
+    b.at(x + Math.cos(spin + Math.PI / 2) * 0.95 * side, y + 0.14,
+         z + Math.sin(spin + Math.PI / 2) * 0.95 * side).rot(spin);
+    b.box(0.26, 1.7, 0.30, 0x6b4f33, { topColor: 0x8a6742, tex: TEX.PLANK });
+  }
+  b.at(x, y + 1.84, z).rot(spin);
+  b.box(2.3, 0.28, 0.40, 0x6b4f33, { topColor: 0x8a6742, tex: TEX.PLANK });
+  /* The dark of the shaft. */
+  b.at(x, y + 0.14, z).rot(spin);
+  b.box(1.7, 1.7, 0.22, 0x14100f, { topColor: 0x1c1816, tex: TEX.FLAT });
+  /* Spoil heap and a minecart's worth of rock. */
+  for (let i = 0; i < 5; i++) {
+    const a = spin + 2.2 + i * 0.5;
+    const r = 1.6 + vrand(variant, 40 + i) * 0.8;
+    b.at(x + Math.cos(a) * r, y, z + Math.sin(a) * r).rot(a);
+    b.taper(0.5, 0.26, 0.45, 0.7, 0x7d7669, { topColor: 0x9a938a, tex: TEX.GRAVEL, twist: 0.4 });
+  }
+  g.at(x, y + 1.0, z).rot(spin);
+  g.box(0.20, 0.20, 0.06, 0xffb03a, { centered: true });
+  b.rot(0); g.rot(0);
+  return [{ x, y: y + 1.1, z, color: 0xffb03a, intensity: 1.2, range: 6 }];
 }
 
 /* A crashed hull. Half buried, still leaking power. */

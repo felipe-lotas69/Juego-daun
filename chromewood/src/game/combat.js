@@ -170,7 +170,7 @@ function castSummon(sim, p, def) {
     if (c.owner === p.id && c.ability === def.id) sim.constructs.splice(i, 1);
   }
   const c = {
-    id: Math.floor(Math.random() * 1e9), owner: p.id, ability: def.id,
+    id: Math.floor(sim.rng() * 1e9), owner: p.id, ability: def.id,
     x, z, y: sim.world.groundAt(x, z) + (def.orbit ? 1.35 : 0),
     hp: def.hp, maxHp: def.hp, life: def.duration, cd: 0.3,
     damage: def.damage, fireRate: def.fireRate, range: def.range,
@@ -186,7 +186,7 @@ function castTrap(sim, p, def, power) {
   const range = Math.min(6.5, dist(p.x, p.z, p.aimX, p.aimZ));
   const x = p.x + d.x * range, z = p.z + d.z * range;
   sim.traps.push({
-    id: Math.floor(Math.random() * 1e9), owner: p.id,
+    id: Math.floor(sim.rng() * 1e9), owner: p.id,
     x, z, y: sim.world.groundAt(x, z),
     radius: def.radius, damage: def.damage * power, arm: def.arm, life: def.life,
     color: def.color, burn: def.burn,
@@ -285,7 +285,7 @@ export function damageEnemy(sim, e, amount, byPlayer, opts = {}) {
   let dmg = amount;
   let crit = false;
   if (byPlayer && !opts.dot) {
-    if (Math.random() < byPlayer.stats.crit) {
+    if (sim.rng() < byPlayer.stats.crit) {
       crit = true;
       dmg *= byPlayer.stats.critMult;
     }
@@ -334,6 +334,7 @@ export function damagePlayer(sim, p, amount, source, opts = {}) {
   p.shieldTimer = PLAYER.shieldDelay;
   p.hp -= dmg;
   p.anim.hurt = 1;
+  if (!opts.silent) p.tookDamageTonight = true;
 
   if (source && p.stats.thorns && opts.melee) {
     damageEnemy(sim, source, p.stats.thorns, null, { silent: false, color: 0xc8d4e2 });

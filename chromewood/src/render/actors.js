@@ -16,6 +16,8 @@ import { MeshBuilder } from './geom.js';
 import { makeToonMaterial, makeBlobShadowMaterial } from './materials.js';
 import { LAYER_WORLD, LAYER_NO_OUTLINE } from './pipeline.js';
 import { ENEMIES } from '../game/defs.js';
+import { ANIMALS, EXTRA_ENEMIES } from '../game/creatures.js';
+import { TEX } from './textures.js';
 import { lerpHex } from './props.js';
 import { clamp01, TAU } from '../core/util.js';
 
@@ -25,6 +27,12 @@ export const PLAYER_COLORS = [
   { body: 0x6fbf47, trim: 0xb4ef86, core: 0x63ff9d, name: 'MOSS' },
   { body: 0xa457d4, trim: 0xd9a6ff, core: 0xff4fd8, name: 'VIOLET' },
 ];
+
+/* Everything that walks, in one table, so an actor can be built
+   from a type name without caring which population it came from. */
+export const ALL_CREATURES = { ...ENEMIES, ...EXTRA_ENEMIES, ...ANIMALS };
+
+const QUADRUPEDS = new Set(['critter', 'deer', 'boar', 'ram', 'wolf']);
 
 const geoCache = new Map();
 let blobMat = null;
@@ -80,8 +88,56 @@ function buildPlayerParts(colorIndex) {
 }
 
 /* ------------------------------------------------------------ enemies */
+/* A four-legged body: barrel, neck, head, and legs carried on the
+   two limb groups so the existing walk cycle animates them. */
+function quadruped(parts, spec) {
+  const { body, head, limbL, limbR, glow } = parts;
+  const { base, light, dark, len, wide, tall, tex } = spec;
+  body.at(0, 0, 0).rot(0);
+  body.taper(len, tall, wide, 0.88, base, { topColor: light, tex, twist: 0.05 });
+  /* Haunch and shoulder, so it is not a single box. */
+  body.at(-len * 0.28, tall * 0.1, 0).taper(wide * 1.05, tall * 0.8, wide * 1.05, 0.8, base,
+    { topColor: light, tex });
+  if (spec.tail) {
+    body.at(-len * 0.52, tall * 0.7, 0).rot(0.4);
+    body.box(spec.tail, 0.08, 0.08, dark, { centered: true, tex });
+    body.rot(0);
+  }
+  head.at(0, 0, 0).rot(0);
+  head.box(wide * 0.92, tall * 0.62, wide * 0.86, dark, { topColor: base, tex });
+  if (spec.snout) head.at(wide * 0.6, -tall * 0.1, 0).box(spec.snout, tall * 0.3, wide * 0.55, base,
+    { centered: true, topColor: light, tex });
+  if (spec.ears) {
+    for (const sgn of [-1, 1]) {
+      head.at(-wide * 0.1, tall * 0.38, sgn * wide * 0.3).rot(0);
+      head.cone(0.07, spec.ears, 4, dark, { topColor: base, tex });
+    }
+  }
+  const legLen = spec.legs || tall * 0.9;
+  for (const [mesh, sgn] of [[limbL, 1], [limbR, -1]]) {
+    mesh.at(len * 0.26, -legLen * 0.5, sgn * wide * 0.34).rot(0);
+    mesh.box(0.11, legLen, 0.12, dark, { tex });
+    mesh.at(-len * 0.26, -legLen * 0.5, sgn * wide * 0.34);
+    mesh.box(0.11, legLen, 0.12, dark, { tex });
+  }
+  if (spec.horns) {
+    for (const sgn of [-1, 1]) {
+      head.at(-wide * 0.05, tall * 0.34, sgn * wide * 0.26).rot(sgn * 0.5);
+      head.taper(0.09, spec.horns, 0.09, 0.4, spec.hornColor || 0xe4dcc8, { twist: sgn * 0.9, tex: TEX.BONE });
+    }
+  }
+  if (spec.antlerGlow && glow) {
+    for (const sgn of [-1, 1]) {
+      glow.at(-wide * 0.05, tall * 0.62, sgn * wide * 0.26).rot(0);
+      glow.box(0.07, 0.24, 0.07, spec.antlerGlow, { centered: true });
+      glow.at(-wide * 0.2, tall * 0.76, sgn * wide * 0.38);
+      glow.box(0.05, 0.16, 0.05, spec.antlerGlow, { centered: true });
+    }
+  }
+}
+
 function buildEnemyParts(type) {
-  const def = ENEMIES[type];
+  const def = ALL_CREATURES[type];
   const base = def.color, accent = def.accent;
   const light = lerpHex(base, 0xffffff, 0.22);
   const body = new MeshBuilder();
@@ -176,6 +232,102 @@ function buildEnemyParts(type) {
       limbL.rot(0); limbR.rot(0);
       break;
     }
+    /* ------------------------------------------------ extra rift */
+    case 'crawler': {
+      body.at(0, 0, 0).taper(0.46, 0.30, 0.38, 0.78, base, { topColor: light, tex: TEX.METAL, twist: 0.3 });
+      head.at(0, 0, 0).box(0.26, 0.16, 0.30, lerpHex(base, 0x000000, 0.3), { topColor: base, tex: TEX.METAL });
+      glow.at(0.11, 0.0, 0).box(0.04, 0.05, 0.18, accent, { centered: true });
+      for (const [mesh, sgn] of [[limbL, 1], [limbR, -1]]) {
+        for (let i = 0; i < 3; i++) {
+          mesh.at(0.14 - i * 0.16, -0.12, sgn * 0.22).rot(sgn * 0.5);
+          mesh.box(0.07, 0.30, 0.07, lerpHex(base, 0x000000, 0.2), { tex: TEX.METAL });
+        }
+        mesh.rot(0);
+      }
+      break;
+    }
+    case 'breaker': {
+      body.at(0, 0, 0).taper(0.86, 1.05, 0.72, 0.84, base, { topColor: light, tex: TEX.RUST });
+      body.at(0, 1.0, 0).box(1.0, 0.2, 0.78, lerpHex(base, 0x000000, 0.25), { topColor: light, tex: TEX.METAL });
+      head.at(0, 0, 0).box(0.44, 0.34, 0.40, lerpHex(base, 0x000000, 0.25), { topColor: base, tex: TEX.METAL });
+      glow.at(0.19, 0.04, 0).box(0.04, 0.10, 0.26, accent, { centered: true });
+      /* Wrecking arms: the reason a siege night is dangerous. */
+      limbL.at(0, -0.34, 0).box(0.26, 0.7, 0.26, lerpHex(base, 0x000000, 0.1), { tex: TEX.METAL });
+      limbL.at(0, -0.74, 0).box(0.42, 0.34, 0.42, 0x8a8f9a, { topColor: 0xb4bac6, tex: TEX.METAL });
+      limbR.at(0, -0.34, 0).box(0.26, 0.7, 0.26, lerpHex(base, 0x000000, 0.1), { tex: TEX.METAL });
+      limbR.at(0, -0.74, 0).box(0.42, 0.34, 0.42, 0x8a8f9a, { topColor: 0xb4bac6, tex: TEX.METAL });
+      break;
+    }
+    case 'bloomheart': {
+      body.at(0, 0, 0).taper(1.3, 1.5, 1.2, 0.7, base, { topColor: light, tex: TEX.MOSS, twist: 0.15 });
+      body.at(0, 1.45, 0).cone(0.95, 0.95, 8, lerpHex(base, 0x76e0b4, 0.4),
+        { topColor: 0xb8f5dc, tex: TEX.LEAF });
+      head.at(0, 0, 0).box(0.5, 0.42, 0.46, lerpHex(base, 0x000000, 0.3), { topColor: base, tex: TEX.BARK });
+      glow.at(0, 0, 0).crystal(0.3, 0.9, accent, { sides: 6, tipColor: 0xffc2f0 });
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * TAU;
+        limbL.at(Math.cos(a) * 0.95, 0, Math.sin(a) * 0.95).rot(a);
+        limbL.taper(0.16, 0.9, 0.16, 0.4, lerpHex(base, 0x000000, 0.2), { twist: 0.6, tex: TEX.BARK });
+        limbR.at(Math.cos(a + 0.5) * 0.6, 0, Math.sin(a + 0.5) * 0.6).rot(a);
+        limbR.box(0.14, 0.14, 0.14, accent, { centered: true });
+      }
+      limbL.rot(0); limbR.rot(0);
+      break;
+    }
+
+    /* --------------------------------------------------- wildlife */
+    case 'critter': {
+      quadruped({ body, head, limbL, limbR, glow }, {
+        base, light, dark: lerpHex(base, 0x000000, 0.3), len: 0.46, wide: 0.28, tall: 0.28,
+        tex: TEX.FUR, ears: 0.09, tail: 0.18, legs: 0.14,
+      });
+      glow.at(0.12, 0.02, 0.06).box(0.03, 0.03, 0.03, accent, { centered: true });
+      break;
+    }
+    case 'deer': {
+      quadruped({ body, head, limbL, limbR, glow }, {
+        base, light, dark: lerpHex(base, 0x000000, 0.28), len: 1.15, wide: 0.46, tall: 0.55,
+        tex: TEX.FUR, ears: 0.18, tail: 0.18, legs: 0.78, snout: 0.28, antlerGlow: accent,
+      });
+      break;
+    }
+    case 'boar': {
+      quadruped({ body, head, limbL, limbR, glow }, {
+        base, light, dark: lerpHex(base, 0x000000, 0.3), len: 1.2, wide: 0.6, tall: 0.56,
+        tex: TEX.FUR, ears: 0.13, tail: 0.16, legs: 0.42, snout: 0.36,
+        horns: 0.24, hornColor: accent,
+      });
+      break;
+    }
+    case 'ram': {
+      quadruped({ body, head, limbL, limbR, glow }, {
+        base, light, dark: lerpHex(base, 0x000000, 0.25), len: 1.14, wide: 0.56, tall: 0.62,
+        tex: TEX.FUR, ears: 0.13, tail: 0.13, legs: 0.62, snout: 0.26,
+        horns: 0.42, hornColor: accent,
+      });
+      break;
+    }
+    case 'wolf': {
+      quadruped({ body, head, limbL, limbR, glow }, {
+        base, light, dark: lerpHex(base, 0x000000, 0.3), len: 1.02, wide: 0.38, tall: 0.44,
+        tex: TEX.FUR, ears: 0.19, tail: 0.38, legs: 0.54, snout: 0.3,
+      });
+      glow.at(0.2, 0.02, 0.08).box(0.035, 0.04, 0.04, accent, { centered: true });
+      glow.at(0.2, 0.02, -0.08).box(0.035, 0.04, 0.04, accent, { centered: true });
+      break;
+    }
+    case 'lumen': {
+      body.at(0, 0, 0).crystal(0.14, 0.34, base, { sides: 5, tipColor: 0xffffff, tex: TEX.CRYSTAL });
+      glow.at(0, 0.18, 0).box(0.24, 0.24, 0.24, accent, { centered: true });
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * TAU;
+        limbL.at(Math.cos(a) * 0.3, 0.2, Math.sin(a) * 0.3).rot(a);
+        limbL.box(0.10, 0.04, 0.04, base, { centered: true });
+      }
+      limbL.rot(0);
+      break;
+    }
+
     default: {
       body.at(0, 0, 0).box(0.4, 0.6, 0.4, base, { topColor: light });
       head.at(0, 0, 0).box(0.3, 0.3, 0.3, lerpHex(base, 0x000000, 0.2));
@@ -240,9 +392,10 @@ export class Actor {
         this.group.add(this.parts[k]);
       }
       this.height = 1.25;
-    } else if (ENEMIES[kind]) {
+    } else if (ALL_CREATURES[kind]) {
       const p = cached('enemy:' + kind, () => buildEnemyParts(kind));
       this.def = p.def;
+      this.quad = QUADRUPEDS.has(kind);
       const bodyMat = makeToonMaterial({ vertexColors: true, rim: 1.4 });
       const glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, fog: false });
       if (p.body) this.parts.body = solid(p.body, bodyMat);
@@ -331,8 +484,14 @@ export class Actor {
         P.body.rotation.set(0, 0, 0);
       }
       if (P.head) {
-        P.head.position.set(0, h * 0.62 + bob * 1.2, 0);
-        P.head.rotation.set(attack * 0.35, 0, 0);
+        /* Four-legged things carry their head forward, not on top. */
+        if (this.quad) {
+          P.head.position.set(h * 0.72, h * 0.62 + bob, 0);
+          P.head.rotation.set(0, 0, -0.12 + attack * 0.5);
+        } else {
+          P.head.position.set(0, h * 0.62 + bob * 1.2, 0);
+          P.head.rotation.set(attack * 0.35, 0, 0);
+        }
       }
       if (P.glow) {
         P.glow.position.copy(P.head ? P.head.position : new THREE.Vector3(0, h * 0.5, 0));
@@ -355,6 +514,11 @@ export class Actor {
           P.limbL.rotation.set(0.5, this.time * 0.9, 0);
           P.limbR.position.set(0, h * 0.5, 0);
           P.limbR.rotation.set(-0.4, -this.time * 1.4, 0.3);
+        } else if (this.quad) {
+          P.limbL.position.set(0, h * 0.62 + bob * 0.5, 0);
+          P.limbL.rotation.set(0, 0, swing * 0.55);
+          P.limbR.position.set(0, h * 0.62 + bob * 0.5, 0);
+          P.limbR.rotation.set(0, 0, -swing * 0.55);
         } else {
           const reach = attack * 0.9;
           P.limbL.position.set(reach * 0.35, h * 0.62 + bob, 0.22);
@@ -364,7 +528,9 @@ export class Actor {
         }
       }
       /* Floaters ignore the ground a little. */
-      if (this.kind === 'caster' || this.kind === 'riftheart') {
+      if (this.kind === 'lumen') {
+        g.position.y = ent.y + 0.15 + Math.sin(this.time * 1.9) * 0.14;
+      } else if (this.kind === 'caster' || this.kind === 'riftheart') {
         g.position.y = ent.y + 0.35 + Math.sin(this.time * 1.6) * 0.09;
       }
     }

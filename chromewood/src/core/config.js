@@ -6,15 +6,16 @@
    ============================================================ */
 
 export const TILE = 1;                    /* world units per ground tile   */
-export const WORLD_TILES = 192;           /* arena is WORLD_TILES square   */
+export const WORLD_TILES = 224;           /* arena is WORLD_TILES square   */
 export const WORLD_HALF = (WORLD_TILES * TILE) / 2;
 export const CHUNK = 16;                  /* tiles per streamed chunk      */
-export const LEVEL_STEP = 0.75;           /* height of one terrain step    */
+export const LEVEL_STEP = 0.55;           /* height of one terrain step    */
 
 export const RENDER = {
   pixelScale: 3,          /* screen pixels per rendered pixel              */
+  detail: 1.45,            /* atlas contrast; above 1 extrapolates the mix  */
   minInternalW: 320,
-  maxInternalW: 700,      /* clamp so huge monitors stay chunky            */
+  maxInternalW: 860,      /* clamp so huge monitors stay chunky            */
   toonBands: 4,
   outline: true,
   outlineAlpha: 0.75,
@@ -33,7 +34,7 @@ export const PLAYER = {
   speed: 6.2,
   accel: 42,
   friction: 26,
-  maxHp: 100,
+  maxHp: 120,
   maxEnergy: 100,
   energyRegen: 9,          /* per second, ramps up when out of combat      */
   shieldMax: 40,
@@ -53,6 +54,63 @@ export const PLAYER = {
 };
 
 export const XP_CURVE = (level) => Math.floor(38 * Math.pow(level, 1.42) + 22 * level);
+
+/* ------------------------------------------------------- survival */
+export const SURVIVAL = {
+  baseReach: 1.7,
+  swingsPerSecond: 1.6,
+  swingStamina: 7,
+  fistPower: 7,             /* how much a bare hand takes off a tree */
+  fistDamage: 8,
+  maxStamina: 100,
+  staminaRegen: 26,
+  sprintStamina: 14,        /* per second while sprinting            */
+  sprintSpeed: 1.42,
+  maxHunger: 100,
+  hungerRate: 0.17,         /* per second: about ten minutes a meal   */
+  starveDamage: 2,
+  fedRegen: 0.8,
+  maxWarmth: 100,
+  coldNight: 1.15,          /* warmth lost per second on a cold night */
+  coldSnow: 3.0,
+  fireWarmth: 14,
+  dayWarmth: 7,             /* recovery out of the cold               */
+  freezeDamage: 2.5,
+  stationRange: 4.2,
+  buildRange: 7.0,
+  pickupRange: 1.9,
+  depositRange: 5.0,
+};
+
+/* Everything you do is heard. This is the knob that decides how
+   much, and how long the rift remembers it. */
+export const RESONANCE = {
+  cellTiles: 4,
+  max: 260,
+  decay: 0.020,             /* per second, exponential              */
+  threshold: 18,            /* below this the rift is not interested */
+  perSwing: 1.2,
+  perHarvest: 2.6,
+  perBreak: 12,
+  perBuild: 14,
+  perCraft: 5,              /* per second while crafting            */
+  perShot: 2.2,
+  perBlast: 16,
+  perForge: 9,              /* per second while a forge is lit      */
+  beacon: 34,               /* a lit beacon is loud by nature       */
+  lureRange: 30,
+};
+
+/* The rift-gate set pieces: plant a pylon, hold the ground. */
+export const GATE = {
+  sealTime: 75,             /* seconds of holding the gate          */
+  radius: 9,
+  waveInterval: 7.5,
+  budgetBase: 90,
+  budgetPerGate: 55,
+  rewardCores: 2,
+  pressureCut: 0.15,        /* night budget cut per gate sealed     */
+};
 
 export const BEACON = {
   maxHp: 3000,
@@ -82,6 +140,7 @@ export const WAVE = {
   spawnRing: 26,           /* enemies walk in from this far out            */
   eliteFromNight: 3,
   bossEvery: 3,
+  concurrentCap: 34,       /* enemies alive at once, before players   */
 };
 
 export const COMBAT = {

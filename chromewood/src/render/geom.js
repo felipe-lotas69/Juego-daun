@@ -13,6 +13,7 @@
    ============================================================ */
 
 import * as THREE from '../../vendor/three.module.js';
+import { TEX, GRID } from './textures.js';
 
 /* Per-face multipliers. Top faces catch the sky, the two visible
    side directions differ so cliffs read as solid volumes. */
@@ -27,14 +28,22 @@ const FACE_TINT = {
 
 const tmpColor = new THREE.Color();
 
+/* Texture repeats per world unit. Below the screen-pixel density at
+   normal zoom, so texels land on whole pixels instead of shimmering. */
+export const UV_SCALE = 0.5;
+
 export class MeshBuilder {
   constructor() {
     this.pos = [];
     this.norm = [];
     this.col = [];
     this.uv = [];
+    this.cell = [];
     this.index = [];
     this.vertCount = 0;
+    /* Which atlas cell the next shape writes. Shapes override it
+       per face through their options. */
+    this.texture = TEX.FLAT;
     /* A transform stack keeps the shape functions readable: they
        all build around the origin and get placed afterwards. */
     this.tx = 0; this.ty = 0; this.tz = 0;
@@ -44,12 +53,14 @@ export class MeshBuilder {
 
   reset() {
     this.pos.length = 0; this.norm.length = 0; this.col.length = 0;
-    this.uv.length = 0; this.index.length = 0; this.vertCount = 0;
+    this.uv.length = 0; this.cell.length = 0; this.index.length = 0; this.vertCount = 0;
+    this.texture = TEX.FLAT;
     this.tx = this.ty = this.tz = 0; this.ry = 0; this.scale = 1;
     return this;
   }
 
   at(x, y, z) { this.tx = x; this.ty = y; this.tz = z; return this; }
+  tex(cell) { this.texture = cell; return this; }
   rot(ry) { this.ry = ry; return this; }
   sc(s) { this.scale = s; return this; }
 
@@ -67,6 +78,7 @@ export class MeshBuilder {
     this.norm.push(nx, ny, nz);
     this.col.push(r, g, b);
     this.uv.push(u, v);
+    this.cell.push(this._faceTex === undefined ? this.texture : this._faceTex);
     return this.vertCount++;
   }
 
@@ -91,11 +103,14 @@ export class MeshBuilder {
 
     const face = (key, normal, corners, cols) => {
       if (faces && faces[key] === false) return;
+      this._faceTex = (key === 'py' && opts.topTex !== undefined) ? opts.topTex
+        : (opts.tex !== undefined ? opts.tex : undefined);
       const t = FACE_TINT[key] * tint;
       const [r, g, b] = cols;
       const idx = corners.map(([x, y, z, u, v]) =>
         this._push(x, y, z, normal[0], normal[1], normal[2], r * t, g * t, b * t, u, v));
       this._quad(idx);
+      this._faceTex = undefined;
     };
 
     face('py', [0, 1, 0], [[-hw, y1, -hd, 0, 0], [-hw, y1, hd, 0, 1], [hw, y1, hd, 1, 1], [hw, y1, -hd, 1, 0]], top);
@@ -111,6 +126,7 @@ export class MeshBuilder {
      cliff blocks all use this to avoid looking like crates. */
   taper(w, h, d, topScale, color, opts = {}) {
     const { tint = 1, topColor = null, yOff = 0, twist = 0 } = opts;
+    if (opts.tex !== undefined) this._faceTex = opts.tex;
     const hw = w / 2, hd = d / 2;
     const tw = hw * topScale, td = hd * topScale;
     const y0 = yOff, y1 = yOff + h;
@@ -150,12 +166,14 @@ export class MeshBuilder {
          the naive triangle order on the inside of the shape. */
       this._quad([dd, cc, bb, a]);
     }
+    this._faceTex = undefined;
     return this;
   }
 
   /* Low-poly cone: tree canopies, spikes, hats. */
   cone(radius, h, segments, color, opts = {}) {
     const { yOff = 0, tint = 1, topColor = null, flatten = 1 } = opts;
+    if (opts.tex !== undefined) this._faceTex = opts.tex;
     tmpColor.set(color);
     const r0 = tmpColor.r, g0 = tmpColor.g, b0 = tmpColor.b;
     let tr = r0, tg = g0, tb = b0;
@@ -180,12 +198,14 @@ export class MeshBuilder {
       const f = this._push(0, yOff, 0, 0, -1, 0, r0 * 0.45, g0 * 0.45, b0 * 0.45, 0.5, 1);
       this.index.push(e, d, f);
     }
+    this._faceTex = undefined;
     return this;
   }
 
   /* Prismatic crystal: a tapered shaft with a pointed cap. */
   crystal(radius, h, color, opts = {}) {
     const { yOff = 0, tilt = 0, sides = 5, tipColor = null } = opts;
+    if (opts.tex !== undefined) this._faceTex = opts.tex;
     tmpColor.set(color);
     const r0 = tmpColor.r, g0 = tmpColor.g, b0 = tmpColor.b;
     let tr = r0 * 1.5, tg = g0 * 1.5, tb = b0 * 1.5;
@@ -211,12 +231,14 @@ export class MeshBuilder {
       const gI = this._push(h * lean, yOff + h, 0, mx / nl, 0.8, mz / nl, tr, tg, tb, 0.5, 1);
       this.index.push(f, e, gI);
     }
+    this._faceTex = undefined;
     return this;
   }
 
   /* A flat quad lying on the ground: decals, water, glyph circles. */
   ground(w, d, color, opts = {}) {
     const { yOff = 0.02, tint = 1 } = opts;
+    if (opts.tex !== undefined) this._faceTex = opts.tex;
     tmpColor.set(color);
     const r = tmpColor.r * tint, g = tmpColor.g * tint, b = tmpColor.b * tint;
     const hw = w / 2, hd = d / 2;
@@ -225,6 +247,7 @@ export class MeshBuilder {
     const c = this._push(hw, yOff, hd, 0, 1, 0, r, g, b, 1, 1);
     const d2 = this._push(hw, yOff, -hd, 0, 1, 0, r, g, b, 1, 0);
     this._quad([a, bq, c, d2]);
+    this._faceTex = undefined;
     return this;
   }
 
@@ -232,6 +255,7 @@ export class MeshBuilder {
      and surprisingly convincing once the outline pass hits them. */
   cross(w, h, color, opts = {}) {
     const { yOff = 0, tipColor = null } = opts;
+    if (opts.tex !== undefined) this._faceTex = opts.tex;
     tmpColor.set(color);
     const r = tmpColor.r, g = tmpColor.g, b = tmpColor.b;
     let tr = r * 1.25, tg = g * 1.25, tb = b * 1.25;
@@ -248,6 +272,7 @@ export class MeshBuilder {
       this._quad([a, bq, c, d]);
       this._quad([d, c, bq, a]);
     }
+    this._faceTex = undefined;
     return this;
   }
 
@@ -258,6 +283,7 @@ export class MeshBuilder {
     for (let i = 0; i < other.norm.length; i++) this.norm.push(other.norm[i]);
     for (let i = 0; i < other.col.length; i++) this.col.push(other.col[i]);
     for (let i = 0; i < other.uv.length; i++) this.uv.push(other.uv[i]);
+    for (let i = 0; i < other.cell.length; i++) this.cell.push(other.cell[i]);
     for (let i = 0; i < other.index.length; i++) this.index.push(other.index[i] + base);
     this.vertCount += other.vertCount;
     return this;
@@ -265,12 +291,53 @@ export class MeshBuilder {
 
   get isEmpty() { return this.index.length === 0; }
 
-  build() {
+  /* Box projection from world position and normal, so the detail
+     texture tiles continuously across a whole terrain chunk instead
+     of restarting at every face. Done once, on the CPU, at build
+     time - it costs nothing at runtime and means no shape has to
+     think about its own UVs. */
+  projectUVs(scale = UV_SCALE) {
+    const p = this.pos, uv = this.uv, idx = this.index;
+    /* Per triangle, not per vertex. Which of the three planes a
+       vertex projects onto has to be decided by the face it belongs
+       to: a cone's apex leans upward while its skirt leans sideways,
+       and letting them disagree tears the UVs apart inside the
+       triangle, which is why textured cones came out smooth. */
+    for (let t = 0; t < idx.length; t += 3) {
+      const a = idx[t], b = idx[t + 1], c = idx[t + 2];
+      const ax = p[a * 3], ay = p[a * 3 + 1], az = p[a * 3 + 2];
+      const bx = p[b * 3], by = p[b * 3 + 1], bz = p[b * 3 + 2];
+      const cx = p[c * 3], cy = p[c * 3 + 1], cz = p[c * 3 + 2];
+      const ux = bx - ax, uy = by - ay, uz = bz - az;
+      const vx = cx - ax, vy = cy - ay, vz = cz - az;
+      const nx = Math.abs(uy * vz - uz * vy);
+      const ny = Math.abs(uz * vx - ux * vz);
+      const nz = Math.abs(ux * vy - uy * vx);
+      let mode;
+      if (ny >= nx && ny >= nz) mode = 0;        /* looking down  */
+      else if (nx >= nz) mode = 1;               /* facing x      */
+      else mode = 2;                             /* facing z      */
+      for (const i of [a, b, c]) {
+        const x = p[i * 3], y = p[i * 3 + 1], z = p[i * 3 + 2];
+        let s1, s2;
+        if (mode === 0) { s1 = x; s2 = z; }
+        else if (mode === 1) { s1 = z; s2 = -y; }
+        else { s1 = x; s2 = -y; }
+        uv[i * 2] = s1 * scale;
+        uv[i * 2 + 1] = s2 * scale;
+      }
+    }
+    return this;
+  }
+
+  build(opts = {}) {
+    if (opts.projectUVs !== false) this.projectUVs(opts.uvScale);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.norm, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    g.setAttribute('texCell', new THREE.Float32BufferAttribute(this.cell, 1));
     g.setIndex(this.vertCount > 65535
       ? new THREE.Uint32BufferAttribute(this.index, 1)
       : new THREE.Uint16BufferAttribute(this.index, 1));

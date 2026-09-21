@@ -41,7 +41,8 @@ export const EDGE_FRAG = /* glsl */`
   uniform float uShadow;
   uniform float uDepthScale;
   uniform float uDepthBias;
-  uniform vec3  uOutlineTint;
+  uniform vec3  uShadowTint;
+  uniform float uOutlineWhite;
   varying vec2 vUv;
 
   float linearDepth(vec2 uv) {
@@ -118,8 +119,19 @@ export const EDGE_FRAG = /* glsl */`
     float highlight = clamp(normalDifference - depthDifference, 0.0, 1.0) * uHighlight * uLineAlpha;
     float shade     = depthDifference * uShadow * uLineAlpha;
 
-    col += uOutlineTint * highlight * (0.35 + 0.65 * max(max(col.r, col.g), col.b));
-    col -= col * shade;
+    /* Outlines take their colour from the surface they are on. A lit
+       edge is the same hue pushed brighter and a little desaturated
+       (the way a highlight actually behaves), and a shadowed edge is
+       the same hue pushed dark and cool. Adding flat white instead
+       makes every object in the scene look chalk-rimmed, which is
+       the giveaway that the outline is a post effect. */
+    float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    vec3 lit = col * 1.85 + vec3(lum * lum) * 0.70;
+    lit = mix(lit, vec3(1.0), uOutlineWhite);
+    col = mix(col, lit, highlight);
+
+    vec3 dark = col * uShadowTint;
+    col = mix(col, dark, shade);
 
     gl_FragColor = vec4(col, src.a);
   }

@@ -1,51 +1,113 @@
 /* ============================================================
-   worldgen.js - the Chromewood itself
+   worldgen.js - the Chromewood
 
    Pure data: a seed in, typed arrays out. No three.js and no DOM,
-   so the simulation running on a host and the view running on a
-   joiner build byte-identical terrain from the same room code.
+   so a host and a joining client build byte-identical terrain from
+   the same room code.
 
-   The map is a fixed square arena rather than an endless world:
-   a survival run wants a place you learn, with a beacon at its
-   heart and landmarks you can navigate by.
+   The shape of a map: a continent with a coast, a spine of
+   mountains, rivers that run from the peaks to the sea, and a ruined
+   plaza at the middle where the beacon stands. Machine wreckage and
+   arcane overgrowth are laid over that as patches, and the further
+   out you go the more corrupted it gets.
+
+   Height is the thing the old version did not have. Sixteen levels
+   means real cliffs, and real cliffs mean places you cannot simply
+   walk to - so generation ends with a pass that guarantees you can
+   reach everything worth reaching, by cutting steps into the rock
+   rather than by flattening it.
    ============================================================ */
 
 import { makeRng, hash2, fbm, ridge, worley } from '../core/rng.js';
 import { WORLD_TILES, WORLD_HALF, TILE, LEVEL_STEP, CHUNK } from '../core/config.js';
 
+export const MAX_LEVEL = 16;
+/* The only heights land is ever at. Two levels apart, so every
+   change of plateau is a cliff a body cannot simply walk up. */
+export const PLATEAUS = [0, 2, 4, 6, 8, 10, 12, 14, 16];
+export const SEA_LEVEL = 2;          /* levels at or below this are water */
+
 export const BIOME = {
-  VERDANT: 0,   /* ordinary forest: the safe middle ground        */
-  BLOOM: 1,     /* arcane overgrowth, glowing and generous        */
-  SCRAP: 2,     /* machine ruins, dense in salvage                */
-  ASH: 3,       /* rift-burnt ground, where the worst things live */
-  PLAZA: 4,     /* the flat stone around the beacon               */
+  OCEAN: 0,
+  BEACH: 1,
+  MEADOW: 2,
+  FOREST: 3,
+  PINE: 4,
+  HIGHLAND: 5,
+  SNOW: 6,
+  MARSH: 7,
+  BLOOM: 8,
+  SCRAP: 9,
+  ASH: 10,
+  PLAZA: 11,
+};
+
+export const BIOME_NAME = {
+  [BIOME.OCEAN]: 'Shallows', [BIOME.BEACH]: 'Shore', [BIOME.MEADOW]: 'Meadow',
+  [BIOME.FOREST]: 'Chromewood', [BIOME.PINE]: 'Pinehold', [BIOME.HIGHLAND]: 'Crags',
+  [BIOME.SNOW]: 'Whitecap', [BIOME.MARSH]: 'Sump', [BIOME.BLOOM]: 'Bloomwood',
+  [BIOME.SCRAP]: 'Scrapfield', [BIOME.ASH]: 'Ashlands', [BIOME.PLAZA]: 'The Plaza',
 };
 
 export const PROP = {
   NONE: 0,
-  TREE_PINE: 1, TREE_BLOOM: 2, DEAD_TREE: 3, STUMP: 4,
-  ROCK: 5, BOULDER: 6, CRYSTAL: 7, RIFT_SHARD: 8,
-  GRASS: 9, FLOWER: 10, MUSHROOM: 11, REED: 12,
-  RUIN_WALL: 13, RUIN_PILLAR: 14, PYLON: 15, CONDUIT: 16,
-  SCRAP_PILE: 17, ANTENNA: 18, CRATE: 19, LAMP: 20,
+  TREE_PINE: 1, TREE_OAK: 2, TREE_BIRCH: 3, TREE_BLOOM: 4, TREE_DEAD: 5, TREE_SNOW: 6, STUMP: 7,
+  BUSH: 8, BERRY_BUSH: 9, GRASS: 10, FLOWER: 11, MUSHROOM: 12, REED: 13, FERN: 14,
+  ROCK: 15, BOULDER: 16, ROCK_TALL: 17,
+  ORE_COPPER: 18, ORE_IRON: 19, ORE_GOLD: 20, ORE_ESSENCE: 21,
+  CRYSTAL: 22, RIFT_SHARD: 23,
+  RUIN_WALL: 24, RUIN_PILLAR: 25, PYLON: 26, CONDUIT: 27, SCRAP_PILE: 28,
+  ANTENNA: 29, CRATE: 30, LAMP: 31,
+  BONES: 32, ICE_SPIKE: 33, SNOW_ROCK: 34,
 };
 
-/* Which props stop a character, and which are just scenery. */
+/* Props that stop a body. */
 export const SOLID_PROPS = new Set([
-  PROP.TREE_PINE, PROP.TREE_BLOOM, PROP.DEAD_TREE, PROP.BOULDER,
-  PROP.CRYSTAL, PROP.RIFT_SHARD, PROP.RUIN_WALL, PROP.RUIN_PILLAR,
-  PROP.PYLON, PROP.ANTENNA, PROP.CRATE,
+  PROP.TREE_PINE, PROP.TREE_OAK, PROP.TREE_BIRCH, PROP.TREE_BLOOM, PROP.TREE_DEAD,
+  PROP.TREE_SNOW, PROP.BOULDER, PROP.ROCK_TALL, PROP.CRYSTAL, PROP.RIFT_SHARD,
+  PROP.RUIN_WALL, PROP.RUIN_PILLAR, PROP.PYLON, PROP.ANTENNA, PROP.CRATE,
+  PROP.ORE_COPPER, PROP.ORE_IRON, PROP.ORE_GOLD, PROP.ORE_ESSENCE, PROP.ICE_SPIKE,
 ]);
 
-/* Props you can break for resources: [resource, amount, hp]. */
-export const HARVESTABLE = {
-  [PROP.CRYSTAL]: { res: 'essence', amount: 4, hp: 40 },
-  [PROP.RIFT_SHARD]: { res: 'essence', amount: 6, hp: 55 },
-  [PROP.SCRAP_PILE]: { res: 'scrap', amount: 4, hp: 30 },
-  [PROP.CONDUIT]: { res: 'scrap', amount: 3, hp: 26 },
-  [PROP.CRATE]: { res: 'scrap', amount: 5, hp: 22 },
-  [PROP.TREE_BLOOM]: { res: 'essence', amount: 2, hp: 45 },
-  [PROP.DEAD_TREE]: { res: 'scrap', amount: 1, hp: 35 },
+/* What a prop gives up when you break it, and what it takes to do
+   it. `tier` is the tool tier required to get anything at all:
+   0 bare hands, 1 stone, 2 iron, 3 arcane. `tool` names the kind of
+   tool that is efficient against it. */
+export const HARVEST = {
+  [PROP.TREE_PINE]:   { tool: 'axe',  tier: 0, hp: 60, yield: [['wood', 5], ['fiber', 1]] },
+  [PROP.TREE_OAK]:    { tool: 'axe',  tier: 0, hp: 75, yield: [['wood', 7], ['fiber', 1]] },
+  [PROP.TREE_BIRCH]:  { tool: 'axe',  tier: 0, hp: 55, yield: [['wood', 5], ['fiber', 2]] },
+  [PROP.TREE_BLOOM]:  { tool: 'axe',  tier: 1, hp: 80, yield: [['wood', 4], ['essence', 3]] },
+  [PROP.TREE_DEAD]:   { tool: 'axe',  tier: 0, hp: 45, yield: [['wood', 3]] },
+  [PROP.TREE_SNOW]:   { tool: 'axe',  tier: 0, hp: 65, yield: [['wood', 6], ['resin', 1]] },
+  [PROP.STUMP]:       { tool: 'axe',  tier: 0, hp: 30, yield: [['wood', 2]] },
+  [PROP.BUSH]:        { tool: 'hand', tier: 0, hp: 12, yield: [['fiber', 3]] },
+  [PROP.BERRY_BUSH]:  { tool: 'hand', tier: 0, hp: 12, yield: [['fiber', 2], ['berries', 3]] },
+  [PROP.GRASS]:       { tool: 'hand', tier: 0, hp: 4,  yield: [['fiber', 1]] },
+  [PROP.FERN]:        { tool: 'hand', tier: 0, hp: 6,  yield: [['fiber', 2]] },
+  [PROP.MUSHROOM]:    { tool: 'hand', tier: 0, hp: 4,  yield: [['mushroom', 2]] },
+  [PROP.REED]:        { tool: 'hand', tier: 0, hp: 5,  yield: [['fiber', 2]] },
+  [PROP.FLOWER]:      { tool: 'hand', tier: 0, hp: 3,  yield: [['petal', 1]] },
+  [PROP.ROCK]:        { tool: 'pick', tier: 0, hp: 25, yield: [['stone', 3]] },
+  [PROP.BOULDER]:     { tool: 'pick', tier: 0, hp: 70, yield: [['stone', 8], ['flint', 1]] },
+  [PROP.ROCK_TALL]:   { tool: 'pick', tier: 1, hp: 90, yield: [['stone', 10], ['flint', 2]] },
+  [PROP.SNOW_ROCK]:   { tool: 'pick', tier: 0, hp: 30, yield: [['stone', 4]] },
+  [PROP.ORE_COPPER]:  { tool: 'pick', tier: 1, hp: 110, yield: [['copper_ore', 5], ['stone', 3]] },
+  [PROP.ORE_IRON]:    { tool: 'pick', tier: 1, hp: 150, yield: [['iron_ore', 5], ['stone', 3]] },
+  [PROP.ORE_GOLD]:    { tool: 'pick', tier: 2, hp: 190, yield: [['gold_ore', 4], ['stone', 3]] },
+  [PROP.ORE_ESSENCE]: { tool: 'pick', tier: 2, hp: 210, yield: [['essence', 8], ['stone', 2]] },
+  [PROP.CRYSTAL]:     { tool: 'pick', tier: 1, hp: 95, yield: [['essence', 6]] },
+  [PROP.RIFT_SHARD]:  { tool: 'pick', tier: 2, hp: 130, yield: [['riftglass', 3], ['essence', 4]] },
+  [PROP.SCRAP_PILE]:  { tool: 'hand', tier: 0, hp: 35, yield: [['scrap', 5]] },
+  [PROP.CONDUIT]:     { tool: 'pick', tier: 0, hp: 40, yield: [['scrap', 3], ['wire', 2]] },
+  [PROP.CRATE]:       { tool: 'hand', tier: 0, hp: 28, yield: [['scrap', 3], ['wood', 2]] },
+  [PROP.RUIN_WALL]:   { tool: 'pick', tier: 1, hp: 120, yield: [['stone', 6]] },
+  [PROP.RUIN_PILLAR]: { tool: 'pick', tier: 1, hp: 140, yield: [['stone', 8]] },
+  [PROP.LAMP]:        { tool: 'pick', tier: 0, hp: 45, yield: [['scrap', 4], ['wire', 1]] },
+  [PROP.ANTENNA]:     { tool: 'pick', tier: 1, hp: 100, yield: [['scrap', 8], ['wire', 3]] },
+  [PROP.PYLON]:       { tool: 'pick', tier: 2, hp: 180, yield: [['scrap', 10], ['wire', 5], ['essence', 2]] },
+  [PROP.BONES]:       { tool: 'hand', tier: 0, hp: 20, yield: [['bone', 3]] },
+  [PROP.ICE_SPIKE]:   { tool: 'pick', tier: 1, hp: 60, yield: [['ice', 3]] },
 };
 
 export const FLAG = {
@@ -54,9 +116,14 @@ export const FLAG = {
   PLAZA: 4,
   ROAD: 8,
   BLOCKED_EDGE: 16,
+  RIVER: 32,
+  BUILT: 64,        /* a player structure stands here */
+  SHALLOW: 128,
 };
 
-export const MAX_LEVEL = 4;
+/* How far a body can climb in one step. Two levels is a scramble;
+   three is a cliff. */
+export const CLIMB = 1;
 
 export class World {
   constructor(seed) {
@@ -65,22 +132,20 @@ export class World {
     const n = this.size * this.size;
     this.height = new Uint8Array(n);
     this.biome = new Uint8Array(n);
-    this.flags = new Uint8Array(n);
+    this.flags = new Uint16Array(n);
     this.prop = new Uint8Array(n);
     this.variant = new Uint8Array(n);
-    /* Damage taken by harvestable props, cleared when they break. */
     this.propHp = new Map();
     this.landmarks = [];
     this.spawnPoints = [];
     this.chunksPerSide = Math.ceil(this.size / CHUNK);
+    this.stats = {};
     this.generate();
   }
 
   idx(tx, ty) { return ty * this.size + tx; }
   inBounds(tx, ty) { return tx >= 0 && ty >= 0 && tx < this.size && ty < this.size; }
 
-  /* Tile <-> world conversions. The grid is centred on the origin
-     so the beacon sits at (0, 0). */
   tileToWorldX(tx) { return (tx + 0.5) * TILE - WORLD_HALF; }
   tileToWorldZ(ty) { return (ty + 0.5) * TILE - WORLD_HALF; }
   worldToTileX(x) { return Math.floor((x + WORLD_HALF) / TILE); }
@@ -93,8 +158,8 @@ export class World {
 
   heightAtTile(tx, ty) { return this.levelAt(tx, ty) * LEVEL_STEP; }
 
-  /* Ground height under a world position, bilinearly smoothed so
-     characters do not pop between tiles. */
+  /* Bilinear so a body walking across tiles rises smoothly instead
+     of popping a whole step at the boundary. */
   groundAt(x, z) {
     const fx = (x + WORLD_HALF) / TILE - 0.5;
     const fz = (z + WORLD_HALF) / TILE - 0.5;
@@ -115,8 +180,14 @@ export class World {
 
   biomeAt(x, z) {
     const tx = this.worldToTileX(x), ty = this.worldToTileZ(z);
-    if (!this.inBounds(tx, ty)) return BIOME.VERDANT;
+    if (!this.inBounds(tx, ty)) return BIOME.ASH;
     return this.biome[this.idx(tx, ty)];
+  }
+
+  propAt(x, z) {
+    const tx = this.worldToTileX(x), ty = this.worldToTileZ(z);
+    if (!this.inBounds(tx, ty)) return PROP.NONE;
+    return this.prop[this.idx(tx, ty)];
   }
 
   isSolidTile(tx, ty) {
@@ -124,14 +195,16 @@ export class World {
     return (this.flags[this.idx(tx, ty)] & FLAG.SOLID) !== 0;
   }
 
-  /* Movement blocker test in world space. Cliffs of two steps or
-     more are walls; a single step is a scramble you can take. */
+  /* Can a body at `fromLevel` stand here? Deep water and cliffs of
+     more than CLIMB steps are the two things that say no. */
   blockedAt(x, z, fromLevel) {
     const tx = this.worldToTileX(x), ty = this.worldToTileZ(z);
     if (!this.inBounds(tx, ty)) return true;
     const i = this.idx(tx, ty);
-    if (this.flags[i] & FLAG.SOLID) return true;
-    if (fromLevel !== undefined && Math.abs(this.height[i] - fromLevel) >= 2) return true;
+    const f = this.flags[i];
+    if (f & FLAG.SOLID) return true;
+    if ((f & FLAG.WATER) && !(f & FLAG.SHALLOW)) return true;
+    if (fromLevel !== undefined && Math.abs(this.height[i] - fromLevel) > CLIMB) return true;
     return false;
   }
 
@@ -145,187 +218,456 @@ export class World {
   clearProp(tx, ty) {
     const i = this.idx(tx, ty);
     this.prop[i] = PROP.NONE;
-    this.flags[i] &= ~FLAG.SOLID;
+    if (!(this.flags[i] & FLAG.BUILT)) this.flags[i] &= ~FLAG.SOLID;
     this.propHp.delete(i);
   }
 
-  /* ------------------------------------------------------- generation */
+  /* ------------------------------------------------- generation */
   generate() {
-    const S = this.seed;
-    const n = this.size;
-    const cx = n / 2, cy = n / 2;
+    const t0 = Date.now();
+    this._elevation();
+    this._water();
+    this._shallows();
+    this._biomes();
+    this._plaza();
+    this._connect();
+    this._scatter();
+    this._ore();
+    this._landmarks();
+    this.stats.genMs = Date.now() - t0;
+  }
 
-    /* Elevation is built as a float field first and normalised over
-       the whole map. Raw fbm clusters around its mean, so without
-       this the quantiser would only ever use two of the levels. */
+  /* Continent, mountains, valleys. Built as a float field and
+     normalised, because raw fbm clusters around its mean and would
+     only ever use three of the sixteen levels. */
+  _elevation() {
+    const S = this.seed, n = this.size;
     const ef = new Float32Array(n * n);
-    const wf = new Float32Array(n * n);
+    this.moisture = new Float32Array(n * n);
+    this.temperature = new Float32Array(n * n);
+    const cx = n / 2, cy = n / 2;
     let lo = Infinity, hi = -Infinity;
+
     for (let ty = 0; ty < n; ty++) {
       for (let tx = 0; tx < n; tx++) {
         const i = this.idx(tx, ty);
-        const nx = tx * 0.021, ny = ty * 0.021;
-        /* Broad fbm shaped by a ridge, so plateaus get flat tops
-           and abrupt sides instead of round hills. */
-        const e = fbm(nx, ny, S, 4) * 0.66 + ridge(nx * 0.7 + 11.3, ny * 0.7 - 4.1, S + 991, 3) * 0.34;
+        const nx = tx * 0.014, ny = ty * 0.014;
+
+        /* Three scales, each with enough amplitude to cross a
+           terrace boundary on its own. Relief that only exists in
+           the lowest octave gives plateaus seventy tiles wide, which
+           is a flat world with a slope, not a landscape. */
+        let e = fbm(nx, ny, S, 3) * 0.50;                       /* continent */
+        e += fbm(nx * 3.1, ny * 3.1, S + 11, 3) * 0.30;         /* hills     */
+        e += fbm(nx * 8.0, ny * 8.0, S + 313, 2) * 0.09;        /* roughness */
+
+        /* A spine of mountains: ridged noise, raised to a power so
+           the ridges stay sharp and the ground between stays low. */
+        const r = ridge(nx * 0.75 + 31.7, ny * 0.75 - 12.3, S + 991, 4);
+        const mountainMask = Math.max(0, fbm(nx * 0.40 + 7, ny * 0.40 + 19, S + 555, 2) - 0.40) / 0.60;
+        e += Math.pow(r, 1.7) * mountainMask * 1.30;
+
+        /* Coast: a radial falloff makes an island rather than a
+           square, so the edge of the map is sea and not a wall. */
+        const dx = (tx - cx) / cx, dy = (ty - cy) / cy;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        const coast = 1 - Math.pow(Math.max(0, (d - 0.70) / 0.30), 1.6);
+        e = e * Math.max(0, coast);
+
         ef[i] = e;
-        wf[i] = fbm(nx * 1.6 + 30.7, ny * 1.6 - 12.2, S + 3313, 3);
-        if (e < lo) lo = e;
-        if (e > hi) hi = e;
+
+        this.moisture[i] = fbm(nx * 1.7 + 61.3, ny * 1.7 - 28.9, S + 3313, 4);
+        /* Cooler with height and toward one edge, so snow has a side. */
+        /* Warm base, cooled by latitude; height is subtracted later
+           so the same field can decide both snow line and treeline. */
+        this.temperature[i] = 0.42 + fbm(nx * 0.9 - 14.2, ny * 0.9 + 44.1, S + 7717, 3) * 0.46
+          + (1 - ty / n) * 0.22;
       }
     }
-    const span = Math.max(1e-5, hi - lo);
 
+    /* Normalise on percentiles, not on min and max. A single
+       ridge peak or one deep corner would otherwise squash every
+       other tile into a narrow band, which is how a whole continent
+       ends up at the same altitude. */
+    const sample = [];
+    for (let i = 0; i < n * n; i += 7) sample.push(ef[i]);
+    sample.sort((a, b) => a - b);
+    lo = sample[Math.floor(sample.length * 0.015)];
+    hi = sample[Math.floor(sample.length * 0.988)];
+    const span = Math.max(1e-5, hi - lo);
+    const cx2 = n / 2, cy2 = n / 2;
     for (let ty = 0; ty < n; ty++) {
       for (let tx = 0; tx < n; tx++) {
         const i = this.idx(tx, ty);
-        let e = (ef[i] - lo) / span;
+        let t = Math.max(0, Math.min(1, (ef[i] - lo) / span));
 
+        /* Coast. The outer ring drops below the sea so the map ends
+           in water rather than at an invisible wall. */
+        const dx = (tx - cx2) / cx2, dy = (ty - cy2) / cy2;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        const shelf = Math.max(0, (d - 0.84) / 0.18);
+        t -= Math.pow(shelf, 1.4) * 1.0;
+
+        /* Hard terracing: the height field is snapped to one of
+           nine plateaus with nothing in between. Interpolating
+           inside a band - which is what a smooth quantiser does -
+           turns every cliff into a ramp one level at a time, and
+           then sixteen levels of range buys nothing but a gentle
+           hill. Snapped, two neighbouring tiles are either on the
+           same plateau or a full step apart, which is a cliff, and
+           the connectivity pass below is what cuts the stairs. */
+        const band = Math.max(0, Math.min(PLATEAUS.length - 1,
+          Math.floor(t * PLATEAUS.length)));
+        this.height[i] = PLATEAUS[band];
+      }
+    }
+    this.elevField = ef;
+    this.elevSpan = span;
+  }
+
+  /* Sea, lakes and rivers. Rivers are traced downhill from high
+     wet ground; where they fall off a step you get a waterfall for
+     free, because the terrain below is simply lower. */
+  _water() {
+    const n = this.size;
+    for (let i = 0; i < n * n; i++) {
+      if (this.height[i] <= SEA_LEVEL) {
+        this.flags[i] |= FLAG.WATER;
+        if (this.height[i] >= SEA_LEVEL - 1) this.flags[i] |= FLAG.SHALLOW;
+      }
+    }
+
+    const rng = makeRng(this.seed ^ 0x51f7ace);
+    const sources = [];
+    for (let attempt = 0; attempt < 900 && sources.length < 14; attempt++) {
+      const tx = 4 + Math.floor(rng() * (n - 8));
+      const ty = 4 + Math.floor(rng() * (n - 8));
+      const i = this.idx(tx, ty);
+      if (this.height[i] < MAX_LEVEL * 0.62) continue;
+      if (this.moisture[i] < 0.42) continue;
+      if (sources.some(s => Math.abs(s[0] - tx) < 18 && Math.abs(s[1] - ty) < 18)) continue;
+      sources.push([tx, ty]);
+    }
+
+    const nudge = this.elevSpan * 0.012;
+    for (const [sx, sy] of sources) {
+      let x = sx, y = sy;
+      const seen = new Set();
+      for (let step = 0; step < n * 1.5; step++) {
+        const i = this.idx(x, y);
+        if (seen.has(i)) break;
+        seen.add(i);
+        this.flags[i] |= FLAG.RIVER | FLAG.WATER | FLAG.SHALLOW;
+        /* The height before the channel is cut. The descent has to
+           be judged against it: cutting first and then looking for
+           a lower neighbour makes every tile its own basin, which
+           stopped every river after a single step. */
+        const hBefore = this.height[i];
+        const eBefore = this.elevField[i];
+        /* Cut the channel a step into the ground and widen it a
+           little as it descends. */
+        this.height[i] = Math.max(SEA_LEVEL, hBefore - 1);
+        if (step > 22) {
+          for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const j = this.idx(Math.min(n - 1, Math.max(0, x + ox)), Math.min(n - 1, Math.max(0, y + oy)));
+            if (this.height[j] > this.height[i] + 1) continue;
+            this.flags[j] |= FLAG.RIVER | FLAG.WATER | FLAG.SHALLOW;
+            this.height[j] = Math.max(SEA_LEVEL, Math.min(this.height[j], this.height[i]));
+          }
+        }
+        if (this.height[i] <= SEA_LEVEL) break;
+
+        /* Downhill on the continuous elevation field, not on the
+           snapped height. Terraces are flat by construction, so on
+           the stepped heightmap every source sits in its own basin
+           and no river ever leaves its first tile. A nudge on top
+           so rivers meander instead of running in straight lines. */
+        let best = null, bestH = Infinity;
+        for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+          const nx2 = x + ox, ny2 = y + oy;
+          if (!this.inBounds(nx2, ny2)) continue;
+          const j = this.idx(nx2, ny2);
+          if (seen.has(j)) continue;
+          const h = this.elevField[j] + hash2(nx2, ny2, this.seed + 17) * nudge;
+          if (h < bestH) { bestH = h; best = [nx2, ny2]; }
+        }
+        if (!best) break;
+        /* A basin with nowhere to go becomes a lake. */
+        if (bestH >= eBefore) {
+          for (let ly = -2; ly <= 2; ly++) for (let lx = -2; lx <= 2; lx++) {
+            if (lx * lx + ly * ly > 5) continue;
+            const j2 = x + lx, k2 = y + ly;
+            if (!this.inBounds(j2, k2)) continue;
+            const j = this.idx(j2, k2);
+            this.height[j] = Math.min(this.height[j], this.height[i]);
+            this.flags[j] |= FLAG.WATER | FLAG.SHALLOW;
+          }
+          break;
+        }
+        x = best[0]; y = best[1];
+      }
+    }
+  }
+
+  /* A wadeable ring wherever water meets land. Without it, snapped
+     plateaus drop straight from the shore to the sea floor and every
+     offshore rock becomes an island you can only look at. */
+  _shallows() {
+    const n = this.size;
+    const toShallow = [];
+    for (let ty = 0; ty < n; ty++) {
+      for (let tx = 0; tx < n; tx++) {
+        const i = this.idx(tx, ty);
+        if (!(this.flags[i] & FLAG.WATER)) continue;
+        let nearLand = false;
+        for (let oy = -2; oy <= 2 && !nearLand; oy++) {
+          for (let ox = -2; ox <= 2; ox++) {
+            if (!this.inBounds(tx + ox, ty + oy)) continue;
+            const j = this.idx(tx + ox, ty + oy);
+            if (!(this.flags[j] & FLAG.WATER)) { nearLand = true; break; }
+          }
+        }
+        if (nearLand) toShallow.push(i);
+      }
+    }
+    for (const i of toShallow) {
+      this.height[i] = Math.max(this.height[i], SEA_LEVEL - 1);
+      this.flags[i] |= FLAG.SHALLOW;
+    }
+  }
+
+  _biomes() {
+    const n = this.size, S = this.seed;
+    const cx = n / 2, cy = n / 2;
+    for (let ty = 0; ty < n; ty++) {
+      for (let tx = 0; tx < n; tx++) {
+        const i = this.idx(tx, ty);
+        const h = this.height[i];
+        const m = this.moisture[i];
+        const temp = this.temperature[i] - (h / MAX_LEVEL) * 0.62;
         const dx = (tx - cx) / cx, dy = (ty - cy) / cy;
         const d = Math.sqrt(dx * dx + dy * dy);
 
-        /* The arena is a disc. Past the rim the ground rears up into
-           an unclimbable ring of cliffs, which is a wall you can read
-           at a glance instead of an invisible one. */
-        const plaza = Math.max(0, 1 - d / 0.075);
-        e = e * (1 - plaza) + 0.45 * plaza;
-        if (d > 0.80) e += Math.pow((d - 0.80) / 0.20, 1.6) * 1.35;
+        /* Thresholds in levels rather than ratios: terracing puts
+           plateaus on even levels, so a band expressed as a
+           fraction can land entirely on risers and never appear. */
+        let b;
+        if (this.flags[i] & FLAG.WATER) b = BIOME.OCEAN;
+        else if (h <= SEA_LEVEL + 2) b = (m > 0.54 ? BIOME.MARSH : BIOME.BEACH);
+        else if (h <= 8) b = m < 0.46 ? BIOME.MEADOW : BIOME.FOREST;
+        else if (h <= 11) b = m < 0.40 ? BIOME.PINE : BIOME.FOREST;
+        else if (h <= 13) b = temp < 0.26 ? BIOME.SNOW : temp < 0.48 ? BIOME.HIGHLAND : BIOME.PINE;
+        else b = temp < 0.34 ? BIOME.SNOW : BIOME.HIGHLAND;
 
-        let level = Math.round(e * MAX_LEVEL);
-        level = Math.max(0, Math.min(MAX_LEVEL, level));
-        this.height[i] = level;
-
-        if (d >= 0.95) {
-          this.height[i] = MAX_LEVEL;
-          this.flags[i] |= FLAG.SOLID | FLAG.BLOCKED_EDGE;
-          this.biome[i] = BIOME.ASH;
-          continue;
+        /* Overgrowth and wreckage sit on top as worley patches. */
+        if (b !== BIOME.OCEAN) {
+          const wx = tx * 0.040 + fbm(tx * 0.03, ty * 0.03, S + 77, 2) * 2.0;
+          const wy = ty * 0.040 + fbm(tx * 0.03 + 9, ty * 0.03 + 3, S + 78, 2) * 2.0;
+          const cell = worley(wx, wy, S + 4242);
+          const pick = hash2(Math.floor(wx), Math.floor(wy), S + 555);
+          if (cell < 0.44) {
+            const ashBias = Math.max(0, (d - 0.40) / 0.45);
+            if (pick < 0.16 + ashBias * 0.45) b = BIOME.ASH;
+            else if (pick < 0.58) b = BIOME.BLOOM;
+            else b = BIOME.SCRAP;
+          }
         }
-
-        /* Water pools in the low basins where the moisture field
-           agrees, and never on the plaza. */
-        if (e < 0.22 && wf[i] > 0.50 && d < 0.70 && plaza <= 0) {
-          this.flags[i] |= FLAG.WATER;
-          this.height[i] = Math.min(this.height[i], 0);
-        }
-
-        /* Biomes are worley blobs warped by fbm, so borders
-           interlock rather than looking like circles. Corruption
-           weights up with distance: the map gets worse the further
-           out you go, which is the whole risk curve. */
-        const nx = tx * 0.021, ny = ty * 0.021;
-        const wx = tx * 0.044 + fbm(nx * 2, ny * 2, S + 77, 2) * 1.7;
-        const wy = ty * 0.044 + fbm(nx * 2 + 9, ny * 2 + 3, S + 78, 2) * 1.7;
-        const cell = worley(wx, wy, S + 4242);
-        const pick = hash2(Math.floor(wx), Math.floor(wy), S + 555);
-
-        let biome = BIOME.VERDANT;
-        if (plaza > 0.3) biome = BIOME.PLAZA;
-        else if (cell < 0.50) {
-          const ashBias = Math.max(0, (d - 0.42) / 0.45);
-          if (pick < 0.12 + ashBias * 0.34) biome = BIOME.ASH;
-          else if (pick < 0.56) biome = BIOME.BLOOM;
-          else biome = BIOME.SCRAP;
-        } else if (d > 0.90) biome = BIOME.ASH;
-        this.biome[i] = biome;
-        if (biome === BIOME.PLAZA) this.flags[i] |= FLAG.PLAZA;
+        this.biome[i] = b;
       }
     }
-
-    this._carveRoads();
-    this._scatterProps();
-    this._placeLandmarks();
   }
 
-  /* Four stone paths out of the plaza. They read as ruins of a
-     road network and give the player fast, readable lanes. */
-  _carveRoads() {
-    const n = this.size, c = Math.floor(n / 2);
-    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-    for (const [dx, dy] of dirs) {
-      let x = c, y = c;
-      let drift = 0;
-      for (let step = 0; step < n * 0.46; step++) {
-        drift += (hash2(Math.floor(x), Math.floor(y), this.seed + 8123) - 0.5) * 0.9;
-        drift = Math.max(-6, Math.min(6, drift));
-        const px = Math.round(x + (dy !== 0 ? drift : 0));
-        const py = Math.round(y + (dx !== 0 ? drift : 0));
-        for (let w = -1; w <= 1; w++) {
-          const tx = px + (dy !== 0 ? w : 0);
-          const ty = py + (dx !== 0 ? w : 0);
-          if (!this.inBounds(tx, ty)) continue;
-          const i = this.idx(tx, ty);
-          this.flags[i] |= FLAG.ROAD;
-          this.flags[i] &= ~FLAG.WATER;
-          /* Smooth the road so it never runs into a cliff face. */
-          const around = [
-            this.levelAt(tx - 1, ty), this.levelAt(tx + 1, ty),
-            this.levelAt(tx, ty - 1), this.levelAt(tx, ty + 1),
-          ];
-          const avg = Math.round(around.reduce((a, b) => a + b, 0) / 4);
-          this.height[i] = Math.max(0, Math.min(MAX_LEVEL, avg));
+  /* The beacon's plaza: flattened, paved, and cleared. */
+  _plaza() {
+    const c = Math.floor(this.size / 2);
+    /* Put the plaza on the nearest sensible ground rather than on
+       whatever the middle happens to be, in case it is a lake. */
+    let best = [c, c], bestScore = -Infinity;
+    for (let ty = c - 26; ty <= c + 26; ty += 2) {
+      for (let tx = c - 26; tx <= c + 26; tx += 2) {
+        if (!this.inBounds(tx, ty)) continue;
+        const i = this.idx(tx, ty);
+        if (this.flags[i] & FLAG.WATER) continue;
+        const h = this.height[i];
+        if (h <= SEA_LEVEL + 1 || h > MAX_LEVEL * 0.6) continue;
+        /* Prefer flat ground close to the middle. */
+        let rough = 0;
+        for (let oy = -3; oy <= 3; oy++) for (let ox = -3; ox <= 3; ox++) {
+          rough += Math.abs(this.levelAt(tx + ox, ty + oy) - h);
         }
-        x += dx; y += dy;
+        const score = -rough * 1.2 - Math.hypot(tx - c, ty - c) * 0.6;
+        if (score > bestScore) { bestScore = score; best = [tx, ty]; }
       }
     }
-    /* A road only reads as a road if you can walk it, so knock any
-       remaining two-step ledges along it down to one. */
-    for (let pass = 0; pass < 2; pass++) {
-      for (let ty = 1; ty < this.size - 1; ty++) {
-        for (let tx = 1; tx < this.size - 1; tx++) {
-          const i = this.idx(tx, ty);
-          if (!(this.flags[i] & (FLAG.ROAD | FLAG.PLAZA))) continue;
+    this.plaza = { tx: best[0], ty: best[1] };
+    const [px, py] = best;
+    const target = this.height[this.idx(px, py)];
+    const R = 8;
+    for (let ty = py - R - 3; ty <= py + R + 3; ty++) {
+      for (let tx = px - R - 3; tx <= px + R + 3; tx++) {
+        if (!this.inBounds(tx, ty)) continue;
+        const i = this.idx(tx, ty);
+        const dist = Math.hypot(tx - px, ty - py);
+        if (dist <= R) {
+          this.height[i] = target;
+          this.biome[i] = BIOME.PLAZA;
+          this.flags[i] = (this.flags[i] & ~(FLAG.WATER | FLAG.SHALLOW | FLAG.SOLID | FLAG.RIVER)) | FLAG.PLAZA;
+          this.prop[i] = PROP.NONE;
+        } else if (dist <= R + 3) {
+          /* Terrace the apron down so the plaza is approachable
+             from every side. */
+          const want = target + Math.round((dist - R)) * Math.sign(this.height[i] - target);
           const h = this.height[i];
-          for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            const j = this.idx(tx + ox, ty + oy);
-            if (this.height[j] - h >= 2) this.height[j] = h + 1;
-            else if (h - this.height[j] >= 2) this.height[j] = h - 1;
+          if (Math.abs(h - target) > Math.round(dist - R)) this.height[i] = want;
+        }
+      }
+    }
+  }
+
+  /* Cut steps until everything worth reaching is reachable.
+
+     A flood fill from the plaza grows; whenever it stalls, the
+     cheapest cliff on its frontier gets a step cut into it and the
+     fill continues. That leaves the mountains as mountains and the
+     cliffs as cliffs, but guarantees a route up. */
+  _connect() {
+    const n = this.size, total = n * n;
+    const reached = new Uint8Array(total);
+    const start = this.idx(this.plaza.tx, this.plaza.ty);
+    const queue = [start];
+    reached[start] = 1;
+    let head = 0;
+    let count = 1;
+
+    /* Frontier cliffs bucketed by how big the step is, so the
+       cheapest cut is always taken first. */
+    const buckets = [];
+    /* Pairs are packed with multiplication, not a shift: fifty
+       thousand tiles needs sixteen bits each, and `from << 20`
+       overflows int32 and silently corrupts the index, which leaves
+       the pass thinking there is no cliff to cut anywhere. */
+    const PACK = 1 << 20;
+    const pushFrontier = (from, to, drop) => {
+      const b = Math.min(MAX_LEVEL, drop);
+      if (!buckets[b]) buckets[b] = [];
+      buckets[b].push(from * PACK + to);
+    };
+
+    const neighbours = (i) => {
+      const tx = i % n, ty = (i / n) | 0;
+      const out = [];
+      if (tx > 0) out.push(i - 1);
+      if (tx < n - 1) out.push(i + 1);
+      if (ty > 0) out.push(i - n);
+      if (ty < n - 1) out.push(i + n);
+      return out;
+    };
+
+    const passable = (i) => {
+      const f = this.flags[i];
+      if (f & FLAG.SOLID) return false;
+      if ((f & FLAG.WATER) && !(f & FLAG.SHALLOW)) return false;
+      return true;
+    };
+
+    const expand = () => {
+      while (head < queue.length) {
+        const i = queue[head++];
+        const hi = this.height[i];
+        for (const j of neighbours(i)) {
+          if (reached[j]) continue;
+          if (!passable(j)) continue;
+          const drop = Math.abs(this.height[j] - hi);
+          if (drop <= CLIMB) {
+            reached[j] = 1;
+            count++;
+            queue.push(j);
+          } else {
+            pushFrontier(i, j, drop);
           }
         }
       }
+    };
+
+    expand();
+
+    let cuts = 0;
+    const walkable = [];
+    for (let i = 0; i < total; i++) if (passable(i)) walkable.push(i);
+    const wantTiles = walkable.length;
+
+    while (count < wantTiles * 0.985 && cuts < 26000) {
+      /* Take the shallowest unresolved cliff anywhere on the
+         frontier and cut one step into it. */
+      let pair = -1;   /* packed as from * PACK + to */
+      for (let b = CLIMB + 1; b <= MAX_LEVEL; b++) {
+        const list = buckets[b];
+        if (!list || !list.length) continue;
+        while (list.length) {
+          const p = list.pop();
+          const to = p % PACK;
+          if (reached[to] || !passable(to)) continue;
+          pair = p;
+          break;
+        }
+        if (pair >= 0) break;
+      }
+      if (pair < 0) break;
+
+      const from = Math.floor(pair / PACK), to = pair % PACK;
+      const hFrom = this.height[from];
+      const hTo = this.height[to];
+      /* One step toward the far side, which over several passes
+         carves a staircase rather than a ramp. */
+      this.height[to] = hFrom + Math.sign(hTo - hFrom) * CLIMB;
+      this.prop[to] = PROP.NONE;
+      this.flags[to] &= ~FLAG.SOLID;
+      reached[to] = 1;
+      count++;
+      queue.push(to);
+      cuts++;
+      expand();
     }
+
+    this.stats.reachable = count;
+    this.stats.walkable = wantTiles;
+    this.stats.cuts = cuts;
+    this.reachMask = reached;
   }
 
-  _scatterProps() {
+  _scatter() {
     const n = this.size;
     const rng = makeRng(this.seed ^ 0x9e3779b9);
     for (let ty = 0; ty < n; ty++) {
       for (let tx = 0; tx < n; tx++) {
         const i = this.idx(tx, ty);
+        this.variant[i] = rng.int(256);
         const f = this.flags[i];
-        if (f & (FLAG.ROAD | FLAG.PLAZA)) {
-          /* Roadside dressing only. */
-          if (rng.chance(0.045)) this.setProp(tx, ty, PROP.GRASS);
-          this.variant[i] = rng.int(255);
-          continue;
-        }
-        this.variant[i] = rng.int(255);
+        if (f & (FLAG.PLAZA | FLAG.BUILT)) continue;
+        const b = this.biome[i];
+
         if (f & FLAG.WATER) {
-          if (rng.chance(0.10)) this.setProp(tx, ty, PROP.REED);
+          if ((f & FLAG.SHALLOW) && rng.chance(0.08)) this.setProp(tx, ty, PROP.REED);
           continue;
         }
 
-        const biome = this.biome[i];
-        /* Density falls off where the ground is steep, so cliff
-           edges stay legible. */
+        /* Steep ground carries less, so cliff edges stay legible. */
         const steep = Math.abs(this.levelAt(tx + 1, ty) - this.levelAt(tx - 1, ty))
                     + Math.abs(this.levelAt(tx, ty + 1) - this.levelAt(tx, ty - 1));
-        const openness = steep > 1 ? 0.35 : 1;
+        const openness = steep > 2 ? 0.25 : steep > 0 ? 0.7 : 1;
 
+        const table = SCATTER[b];
+        if (!table) continue;
         const roll = rng();
-        const table = PROP_TABLES[biome];
-        let acc = 0, chosen = PROP.NONE;
+        let acc = 0;
         for (const entry of table) {
           acc += entry.p * openness;
-          if (roll < acc) { chosen = entry.prop; break; }
+          if (roll < acc) { this.setProp(tx, ty, entry.prop); break; }
         }
-        if (chosen !== PROP.NONE) this.setProp(tx, ty, chosen);
       }
     }
 
-    /* Trees crowded shoulder to shoulder make the map unreadable
-       and unwalkable, so thin solid props that have solid
-       neighbours on both axes. */
+    /* Thin out solid props that wall each other in. */
     for (let ty = 1; ty < n - 1; ty++) {
       for (let tx = 1; tx < n - 1; tx++) {
         const i = this.idx(tx, ty);
@@ -337,65 +679,130 @@ export class World {
     }
   }
 
-  /* Landmarks are hand-placed structures the run is built around:
-     the beacon, salvage caches, rift gates and shrines. */
-  _placeLandmarks() {
+  /* Ore sits in exposed rock: tiles with a real drop beside them,
+     up in the crags and under the snow. Veins cluster, so finding
+     one is worth something. */
+  _ore() {
+    const n = this.size;
+    const rng = makeRng(this.seed ^ 0x0e1a7e);
+    const candidates = [];
+    for (let ty = 2; ty < n - 2; ty++) {
+      for (let tx = 2; tx < n - 2; tx++) {
+        const i = this.idx(tx, ty);
+        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID)) continue;
+        const h = this.height[i];
+        let drop = 0;
+        for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          drop = Math.max(drop, h - this.levelAt(tx + ox, ty + oy));
+        }
+        if (drop < 2) continue;
+        candidates.push([tx, ty, h, drop]);
+      }
+    }
+
+    const veins = Math.round(candidates.length * 0.012) + 24;
+    for (let v = 0; v < veins; v++) {
+      const pick = candidates[Math.floor(rng() * candidates.length)];
+      if (!pick) break;
+      const [tx, ty, h] = pick;
+      const depth = h / MAX_LEVEL;
+      /* Better ore lives higher and further out. */
+      let kind;
+      const roll = rng();
+      if (depth > 0.78) kind = roll < 0.34 ? PROP.ORE_GOLD : roll < 0.62 ? PROP.ORE_ESSENCE : PROP.ORE_IRON;
+      else if (depth > 0.52) kind = roll < 0.55 ? PROP.ORE_IRON : roll < 0.8 ? PROP.ORE_COPPER : PROP.ORE_ESSENCE;
+      else kind = roll < 0.72 ? PROP.ORE_COPPER : PROP.ORE_IRON;
+
+      const size = 2 + Math.floor(rng() * 4);
+      for (let k = 0; k < size; k++) {
+        const ox = tx + Math.floor(rng() * 5) - 2;
+        const oy = ty + Math.floor(rng() * 5) - 2;
+        if (!this.inBounds(ox, oy)) continue;
+        const j = this.idx(ox, oy);
+        if (this.flags[j] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID)) continue;
+        this.setProp(ox, oy, kind);
+      }
+    }
+    this.stats.oreVeins = veins;
+  }
+
+  _landmarks() {
     const rng = makeRng(this.seed ^ 0x517cc1b7);
-    const n = this.size, c = n / 2;
+    const n = this.size;
+    const px = this.plaza.tx, py = this.plaza.ty;
 
-    this.landmarks.push({ kind: 'beacon', tx: Math.floor(c), ty: Math.floor(c) });
+    this.landmarks.push({ kind: 'beacon', tx: px, ty: py });
 
-    const ringPlace = (kind, count, minR, maxR, clearRadius) => {
+    const place = (kind, count, minR, maxR, clear, opts = {}) => {
       for (let k = 0; k < count; k++) {
-        for (let attempt = 0; attempt < 60; attempt++) {
+        for (let attempt = 0; attempt < 140; attempt++) {
           const ang = rng() * Math.PI * 2;
-          const rad = rng.range(minR, maxR) * c;
-          const tx = Math.round(c + Math.cos(ang) * rad);
-          const ty = Math.round(c + Math.sin(ang) * rad);
-          if (!this.inBounds(tx + 3, ty + 3) || !this.inBounds(tx - 3, ty - 3)) continue;
-          if (this.flags[this.idx(tx, ty)] & FLAG.WATER) continue;
-          const tooClose = this.landmarks.some(l =>
-            Math.abs(l.tx - tx) < 14 && Math.abs(l.ty - ty) < 14);
-          if (tooClose) continue;
-          this._flatten(tx, ty, clearRadius);
-          this.landmarks.push({ kind, tx, ty, variant: rng.int(255) });
+          const rad = (minR + rng() * (maxR - minR)) * (n / 2);
+          const tx = Math.round(px + Math.cos(ang) * rad);
+          const ty = Math.round(py + Math.sin(ang) * rad);
+          if (!this.inBounds(tx + 5, ty + 5) || !this.inBounds(tx - 5, ty - 5)) continue;
+          const i = this.idx(tx, ty);
+          if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA)) continue;
+          if (this.reachMask && !this.reachMask[i]) continue;
+          if (opts.minHeight !== undefined && this.height[i] < opts.minHeight) continue;
+          if (opts.maxHeight !== undefined && this.height[i] > opts.maxHeight) continue;
+          if (this.landmarks.some(l => Math.abs(l.tx - tx) < 16 && Math.abs(l.ty - ty) < 16)) continue;
+          this._flatten(tx, ty, clear);
+          this.landmarks.push({ kind, tx, ty, variant: rng.int(256) });
           break;
         }
       }
     };
 
-    ringPlace('cache', 6, 0.22, 0.80, 2);
-    ringPlace('rift', 4, 0.42, 0.86, 3);
-    ringPlace('shrine', 3, 0.26, 0.70, 2);
-    ringPlace('wreck', 5, 0.20, 0.84, 3);
+    place('rift', 5, 0.30, 0.82, 3);
+    place('cache', 8, 0.16, 0.82, 2);
+    place('shrine', 4, 0.20, 0.70, 2);
+    place('wreck', 6, 0.14, 0.84, 3);
+    place('camp', 4, 0.22, 0.78, 3);
+    place('mine', 4, 0.34, 0.86, 3, { minHeight: Math.round(MAX_LEVEL * 0.55) });
 
-    /* Beacon plaza: flat, clear and paved. */
-    this._flatten(Math.floor(c), Math.floor(c), 7);
-    for (let ty = Math.floor(c) - 7; ty <= Math.floor(c) + 7; ty++) {
-      for (let tx = Math.floor(c) - 7; tx <= Math.floor(c) + 7; tx++) {
+    /* Camps and wrecks leave a litter of salvage: the first thing
+       a new run needs is scrap, and it should be findable near a
+       landmark rather than only in one biome. */
+    for (const lm of this.landmarks) {
+      if (lm.kind !== 'camp' && lm.kind !== 'wreck') continue;
+      for (let k = 0; k < 9; k++) {
+        const a = rng() * Math.PI * 2;
+        const r = 3 + rng() * 5;
+        const tx = Math.round(lm.tx + Math.cos(a) * r);
+        const ty = Math.round(lm.ty + Math.sin(a) * r);
         if (!this.inBounds(tx, ty)) continue;
         const i = this.idx(tx, ty);
-        this.biome[i] = BIOME.PLAZA;
-        this.flags[i] |= FLAG.PLAZA;
-        this.flags[i] &= ~FLAG.WATER;
+        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID)) continue;
+        this.setProp(tx, ty, rng() < 0.55 ? PROP.SCRAP_PILE : rng() < 0.6 ? PROP.CRATE : PROP.CONDUIT);
       }
     }
 
-    /* World coordinates belong with the landmark, not with whoever
-       happens to draw it: the headless host has no view layer and
-       still needs to know where the beacon is. Computed last, after
-       every flatten has settled the heights. */
+    /* Ore is dense around a mine mouth: that is the reason to go. */
+    for (const lm of this.landmarks) {
+      if (lm.kind !== 'mine') continue;
+      for (let k = 0; k < 14; k++) {
+        const a = rng() * Math.PI * 2;
+        const r = 4 + rng() * 5;
+        const tx = Math.round(lm.tx + Math.cos(a) * r);
+        const ty = Math.round(lm.ty + Math.sin(a) * r);
+        if (!this.inBounds(tx, ty)) continue;
+        const i = this.idx(tx, ty);
+        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA)) continue;
+        this.setProp(tx, ty, rng() < 0.4 ? PROP.ORE_IRON : rng() < 0.7 ? PROP.ORE_COPPER : PROP.ORE_GOLD);
+      }
+    }
+
     for (const lm of this.landmarks) {
       lm.x = this.tileToWorldX(lm.tx);
       lm.z = this.tileToWorldZ(lm.ty);
       lm.y = this.heightAtTile(lm.tx, lm.ty);
     }
 
-    /* Spawn ring just outside the plaza. */
     for (let k = 0; k < 8; k++) {
       const ang = (k / 8) * Math.PI * 2;
-      const tx = Math.round(c + Math.cos(ang) * 5.5);
-      const ty = Math.round(c + Math.sin(ang) * 5.5);
+      const tx = Math.round(px + Math.cos(ang) * 6);
+      const ty = Math.round(py + Math.sin(ang) * 6);
       this.spawnPoints.push({ x: this.tileToWorldX(tx), z: this.tileToWorldZ(ty) });
     }
   }
@@ -403,75 +810,80 @@ export class World {
   _flatten(cx, cy, radius) {
     if (!this.inBounds(cx, cy)) return;
     const target = this.height[this.idx(cx, cy)];
-    for (let ty = cy - radius - 1; ty <= cy + radius + 1; ty++) {
-      for (let tx = cx - radius - 1; tx <= cx + radius + 1; tx++) {
+    for (let ty = cy - radius - 2; ty <= cy + radius + 2; ty++) {
+      for (let tx = cx - radius - 2; tx <= cx + radius + 2; tx++) {
         if (!this.inBounds(tx, ty)) continue;
         const d = Math.hypot(tx - cx, ty - cy);
         const i = this.idx(tx, ty);
         if (d <= radius) {
           this.height[i] = target;
           this.clearProp(tx, ty);
-          this.flags[i] &= ~FLAG.WATER;
-        } else if (d <= radius + 1) {
-          /* One-step apron so the flattened pad is reachable. */
+          this.flags[i] &= ~(FLAG.WATER | FLAG.SHALLOW);
+        } else if (d <= radius + 2) {
+          const allowed = Math.round(d - radius) * CLIMB;
           const h = this.height[i];
-          if (Math.abs(h - target) >= 2) this.height[i] = target + Math.sign(h - target);
+          if (Math.abs(h - target) > allowed) this.height[i] = target + Math.sign(h - target) * allowed;
         }
       }
     }
   }
 
-  /* Chunk helpers used by the view layer. */
   chunkIndex(cx, cy) { return cy * this.chunksPerSide + cx; }
-  chunkCenter(cx, cy) {
-    return {
-      x: this.tileToWorldX(cx * CHUNK + CHUNK / 2) - TILE / 2,
-      z: this.tileToWorldZ(cy * CHUNK + CHUNK / 2) - TILE / 2,
-    };
-  }
 }
 
-/* Scatter tables: probability per tile, evaluated in order. */
-const PROP_TABLES = {
-  [BIOME.VERDANT]: [
-    { prop: PROP.TREE_PINE, p: 0.115 },
-    { prop: PROP.GRASS, p: 0.190 },
-    { prop: PROP.ROCK, p: 0.035 },
-    { prop: PROP.BOULDER, p: 0.016 },
-    { prop: PROP.MUSHROOM, p: 0.028 },
-    { prop: PROP.FLOWER, p: 0.032 },
-    { prop: PROP.STUMP, p: 0.010 },
+/* Scatter tables, evaluated in order: probability per tile. */
+const SCATTER = {
+  [BIOME.BEACH]: [
+    { prop: PROP.SCRAP_PILE, p: 0.012 }, { prop: PROP.CRATE, p: 0.006 },
+    { prop: PROP.GRASS, p: 0.05 }, { prop: PROP.ROCK, p: 0.03 }, { prop: PROP.BONES, p: 0.004 },
+  ],
+  [BIOME.MARSH]: [
+    { prop: PROP.REED, p: 0.16 }, { prop: PROP.TREE_DEAD, p: 0.05 }, { prop: PROP.MUSHROOM, p: 0.06 },
+    { prop: PROP.FERN, p: 0.10 }, { prop: PROP.ROCK, p: 0.02 }, { prop: PROP.BUSH, p: 0.05 },
+  ],
+  [BIOME.MEADOW]: [
+    { prop: PROP.SCRAP_PILE, p: 0.010 }, { prop: PROP.GRASS, p: 0.22 }, { prop: PROP.FLOWER, p: 0.07 }, { prop: PROP.BUSH, p: 0.04 },
+    { prop: PROP.BERRY_BUSH, p: 0.022 }, { prop: PROP.TREE_OAK, p: 0.025 }, { prop: PROP.ROCK, p: 0.03 },
+    { prop: PROP.BOULDER, p: 0.008 },
+  ],
+  [BIOME.FOREST]: [
+    { prop: PROP.SCRAP_PILE, p: 0.009 }, { prop: PROP.CRATE, p: 0.005 },
+    { prop: PROP.TREE_OAK, p: 0.075 }, { prop: PROP.TREE_BIRCH, p: 0.045 }, { prop: PROP.TREE_PINE, p: 0.03 },
+    { prop: PROP.BUSH, p: 0.06 }, { prop: PROP.FERN, p: 0.07 }, { prop: PROP.GRASS, p: 0.11 },
+    { prop: PROP.MUSHROOM, p: 0.03 }, { prop: PROP.BERRY_BUSH, p: 0.018 }, { prop: PROP.ROCK, p: 0.02 },
+    { prop: PROP.STUMP, p: 0.008 }, { prop: PROP.FLOWER, p: 0.02 },
+  ],
+  [BIOME.PINE]: [
+    { prop: PROP.SCRAP_PILE, p: 0.008 }, { prop: PROP.TREE_PINE, p: 0.12 }, { prop: PROP.ROCK, p: 0.045 }, { prop: PROP.BOULDER, p: 0.015 },
+    { prop: PROP.GRASS, p: 0.07 }, { prop: PROP.BUSH, p: 0.03 }, { prop: PROP.MUSHROOM, p: 0.02 },
+  ],
+  [BIOME.HIGHLAND]: [
+    { prop: PROP.ROCK, p: 0.09 }, { prop: PROP.BOULDER, p: 0.035 }, { prop: PROP.ROCK_TALL, p: 0.016 },
+    { prop: PROP.GRASS, p: 0.035 }, { prop: PROP.TREE_PINE, p: 0.012 },
+  ],
+  [BIOME.SNOW]: [
+    { prop: PROP.TREE_SNOW, p: 0.045 }, { prop: PROP.SNOW_ROCK, p: 0.06 }, { prop: PROP.ICE_SPIKE, p: 0.02 },
+    { prop: PROP.BOULDER, p: 0.02 }, { prop: PROP.BONES, p: 0.004 },
   ],
   [BIOME.BLOOM]: [
-    { prop: PROP.TREE_BLOOM, p: 0.090 },
-    { prop: PROP.CRYSTAL, p: 0.042 },
-    { prop: PROP.GRASS, p: 0.150 },
-    { prop: PROP.FLOWER, p: 0.070 },
-    { prop: PROP.MUSHROOM, p: 0.048 },
-    { prop: PROP.ROCK, p: 0.022 },
+    { prop: PROP.TREE_BLOOM, p: 0.07 }, { prop: PROP.CRYSTAL, p: 0.035 }, { prop: PROP.GRASS, p: 0.11 },
+    { prop: PROP.FLOWER, p: 0.06 }, { prop: PROP.MUSHROOM, p: 0.05 }, { prop: PROP.BUSH, p: 0.03 },
+    { prop: PROP.ROCK, p: 0.015 },
   ],
   [BIOME.SCRAP]: [
-    { prop: PROP.RUIN_WALL, p: 0.052 },
-    { prop: PROP.RUIN_PILLAR, p: 0.026 },
-    { prop: PROP.SCRAP_PILE, p: 0.055 },
-    { prop: PROP.CONDUIT, p: 0.038 },
-    { prop: PROP.PYLON, p: 0.020 },
-    { prop: PROP.CRATE, p: 0.022 },
-    { prop: PROP.GRASS, p: 0.075 },
-    { prop: PROP.ANTENNA, p: 0.010 },
-    { prop: PROP.LAMP, p: 0.012 },
+    { prop: PROP.RUIN_WALL, p: 0.042 }, { prop: PROP.RUIN_PILLAR, p: 0.02 }, { prop: PROP.SCRAP_PILE, p: 0.05 },
+    { prop: PROP.CONDUIT, p: 0.032 }, { prop: PROP.PYLON, p: 0.012 }, { prop: PROP.CRATE, p: 0.02 },
+    { prop: PROP.GRASS, p: 0.06 }, { prop: PROP.ANTENNA, p: 0.008 }, { prop: PROP.LAMP, p: 0.01 },
+    { prop: PROP.ROCK, p: 0.015 },
   ],
   [BIOME.ASH]: [
-    { prop: PROP.DEAD_TREE, p: 0.085 },
-    { prop: PROP.RIFT_SHARD, p: 0.040 },
-    { prop: PROP.ROCK, p: 0.048 },
-    { prop: PROP.BOULDER, p: 0.022 },
-    { prop: PROP.STUMP, p: 0.026 },
-    { prop: PROP.GRASS, p: 0.040 },
+    { prop: PROP.SCRAP_PILE, p: 0.020 }, { prop: PROP.CONDUIT, p: 0.010 },
+    { prop: PROP.TREE_DEAD, p: 0.07 }, { prop: PROP.RIFT_SHARD, p: 0.03 }, { prop: PROP.ROCK, p: 0.04 },
+    { prop: PROP.BOULDER, p: 0.02 }, { prop: PROP.STUMP, p: 0.02 }, { prop: PROP.GRASS, p: 0.03 },
+    { prop: PROP.BONES, p: 0.008 },
   ],
-  [BIOME.PLAZA]: [
-    { prop: PROP.GRASS, p: 0.02 },
-  ],
+  [BIOME.PLAZA]: [],
+  [BIOME.OCEAN]: [],
 };
 
-export { PROP_TABLES };
+export { SCATTER };

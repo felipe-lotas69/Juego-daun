@@ -1,34 +1,52 @@
 /* ============================================================
    hud.js - the overlay
 
-   Drawn on a plain 2D canvas over the WebGL one. Keeping it out of
-   the 3D pass means the readouts stay sharp at any pixel scale,
-   which matters: a health bar quantised to 4x4 blocks is pretty
-   but unreadable in a fight.
-
-   Everything is laid out from a logical 1280x720 and scaled, so
-   the HUD holds its proportions on a phone and on a monitor.
+   Drawn on a 2D canvas over the WebGL one, in the same pixel grid,
+   with the bitmap font and hand-drawn icons. Laid out from a
+   logical 1280x720 and scaled to whole pixels, so it keeps its
+   proportions on a phone and on a monitor without ever landing a
+   glyph on a half pixel.
    ============================================================ */
 
-import { ABILITIES, ENEMIES } from '../game/defs.js';
+import { PAL, frame, bar, slot, button, rivets, divider, px, drawText, textWidth, clipText, drawIcon } from './draw.js';
+import { lineHeight } from './font.js';
+import { ITEMS } from '../game/items.js';
+import { ABILITIES } from '../game/defs.js';
+import { ALL_CREATURES, PLAYER_COLORS } from '../render/actors.js';
+import { RESONANCE, SURVIVAL, DAY } from '../core/config.js';
 import { clamp01, formatTime } from '../core/util.js';
-import { PLAYER_COLORS } from '../render/actors.js';
 
-const FONT = '"Courier New", ui-monospace, Menlo, monospace';
+/* One colour per biome for the minimap, keyed by the world's enum. */
+const MINIMAP_BIOME = [
+  [40, 82, 120],    /* ocean    */
+  [196, 178, 128],  /* beach    */
+  [126, 168, 84],   /* meadow   */
+  [78, 140, 76],    /* forest   */
+  [66, 122, 96],    /* pine     */
+  [132, 128, 118],  /* highland */
+  [212, 224, 236],  /* snow     */
+  [96, 106, 66],    /* marsh    */
+  [80, 176, 140],   /* bloom    */
+  [140, 156, 92],   /* scrap    */
+  [92, 78, 108],    /* ash      */
+  [172, 160, 184],  /* plaza    */
+];
 
 export class Hud {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.w = 1280; this.h = 720;
-    this.scale = 1;
+    this.scale = 2;
+    this.dpr = 1;
     this.killFeed = [];
     this.toast = null;
     this.toastTime = 0;
     this.time = 0;
+    this.hits = [];
+    this.pointer = { x: -1, y: -1, down: false };
     this.touch = /Mobi|Android|iPhone|iPad/i.test(
       typeof navigator !== 'undefined' ? navigator.userAgent : '');
-    this.buttons = [];       /* hit areas for touch */
   }
 
   resize(w, h, dpr) {
@@ -37,17 +55,17 @@ export class Hud {
     this.canvas.style.width = w + 'px';
     this.canvas.style.height = h + 'px';
     this.w = w; this.h = h; this.dpr = dpr;
-    /* One logical unit per CSS pixel at 720p; scale up from there. */
-    this.scale = Math.max(0.62, Math.min(1.6, h / 720));
+    /* Whole-number scale only: the font is a bitmap. */
+    this.scale = Math.max(1, Math.min(4, Math.round(h / 420)));
   }
 
   pushKill(text, color) {
-    this.killFeed.unshift({ text, color, life: 4.2 });
+    this.killFeed.unshift({ text, color, life: 4.5 });
     if (this.killFeed.length > 6) this.killFeed.pop();
   }
 
-  showToast(text, color, time = 3.0) {
-    this.toast = { text, color };
+  showToast(text, color, time = 3.0, sub = '') {
+    this.toast = { text, color, sub };
     this.toastTime = time;
   }
 
@@ -60,341 +78,468 @@ export class Hud {
     if (this.toastTime > 0) this.toastTime -= dt;
   }
 
-  /* ------------------------------------------------------- drawing */
+  hit(name, x, y, w, h, data) {
+    this.hits.push({ name, x: px(x), y: px(y), w: px(w), h: px(h), data });
+  }
+
+  hitTest(x, y) {
+    for (let i = this.hits.length - 1; i >= 0; i--) {
+      const b = this.hits[i];
+      if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b;
+    }
+    return null;
+  }
+
+  isHover(x, y, w, h) {
+    const p = this.pointer;
+    return p.x >= px(x) && p.x <= px(x + w) && p.y >= px(y) && p.y <= px(y + h);
+  }
+
+  /* ---------------------------------------------------- drawing */
   draw(state) {
     const c = this.ctx;
-    const S = this.scale;
     c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     c.clearRect(0, 0, this.w, this.h);
-    c.textBaseline = 'middle';
-    this.buttons.length = 0;
+    c.imageSmoothingEnabled = false;
+    this.hits.length = 0;
 
     const me = state.me;
     if (!me) return;
 
-    this._drawFloaters(state, S);
-    this._drawWorldMarkers(state, S);
-    this._drawVitals(state, me, S);
-    this._drawAbilities(state, me, S);
-    this._drawTopBar(state, S);
-    this._drawMinimap(state, S);
-    this._drawKillFeed(S);
-    this._drawParty(state, S);
-    this._drawBossBar(state, S);
-    this._drawPrompts(state, me, S);
-    this._drawToast(S);
-    if (this.touch) this._drawTouchControls(S);
-    if (me.state === 'downed') this._drawDowned(state, me, S);
-    if (me.state === 'dead') this._drawDead(state, me, S);
+    this._floaters(state);
+    this._worldMarkers(state);
+    this._reticle(state, me);
+    this._topLeft(state, me);
+    this._minimap(state);
+    this._vitals(state, me);
+    this._hotbar(state, me);
+    if (state.sim.beacon.lit) this._abilities(state, me);
+    this._killFeed(state);
+    this._party(state);
+    this._bossBar(state);
+    this._contracts(state);
+    this._prompt(state, me);
+    this._toast(state);
+    if (me.craft) this._craftBar(state, me);
+    if (me.state === 'downed') this._downed(state, me);
+    if (me.state === 'dead') this._dead(state, me);
+    if (this.touch) this._touch(state);
   }
 
-  _panel(x, y, w, h, alpha = 0.55) {
-    const c = this.ctx;
-    c.fillStyle = `rgba(10, 8, 18, ${alpha})`;
-    c.fillRect(x, y, w, h);
-    c.strokeStyle = 'rgba(160, 200, 255, 0.22)';
-    c.lineWidth = 1;
-    c.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
-  }
+  /* --- top left: the clock, the night, what you should be doing --- */
+  _topLeft(state, me) {
+    const c = this.ctx, S = this.scale;
+    const x = 6 * S, y = 6 * S;
+    const w = 128 * S, h = 46 * S;
+    const sim = state.sim;
+    frame(c, x, y, w, h);
+    rivets(c, x, y, w, h, 3 * S);
 
-  /* Hard-edged, segmented bar: reads instantly at a glance and
-     never looks like a smooth progress bar from an app. */
-  _bar(x, y, w, h, value, max, color, opts = {}) {
-    const c = this.ctx;
-    const t = clamp01(max > 0 ? value / max : 0);
-    c.fillStyle = 'rgba(0,0,0,0.55)';
-    c.fillRect(x, y, w, h);
-    const fill = Math.round(w * t);
-    if (fill > 0) {
-      c.fillStyle = color;
-      c.fillRect(x, y, fill, h);
-      c.fillStyle = 'rgba(255,255,255,0.28)';
-      c.fillRect(x, y, fill, Math.max(1, h * 0.3));
+    const night = sim.isNight;
+    const label = night ? `NIGHT ${sim.night}` : (sim.night === 0 ? 'FIRST LIGHT' : `DAY ${sim.night + 1}`);
+    drawText(c, label, x + 5 * S, y + 4 * S, { scale: S, color: night ? '#c79bff' : '#ffd98a' });
+    drawText(c, formatTime(sim.timeToPhaseChange), x + w - 5 * S, y + 4 * S,
+      { scale: S, color: PAL.dim, align: 'right' });
+
+    /* A day strip with a marker, rather than a percentage: you read
+       "an hour of light left" from the position, not the number. */
+    const sx = x + 5 * S, sy = y + 14 * S, sw = w - 10 * S, sh = 5 * S;
+    const dayFrac = DAY.dayLength / (DAY.dayLength + DAY.nightLength);
+    c.fillStyle = '#3a3050';
+    c.fillRect(px(sx), px(sy), px(sw), px(sh));
+    c.fillStyle = '#5b7f4f';
+    c.fillRect(px(sx), px(sy), px(sw * dayFrac), px(sh));
+    c.fillStyle = '#2a2440';
+    c.fillRect(px(sx + sw * dayFrac), px(sy), px(sw * (1 - dayFrac)), px(sh));
+    const t = (sim.dayTime % (DAY.dayLength + DAY.nightLength)) / (DAY.dayLength + DAY.nightLength);
+    c.fillStyle = '#ffffff';
+    c.fillRect(px(sx + sw * t) - 1, px(sy) - 1 * S, 2, px(sh) + 2 * S);
+    c.strokeStyle = PAL.edge;
+    c.strokeRect(px(sx) + 0.5, px(sy) + 0.5, px(sw) - 1, px(sh) - 1);
+
+    if (night) {
+      drawText(c, sim.nightType.name, x + 5 * S, y + 23 * S, { scale: S, color: sim.nightType.color });
+      drawText(c, `${sim.wave.alive} OUT THERE`, x + w - 5 * S, y + 23 * S,
+        { scale: S, color: PAL.dim, align: 'right' });
+    } else if (sim.weather.id !== 'clear') {
+      drawText(c, sim.weather.name, x + 5 * S, y + 23 * S, { scale: S, color: PAL.chrome });
+    } else {
+      drawText(c, 'CLEAR', x + 5 * S, y + 23 * S, { scale: S, color: PAL.faint });
     }
-    if (opts.ghost !== undefined && opts.ghost > t) {
-      c.fillStyle = 'rgba(255,255,255,0.20)';
-      c.fillRect(x + fill, y, Math.round(w * (opts.ghost - t)), h);
-    }
-    /* Tick marks every `seg` units of max. */
-    if (opts.seg) {
-      c.fillStyle = 'rgba(0,0,0,0.45)';
-      for (let v = opts.seg; v < max; v += opts.seg) {
-        c.fillRect(x + Math.round(w * (v / max)), y, 1, h);
+
+    /* Resonance: the one gauge that is about the world hearing you. */
+    const rx = x + 5 * S, ry = y + 32 * S, rw = w - 10 * S;
+    const res = state.resonanceHere || 0;
+    const loud = res > RESONANCE.threshold;
+    drawText(c, 'NOISE', rx, ry, { scale: S, color: loud ? PAL.warn : PAL.faint });
+    bar(c, rx + 26 * S, ry, rw - 26 * S, 5 * S, res, RESONANCE.max,
+      loud ? (Math.sin(this.time * 6) > 0 ? '#ff8a5a' : PAL.warn) : '#5b6a86',
+      { seg: 6 });
+
+    /* Objective, directly under the clock. */
+    const obj = state.objective;
+    if (obj) {
+      const oy = y + h + 4 * S;
+      frame(c, x, oy, w, 20 * S);
+      drawText(c, obj.text, x + 5 * S, oy + 3 * S, { scale: S, color: PAL.xp });
+      drawText(c, obj.sub, x + 5 * S, oy + 11 * S, { scale: S, color: PAL.dim });
+      if (obj.progress > 0 && obj.progress < 1) {
+        bar(c, x + 5 * S, oy + 17 * S, w - 10 * S, 2 * S, obj.progress, 1, PAL.xp);
       }
     }
-    c.strokeStyle = 'rgba(0,0,0,0.85)';
-    c.lineWidth = 1;
-    c.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
-  }
 
-  _text(str, x, y, size, color, align = 'left', weight = 'bold') {
-    const c = this.ctx;
-    c.font = `${weight} ${Math.round(size)}px ${FONT}`;
-    c.textAlign = align;
-    c.fillStyle = 'rgba(0,0,0,0.75)';
-    c.fillText(str, x + 1, y + 1);
-    c.fillStyle = color;
-    c.fillText(str, x, y);
-  }
-
-  _drawVitals(state, me, S) {
-    const c = this.ctx;
-    const pad = 14 * S;
-    const w = 232 * S, h = 12 * S;
-    const x = pad, y = this.h - pad - (h * 4 + 22 * S);
-
-    this._panel(x - 6 * S, y - 20 * S, w + 12 * S, h * 4 + 44 * S, 0.45);
-
-    this._text(me.name, x, y - 10 * S, 12 * S, '#cfe4ff');
-    this._text('LV ' + me.level, x + w, y - 10 * S, 12 * S, '#ffe45e', 'right');
-
-    this._bar(x, y, w, h, me.hp, me.maxHp, '#e0463c');
-    this._text(`${Math.ceil(me.hp)}/${me.maxHp}`, x + w / 2, y + h / 2, 9 * S, '#ffffff', 'center');
-
-    this._bar(x, y + h + 3 * S, w, h * 0.6, me.shield, me.shieldMax, '#3fe0ff');
-    this._bar(x, y + h * 1.6 + 6 * S, w, h * 0.7, me.energy, me.maxEnergy, '#b07bff');
-
-    /* Core charge: the one that kills you slowly if you ignore it. */
-    const chargeLow = me.charge / me.chargeMax < 0.25;
-    const chargeCol = chargeLow ? (Math.sin(this.time * 9) > 0 ? '#ff4f4f' : '#ffb03a') : '#ffb03a';
-    this._bar(x, y + h * 2.3 + 9 * S, w, h * 0.7, me.charge, me.chargeMax, chargeCol);
-    this._text('CORE', x - 2 * S, y + h * 2.3 + 9 * S + h * 0.35, 8 * S, '#ffd9a0', 'right');
-
-    /* Experience, thin, right under everything. */
-    const xy = y + h * 3.1 + 12 * S;
-    this._bar(x, xy, w, 4 * S, me.xp, me.xpNext, '#ffe45e');
-
-    if (me.skillPoints > 0) {
-      const t = 0.5 + 0.5 * Math.sin(this.time * 5);
-      this._text(`[TAB] ${me.skillPoints} SKILL POINT${me.skillPoints > 1 ? 'S' : ''}`,
-        x, xy + 16 * S, 11 * S, `rgba(255, 228, 94, ${0.55 + t * 0.45})`);
+    if (state.sim.beacon.lit) {
+      const by = y + h + 28 * S;
+      frame(c, x, by, w, 16 * S);
+      const b = state.sim.beacon;
+      const frac = b.hp / b.maxHp;
+      drawText(c, 'BEACON', x + 5 * S, by + 3 * S, { scale: S, color: PAL.chrome });
+      drawText(c, `${Math.round(frac * 100)}%`, x + w - 5 * S, by + 3 * S,
+        { scale: S, align: 'right', color: frac > 0.5 ? PAL.good : frac > 0.25 ? PAL.warn : PAL.bad });
+      bar(c, x + 5 * S, by + 10 * S, w - 10 * S, 3 * S, b.hp, b.maxHp,
+        frac > 0.5 ? PAL.chrome : frac > 0.25 ? PAL.warn : PAL.bad);
     }
   }
 
-  _drawAbilities(state, me, S) {
-    const c = this.ctx;
-    const size = 44 * S;
-    const gap = 8 * S;
-    const slots = ['dash', ...me.abilities];
-    const keys = ['SPC', 'Q', 'E', 'R', 'F'];
-    const total = slots.length * size + (slots.length - 1) * gap;
-    const x0 = this.w / 2 - total / 2;
-    const y = this.h - 14 * S - size;
+  /* --- bottom left: the body --- */
+  _vitals(state, me) {
+    const c = this.ctx, S = this.scale;
+    /* The energy row only exists once the beacon is lit, so the
+       plate grows rather than letting the bar run off its edge. */
+    const rows = state.sim.beacon.lit ? 5 : 4;
+    const w = 112 * S, h = (17 + rows * 8) * S;
+    const x = 6 * S, y = this.h - h - 6 * S;
+    frame(c, x, y, w, h);
+    rivets(c, x, y, w, h, 3 * S);
 
+    drawText(c, me.name, x + 5 * S, y + 4 * S, { scale: S, color: PAL.text });
+    drawText(c, 'LV' + me.level, x + w - 5 * S, y + 4 * S, { scale: S, color: PAL.xp, align: 'right' });
+
+    const bx = x + 5 * S, bw = w - 10 * S;
+    let by = y + 13 * S;
+    const row = (value, max, color, tag) => {
+      drawText(c, tag, bx, by + 1, { scale: S, color: PAL.faint });
+      bar(c, bx + 14 * S, by, bw - 14 * S, 5 * S, value, max, color, { seg: 4 });
+      by += 8 * S;
+    };
+    row(me.hp, me.maxHp, PAL.hp, 'HP');
+    row(me.stamina, me.maxStamina, PAL.stam, 'ST');
+    row(me.hunger, me.maxHunger, PAL.food, 'FD');
+    row(me.warmth, SURVIVAL.maxWarmth, PAL.warm, 'WM');
+    if (state.sim.beacon.lit) row(me.energy, me.maxEnergy, PAL.mana, 'EN');
+
+    /* Experience as a hairline along the bottom edge of the plate. */
+    bar(c, x + 1, y + h - 3 * S, w - 2, 2 * S, me.xp, me.xpNext, PAL.xp, { back: 'rgba(0,0,0,0.4)' });
+    if (me.skillPoints > 0 && state.sim.beacon.lit) {
+      const blink = 0.55 + 0.45 * Math.sin(this.time * 5);
+      drawText(c, `[K] ${me.skillPoints} POINT${me.skillPoints > 1 ? 'S' : ''} TO SPEND`,
+        x, y - 9 * S, { scale: S, color: `rgba(255,210,74,${blink})` });
+    }
+  }
+
+  /* --- bottom centre: what you are holding --- */
+  _hotbar(state, me) {
+    const c = this.ctx, S = this.scale;
+    const size = 22 * S, gap = 3 * S;
+    const n = me.hotbar.length;
+    const total = n * size + (n - 1) * gap;
+    const x0 = this.w / 2 - total / 2;
+    const y = this.h - size - 8 * S;
+
+    for (let i = 0; i < n; i++) {
+      const x = x0 + i * (size + gap);
+      const id = me.hotbar[i];
+      const def = id && ITEMS[id];
+      slot(c, x, y, size, {
+        selected: i === me.hotbarIndex,
+        item: def ? def.icon : null,
+        count: id ? (me.inv[id] || 0) : 0,
+        key: String(i + 1),
+        tint: def ? def.tint : 0x555555,
+        scale: S,
+        accent: def && def.glow ? '#ffffff' : undefined,
+      });
+      this.hit('hotbar', x, y, size, size, i);
+    }
+
+    const held = me.hotbar[me.hotbarIndex];
+    if (held && ITEMS[held]) {
+      drawText(c, ITEMS[held].name, this.w / 2, y - 9 * S,
+        { scale: S, align: 'center', color: PAL.text });
+    }
+    if (me.buildKey) {
+      drawText(c, 'BUILDING — RIGHT CLICK TO STOP', this.w / 2, y - 18 * S,
+        { scale: S, align: 'center', color: PAL.good });
+    }
+  }
+
+  /* --- bottom right: the Core, once it is awake --- */
+  _abilities(state, me) {
+    const c = this.ctx, S = this.scale;
+    const size = 20 * S, gap = 3 * S;
+    const slots = ['dash', ...me.abilities.slice(1)];
+    const keys = ['SPC', 'E', 'R', 'F'];
+    const total = slots.length * size + (slots.length - 1) * gap;
+    const x0 = this.w - total - 8 * S;
+    const y = this.h - size - 8 * S;
     for (let i = 0; i < slots.length; i++) {
       const x = x0 + i * (size + gap);
       const id = slots[i];
       const isDash = id === 'dash';
       const def = isDash ? null : ABILITIES[id];
-      const ready = isDash ? me.dashCharges > 0
-        : def ? (me.cooldowns[id] || 0) <= 0 && me.energy >= def.cost : false;
-
-      c.fillStyle = 'rgba(8, 6, 16, 0.78)';
-      c.fillRect(x, y, size, size);
-
-      if (def || isDash) {
-        const col = isDash ? '#c8f0ff' : '#' + def.color.toString(16).padStart(6, '0');
-        c.strokeStyle = ready ? col : 'rgba(120,130,150,0.5)';
-        c.lineWidth = 2 * S;
-        c.strokeRect(x + 1, y + 1, size - 2, size - 2);
-        this._text(isDash ? '»' : def.icon, x + size / 2, y + size / 2 - 2 * S,
-          22 * S, ready ? col : 'rgba(150,160,180,0.55)', 'center');
-
-        /* Cooldown sweep. */
-        const cd = isDash ? (me.dashCharges > 0 ? 0 : me.dashCd / 1.15)
-          : (def ? (me.cooldowns[id] || 0) / Math.max(0.01, def.cd) : 0);
-        if (cd > 0) {
-          c.fillStyle = 'rgba(4, 2, 10, 0.72)';
-          c.fillRect(x, y, size, size * clamp01(cd));
-        }
-        if (!isDash && def.cost > 0) {
-          this._text(String(def.cost), x + size - 3 * S, y + size - 7 * S, 9 * S,
-            me.energy >= def.cost ? '#b07bff' : '#ff6b6b', 'right');
-        }
-        if (isDash && me.dashMax > 1) {
-          this._text(`${me.dashCharges}/${me.dashMax}`, x + size - 3 * S, y + size - 7 * S, 9 * S, '#c8f0ff', 'right');
-        }
-      } else {
-        c.strokeStyle = 'rgba(90,100,120,0.35)';
-        c.lineWidth = 1;
-        c.strokeRect(x + 1, y + 1, size - 2, size - 2);
-        this._text('—', x + size / 2, y + size / 2, 16 * S, 'rgba(120,130,150,0.4)', 'center');
+      const cd = isDash ? (me.dashCharges > 0 ? 0 : me.dashCd / 1.15)
+        : def ? (me.cooldowns[id] || 0) / Math.max(0.01, def.cd) : 0;
+      slot(c, x, y, size, {
+        item: null, key: keys[i], scale: S,
+        cooldown: cd,
+        selected: false,
+      });
+      const col = isDash ? '#c8f0ff' : def ? '#' + def.color.toString(16).padStart(6, '0') : PAL.faint;
+      drawText(c, isDash ? '>>' : (def ? def.name.slice(0, 3) : '--'),
+        x + size / 2, y + size / 2, { scale: S, align: 'center', baseline: 'middle', color: col });
+      if (def && def.cost) {
+        drawText(c, String(def.cost), x + size - 2 * S, y + size - 8 * S,
+          { scale: S, align: 'right', color: me.energy >= def.cost ? PAL.mana : PAL.bad });
       }
-      this._text(keys[i], x + 3 * S, y + 8 * S, 9 * S, 'rgba(200,215,240,0.75)');
-      if (this.touch && i > 0) this.buttons.push({ name: 'ability' + i, x, y, w: size, h: size });
-    }
-    if (this.touch) {
-      this.buttons.push({ name: 'dash', x: x0, y, w: size, h: size });
-    }
-  }
-
-  _drawTopBar(state, S) {
-    const c = this.ctx;
-    const sim = state.sim;
-    const pad = 14 * S;
-
-    /* Night counter and the clock to the next change. */
-    const w = 216 * S, h = 46 * S;
-    this._panel(pad, pad, w, h, 0.5);
-    const night = sim.isNight;
-    const label = night ? `NIGHT ${sim.night}` : (sim.night === 0 ? 'DAY ONE' : `DAY ${sim.night + 1}`);
-    this._text(label, pad + 10 * S, pad + 15 * S, 14 * S, night ? '#c79bff' : '#ffd98a');
-    this._text(formatTime(sim.timeToPhaseChange), pad + w - 10 * S, pad + 15 * S, 14 * S,
-      night ? '#ff8ae0' : '#ffe45e', 'right');
-    this._bar(pad + 10 * S, pad + 26 * S, w - 20 * S, 6 * S,
-      1 - sim.timeToPhaseChange / (night ? 82 : 108), 1, night ? '#8b5cf0' : '#ffb03a');
-    if (night) {
-      this._text(`${sim.wave.alive} HOSTILE${sim.wave.alive === 1 ? '' : 'S'}`,
-        pad + 10 * S, pad + 38 * S, 10 * S, '#ff9f9f');
-    }
-
-    /* Beacon integrity. */
-    const by = pad + h + 6 * S;
-    const bw = 216 * S;
-    this._panel(pad, by, bw, 30 * S, 0.5);
-    this._text('BEACON', pad + 10 * S, by + 10 * S, 11 * S, '#9fd8ff');
-    const bhp = sim.beacon.hp / sim.beacon.maxHp;
-    this._text(`${Math.round(bhp * 100)}%`, pad + bw - 10 * S, by + 10 * S, 11 * S,
-      bhp > 0.5 ? '#63ff9d' : bhp > 0.25 ? '#ffb03a' : '#ff4f4f', 'right');
-    this._bar(pad + 10 * S, by + 18 * S, bw - 20 * S, 6 * S, sim.beacon.hp, sim.beacon.maxHp,
-      bhp > 0.5 ? '#3fe0ff' : bhp > 0.25 ? '#ffb03a' : '#ff4f4f');
-
-    /* Resources. */
-    const ry = by + 36 * S;
-    const res = state.me.res;
-    const items = [['⛭', res.scrap, '#ffb03a', 'SCRAP'], ['✧', res.essence, '#b07bff', 'ESSENCE'], ['◆', res.cores, '#ff4fd8', 'CORES']];
-    let rx = pad;
-    for (const [icon, val, col] of items) {
-      const iw = 68 * S;
-      this._panel(rx, ry, iw, 22 * S, 0.5);
-      this._text(icon, rx + 7 * S, ry + 11 * S, 12 * S, col);
-      this._text(String(val), rx + iw - 7 * S, ry + 11 * S, 12 * S, '#ffffff', 'right');
-      rx += iw + 4 * S;
+      if (isDash && me.dashMax > 1) {
+        drawText(c, `${me.dashCharges}`, x + size - 2 * S, y + size - 8 * S,
+          { scale: S, align: 'right', color: '#c8f0ff' });
+      }
     }
   }
 
-  _drawMinimap(state, S) {
-    const c = this.ctx;
-    const size = 132 * S;
-    const pad = 14 * S;
-    const x = this.w - pad - size, y = pad;
+  _craftBar(state, me) {
+    const c = this.ctx, S = this.scale;
+    const w = 90 * S, h = 12 * S;
+    const x = this.w / 2 - w / 2, y = this.h - 54 * S;
+    frame(c, x, y, w, h, { notch: 3 });
+    const frac = 1 - me.craft.time / me.craft.total;
+    bar(c, x + 3 * S, y + 4 * S, w - 6 * S, 4 * S, frac, 1, PAL.xp);
+    drawText(c, 'MAKING', x + w / 2, y - 8 * S, { scale: S, align: 'center', color: PAL.dim });
+  }
+
+  /* --- the aim reticle, in world space --- */
+  _reticle(state, me) {
+    const c = this.ctx, S = this.scale;
+    const p = state.project(me.aimX, state.aimY || me.y, me.aimZ);
+    if (!p.visible) return;
+    const t = this.time * 3;
+    c.strokeStyle = me.buildKey ? PAL.good : 'rgba(220,235,255,0.75)';
+    c.lineWidth = 1;
+    const r = 4 * S + Math.sin(t) * S * 0.5;
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      const dx = Math.cos(a), dy = Math.sin(a) * 0.55;
+      c.beginPath();
+      c.moveTo(px(p.x + dx * r), px(p.y + dy * r));
+      c.lineTo(px(p.x + dx * (r + 3 * S)), px(p.y + dy * (r + 3 * S)));
+      c.stroke();
+    }
+  }
+
+  /* --- minimap --- */
+  _minimap(state) {
+    const c = this.ctx, S = this.scale;
+    const size = 74 * S;
+    const x = this.w - size - 6 * S, y = 6 * S;
     const sim = state.sim, world = sim.world;
-    const half = (world.size * 1) / 2;
+    const half = world.size / 2;
 
-    c.fillStyle = 'rgba(6, 5, 12, 0.72)';
-    c.fillRect(x, y, size, size);
-
+    frame(c, x, y, size, size, { fill: 'rgba(8,7,16,0.92)', notch: 5 * S });
     const map = (wx, wz) => ({
       x: x + ((wx + half) / (half * 2)) * size,
       y: y + ((wz + half) / (half * 2)) * size,
     });
 
-    /* Landmarks first, so live things draw over them. */
-    for (const lm of world.landmarks) {
-      const p = map(lm.x, lm.z);
-      if (lm.kind === 'beacon') { c.fillStyle = '#7ee8ff'; c.fillRect(p.x - 3 * S, p.y - 3 * S, 6 * S, 6 * S); }
-      else if (lm.kind === 'rift') { c.fillStyle = '#ff4fd8'; c.fillRect(p.x - 2 * S, p.y - 2 * S, 4 * S, 4 * S); }
-      else if (lm.kind === 'shrine') { c.fillStyle = '#63ff9d'; c.fillRect(p.x - 1.5 * S, p.y - 1.5 * S, 3 * S, 3 * S); }
-      else if (lm.kind === 'cache') { c.fillStyle = '#ffb03a'; c.fillRect(p.x - 1.5 * S, p.y - 1.5 * S, 3 * S, 3 * S); }
-      else { c.fillStyle = 'rgba(180,190,210,0.5)'; c.fillRect(p.x - 1 * S, p.y - 1 * S, 2 * S, 2 * S); }
+    /* Coast and mountain silhouette, sampled once and cached. */
+    if (!this._mapImage || this._mapSeed !== world.seed) this._bakeMinimap(world, size);
+    if (this._mapImage) {
+      /* Inset by the frame so the map never sits on the bevel. */
+      c.drawImage(this._mapImage, px(x) + 2, px(y) + 2, px(size) - 4, px(size) - 4);
     }
 
-    c.fillStyle = 'rgba(255, 90, 90, 0.9)';
+    for (const g of sim.gates) {
+      const p = map(g.x, g.z);
+      c.fillStyle = g.sealed ? '#63ff9d' : g.active ? '#ffffff' : '#ff4fd8';
+      c.fillRect(px(p.x) - S, px(p.y) - S, 2 * S, 2 * S);
+    }
+    for (const lm of world.landmarks) {
+      if (lm.kind === 'rift') continue;
+      const p = map(lm.x, lm.z);
+      const col = lm.kind === 'beacon' ? (sim.beacon.lit ? '#7ee8ff' : '#6b6b6b')
+        : lm.kind === 'mine' ? '#ffb03a' : lm.kind === 'shrine' ? '#63ff9d'
+        : lm.kind === 'cache' ? '#ffd24a' : 'rgba(180,190,210,0.55)';
+      c.fillStyle = col;
+      const s = lm.kind === 'beacon' ? 2 * S : S;
+      c.fillRect(px(p.x) - s / 2, px(p.y) - s / 2, s, s);
+    }
+    for (const b of sim.buildings) {
+      const p = map(b.x, b.z);
+      c.fillStyle = 'rgba(255,220,150,0.8)';
+      c.fillRect(px(p.x), px(p.y), S, S);
+    }
+    c.fillStyle = 'rgba(255,90,90,0.9)';
     for (const e of sim.enemies) {
       const p = map(e.x, e.z);
-      const s = e.boss ? 4 * S : e.elite ? 3 * S : 1.6 * S;
-      c.fillRect(p.x - s / 2, p.y - s / 2, s, s);
+      const s = e.boss ? 3 * S : e.elite ? 2 * S : S;
+      c.fillRect(px(p.x) - s / 2, px(p.y) - s / 2, s, s);
     }
-
     let i = 0;
     for (const pl of sim.players.values()) {
       const p = map(pl.x, pl.z);
-      const col = PLAYER_COLORS[pl.colorIndex !== undefined ? pl.colorIndex : i % 4];
+      const col = PLAYER_COLORS[i % 4];
       c.fillStyle = pl.id === state.localId ? '#ffffff' : '#' + col.body.toString(16).padStart(6, '0');
-      c.fillRect(p.x - 2 * S, p.y - 2 * S, 4 * S, 4 * S);
+      c.fillRect(px(p.x) - S, px(p.y) - S, 2 * S, 2 * S);
       i++;
     }
-
-    c.strokeStyle = 'rgba(160, 200, 255, 0.28)';
-    c.lineWidth = 1;
-    c.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
-    this._text('[M]', x + size - 4 * S, y + size + 9 * S, 9 * S, 'rgba(180,200,230,0.6)', 'right');
+    drawText(c, 'M', x + size - 6 * S, y + size - 9 * S, { scale: S, color: PAL.faint });
   }
 
-  _drawKillFeed(S) {
-    const x = this.w - 14 * S;
-    let y = 176 * S;
+  /* One pass over the height field, kept until the seed changes. */
+  _bakeMinimap(world, size) {
+    const N = 96;
+    const cv = document.createElement('canvas');
+    cv.width = N; cv.height = N;
+    const g = cv.getContext('2d');
+    const img = g.createImageData(N, N);
+    const step = world.size / N;
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const tx = Math.min(world.size - 1, Math.floor(x * step));
+        const ty = Math.min(world.size - 1, Math.floor(y * step));
+        const i = world.idx(tx, ty);
+        const h = world.height[i] / 16;
+        const water = (world.flags[i] & 1) !== 0;
+        /* Coloured by biome and shaded by plateau: you navigate by
+           "the crags are north-east", not by an elevation ramp. */
+        const band = 0.62 + (Math.floor(world.height[i] / 2) / 8) * 0.55;
+        let r, gg, b;
+        if (water) { r = 16 + h * 22; gg = 44 + h * 40; b = 84 + h * 52; }
+        else {
+          const base = MINIMAP_BIOME[world.biome[i]] || [90, 110, 80];
+          r = base[0] * band; gg = base[1] * band; b = base[2] * band;
+        }
+        const o = (y * N + x) * 4;
+        img.data[o] = r; img.data[o + 1] = gg; img.data[o + 2] = b; img.data[o + 3] = 235;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    this._mapImage = cv;
+    this._mapSeed = world.seed;
+  }
+
+  _killFeed(state) {
+    const S = this.scale;
+    const x = this.w - 8 * S;
+    let y = 86 * S;
     for (const k of this.killFeed) {
       const a = clamp01(k.life / 1.2);
       this.ctx.globalAlpha = a;
-      this._text(k.text, x, y, 11 * S, k.color, 'right');
+      drawText(this.ctx, k.text, x, y, { scale: S, color: k.color, align: 'right' });
       this.ctx.globalAlpha = 1;
-      y += 15 * S;
+      y += lineHeight(S);
     }
   }
 
-  _drawParty(state, S) {
+  _contracts(state) {
+    const sim = state.sim;
+    if (!sim.contracts.length) return;
+    const c = this.ctx, S = this.scale;
+    const w = 96 * S;
+    const open = sim.contracts.filter(x => !x.done);
+    if (!open.length) return;
+    const h = (10 + open.length * 11) * S;
+    const x = this.w - w - 6 * S, y = 86 * S + this.killFeed.length * lineHeight(S) + 4 * S;
+    frame(c, x, y, w, h);
+    drawText(c, 'CONTRACTS', x + 4 * S, y + 3 * S, { scale: S, color: PAL.dim });
+    open.forEach((ct, i) => {
+      const cy = y + (11 + i * 11) * S;
+      const need = ct.need.n || 1;
+      const tally = `${Math.min(need, ct.progress)}/${need}`;
+      /* Clipped against the tally, not the plate: otherwise a long
+         name and its counter met in the middle with no gap. */
+      drawText(c, clipText(ct.name, w - 12 * S - textWidth(tally, S), S), x + 4 * S, cy,
+        { scale: S, color: PAL.text });
+      drawText(c, tally, x + w - 4 * S, cy, { scale: S, color: PAL.xp, align: 'right' });
+    });
+  }
+
+  _party(state) {
     const sim = state.sim;
     if (sim.players.size <= 1) return;
-    let y = this.h * 0.5 - (sim.players.size - 1) * 18 * S;
+    const c = this.ctx, S = this.scale;
+    let y = this.h * 0.36;
     let i = 0;
     for (const p of sim.players.values()) {
       if (p.id === state.localId) { i++; continue; }
       const col = PLAYER_COLORS[i % 4];
-      const w = 118 * S;
-      const x = 14 * S;
-      this._panel(x, y, w, 30 * S, 0.45);
-      this._text(p.name, x + 6 * S, y + 9 * S, 10 * S, '#' + col.trim.toString(16).padStart(6, '0'));
-      const status = p.state === 'downed' ? 'DOWN' : p.state === 'dead' ? 'DEAD' : 'LV' + p.level;
-      this._text(status, x + w - 6 * S, y + 9 * S, 10 * S,
-        p.state === 'alive' ? '#cfe4ff' : '#ff6b6b', 'right');
-      this._bar(x + 6 * S, y + 18 * S, w - 12 * S, 5 * S, p.hp, p.maxHp,
-        p.state === 'alive' ? '#e0463c' : '#7a3a3a');
-      y += 36 * S;
+      const w = 72 * S, x = 6 * S;
+      frame(c, x, y, w, 20 * S);
+      drawText(c, p.name, x + 4 * S, y + 3 * S,
+        { scale: S, color: '#' + col.trim.toString(16).padStart(6, '0') });
+      drawText(c, p.state === 'downed' ? 'DOWN' : p.state === 'dead' ? 'DEAD' : 'LV' + p.level,
+        x + w - 4 * S, y + 3 * S,
+        { scale: S, color: p.state === 'alive' ? PAL.dim : PAL.bad, align: 'right' });
+      bar(c, x + 4 * S, y + 12 * S, w - 8 * S, 4 * S, p.hp, p.maxHp,
+        p.state === 'alive' ? PAL.hp : '#6b3030');
+      y += 24 * S;
       i++;
     }
   }
 
-  _drawBossBar(state, S) {
+  _bossBar(state) {
     const boss = state.sim.enemies.find(e => e.boss);
     if (!boss) return;
-    const w = 420 * S, h = 16 * S;
-    const x = this.w / 2 - w / 2, y = 20 * S;
-    this._text(ENEMIES[boss.type].name.toUpperCase(), this.w / 2, y - 8 * S, 14 * S, '#ff8ae0', 'center');
-    this._bar(x, y, w, h, boss.hp, boss.maxHp, '#ff4fd8', { seg: boss.maxHp / 6 });
+    const c = this.ctx, S = this.scale;
+    const w = 200 * S, h = 8 * S;
+    const x = this.w / 2 - w / 2, y = 14 * S;
+    const def = ALL_CREATURES[boss.type] || { name: 'RIFT' };
+    drawText(c, def.name, this.w / 2, y - 10 * S, { scale: S * 1.5, align: 'center', color: '#ff8ae0' });
+    bar(c, x, y, w, h, boss.hp, boss.maxHp, '#ff4fd8', { seg: 8 });
   }
 
-  _drawPrompts(state, me, S) {
+  _prompt(state, me) {
     if (!me.interactTarget) return;
+    const c = this.ctx, S = this.scale;
     const kind = me.interactTarget.kind;
-    const label = kind === 'beacon' ? 'HOLD [G] — BEACON CONSOLE'
-      : kind === 'shrine' ? 'HOLD [G] — TOUCH THE SHRINE'
-      : 'HOLD [G] — PRY OPEN THE CACHE';
-    const y = this.h - 96 * S;
-    this._text(label, this.w / 2, y, 13 * S, '#ffe45e', 'center');
+    const sim = state.sim;
+    let label;
+    if (kind === 'beacon') {
+      label = sim.beacon.lit ? 'HOLD [G] — BEACON CONSOLE' : 'HOLD [G] — DELIVER PARTS';
+    } else if (kind === 'shrine') label = 'HOLD [G] — TOUCH THE SHRINE';
+    else if (kind === 'cache') label = 'HOLD [G] — PRY IT OPEN';
+    else if (kind === 'gate') {
+      label = me.inv.sealpylon ? 'HOLD [G] — PLANT THE SEAL PYLON' : 'A SEAL PYLON WOULD CLOSE THIS';
+    } else if (kind === 'build') {
+      const b = me.interactTarget.obj;
+      label = b && b.def.door ? 'HOLD [G] — DOOR'
+        : b && b.def.respawn ? 'HOLD [G] — SET AS HOME' : 'HOLD [G] — STORE EVERYTHING';
+    } else label = 'HOLD [G]';
+    const y = this.h - 62 * S;
+    drawText(c, label, this.w / 2, y, { scale: S, align: 'center', color: PAL.xp });
     if (me.interactProgress > 0) {
-      const w = 160 * S;
-      this._bar(this.w / 2 - w / 2, y + 12 * S, w, 5 * S, me.interactProgress, 1, '#ffe45e');
+      const w = 70 * S;
+      bar(c, this.w / 2 - w / 2, y + 9 * S, w, 3 * S, me.interactProgress, 1, PAL.xp);
     }
   }
 
-  _drawFloaters(state, S) {
-    const c = this.ctx;
+  _floaters(state) {
+    const c = this.ctx, S = this.scale;
     for (const f of state.fx.floaters) {
       const p = state.project(f.x, f.y, f.z);
       if (!p.visible) continue;
       const a = clamp01(f.life / f.maxLife);
       c.globalAlpha = a;
-      const size = (f.crit ? 20 : 14) * f.size * S * (0.8 + a * 0.35);
-      this._text(f.text, p.x, p.y, size, f.color, 'center');
+      drawText(c, f.text, p.x, p.y, {
+        scale: Math.max(1, Math.round(S * (f.crit ? 1.6 : 1) * f.size)),
+        align: 'center', color: f.color,
+      });
       c.globalAlpha = 1;
     }
   }
 
-  /* Nameplates, enemy health and the world-space markers that keep
-     you oriented: ally arrows, objective pings. */
-  _drawWorldMarkers(state, S) {
-    const c = this.ctx;
+  _worldMarkers(state) {
+    const c = this.ctx, S = this.scale;
     const sim = state.sim;
 
     for (const e of sim.enemies) {
@@ -402,9 +547,30 @@ export class Hud {
       if (e.boss) continue;
       const p = state.project(e.x, e.y + e.def.height + 0.35, e.z);
       if (!p.visible) continue;
-      const w = (e.elite ? 34 : 24) * S;
-      this._bar(p.x - w / 2, p.y, w, 3.5 * S, e.hp, e.maxHp, e.elite ? '#ffb03a' : '#ff5a5a');
-      if (e.elite) this._text('ELITE', p.x, p.y - 7 * S, 8 * S, '#ffb03a', 'center');
+      const w = (e.elite ? 22 : 16) * S;
+      bar(c, p.x - w / 2, p.y, w, 2 * S, e.hp, e.maxHp, e.elite ? PAL.warn : '#ff5a5a');
+      if (e.elite) drawText(c, 'ELITE', p.x, p.y - 8 * S, { scale: S, align: 'center', color: PAL.warn });
+    }
+    for (const a of sim.animals) {
+      if (a.hp >= a.maxHp) continue;
+      const p = state.project(a.x, a.y + a.def.height + 0.3, a.z);
+      if (!p.visible) continue;
+      bar(c, p.x - 8 * S, p.y, 16 * S, 2 * S, a.hp, a.maxHp, '#c8d24a');
+    }
+    for (const b of sim.buildings) {
+      if (b.hp >= b.maxHp) continue;
+      const p = state.project(b.x, b.y + (b.def.height || 1) + 0.3, b.z);
+      if (!p.visible) continue;
+      bar(c, p.x - 8 * S, p.y, 16 * S, 2 * S, b.hp, b.maxHp, PAL.warn);
+    }
+
+    /* Gates being sealed get a ring timer you can see from away. */
+    for (const g of sim.gates) {
+      if (!g.active) continue;
+      const p = state.project(g.x, g.y + 3.2, g.z);
+      if (!p.visible) continue;
+      drawText(c, 'SEALING', p.x, p.y - 10 * S, { scale: S, align: 'center', color: PAL.chrome });
+      bar(c, p.x - 20 * S, p.y, 40 * S, 3 * S, g.progress, 1, PAL.chrome);
     }
 
     let i = 0;
@@ -413,84 +579,91 @@ export class Hud {
       const p = state.project(pl.x, pl.y + 2.0, pl.z);
       const col = PLAYER_COLORS[i % 4];
       if (p.visible) {
-        this._text(pl.name, p.x, p.y, 10 * S, '#' + col.trim.toString(16).padStart(6, '0'), 'center');
+        drawText(c, pl.name, p.x, p.y, { scale: S, align: 'center',
+          color: '#' + col.trim.toString(16).padStart(6, '0') });
         if (pl.state === 'downed') {
-          this._text('DOWNED — HOLD [G]', p.x, p.y + 12 * S, 10 * S, '#ff6b6b', 'center');
-          const w = 44 * S;
-          this._bar(p.x - w / 2, p.y + 20 * S, w, 4 * S, pl.reviveProgress, 1, '#63ff9d');
+          drawText(c, 'DOWNED — HOLD [G]', p.x, p.y + 9 * S,
+            { scale: S, align: 'center', color: PAL.bad });
+          bar(c, p.x - 18 * S, p.y + 18 * S, 36 * S, 3 * S, pl.reviveProgress, 1, PAL.good);
         }
       } else {
-        /* Off-screen: put an arrow on the edge so you can find them. */
-        this._edgeArrow(pl.x, pl.z, state, '#' + col.trim.toString(16).padStart(6, '0'), S);
+        this._edgeArrow(state, pl.x, pl.z, '#' + col.trim.toString(16).padStart(6, '0'));
       }
       i++;
     }
   }
 
-  _edgeArrow(wx, wz, state, color, S) {
-    const c = this.ctx;
-    const me = state.me;
-    const dx = wx - me.x, dz = wz - me.z;
-    /* Screen direction, approximated from the camera basis. */
-    const p = state.project(wx, me.y + 1, wz);
+  _edgeArrow(state, wx, wz, color) {
+    const c = this.ctx, S = this.scale;
+    const p = state.project(wx, state.me.y + 1, wz);
     let ang = Math.atan2(p.y - this.h / 2, p.x - this.w / 2);
-    if (!p.behind && p.visible) return;
     if (p.behind) ang += Math.PI;
     const m = Math.min(this.w, this.h) * 0.40;
     const x = this.w / 2 + Math.cos(ang) * m;
     const y = this.h / 2 + Math.sin(ang) * m;
     c.save();
-    c.translate(x, y);
+    c.translate(px(x), px(y));
     c.rotate(ang);
     c.fillStyle = color;
     c.beginPath();
-    c.moveTo(8 * S, 0); c.lineTo(-6 * S, -5 * S); c.lineTo(-6 * S, 5 * S);
+    c.moveTo(5 * S, 0); c.lineTo(-4 * S, -3 * S); c.lineTo(-4 * S, 3 * S);
     c.closePath(); c.fill();
     c.restore();
   }
 
-  _drawDowned(state, me, S) {
-    const c = this.ctx;
-    c.fillStyle = 'rgba(80, 0, 0, 0.22)';
+  _downed(state, me) {
+    const c = this.ctx, S = this.scale;
+    c.fillStyle = 'rgba(90, 8, 8, 0.22)';
     c.fillRect(0, 0, this.w, this.h);
-    this._text('YOU ARE DOWN', this.w / 2, this.h * 0.38, 30 * S, '#ff6b6b', 'center');
-    this._text(`BLEEDING OUT — ${me.downTimer.toFixed(0)}s`, this.w / 2, this.h * 0.38 + 26 * S, 14 * S, '#ffb0b0', 'center');
+    drawText(c, 'YOU ARE DOWN', this.w / 2, this.h * 0.36,
+      { scale: S * 3, align: 'center', color: PAL.bad });
+    drawText(c, `BLEEDING OUT — ${me.downTimer.toFixed(0)}S`, this.w / 2, this.h * 0.36 + 26 * S,
+      { scale: S, align: 'center', color: '#ffb0b0' });
     if (me.reviveProgress > 0) {
-      const w = 220 * S;
-      this._bar(this.w / 2 - w / 2, this.h * 0.38 + 44 * S, w, 8 * S, me.reviveProgress, 1, '#63ff9d');
+      const w = 110 * S;
+      bar(c, this.w / 2 - w / 2, this.h * 0.36 + 38 * S, w, 5 * S, me.reviveProgress, 1, PAL.good);
     }
   }
 
-  _drawDead(state, me, S) {
-    const c = this.ctx;
-    this._text('RECONSTITUTING', this.w / 2, this.h * 0.42, 26 * S, '#9fd8ff', 'center');
-    this._text(`${Math.ceil(me.respawnTimer)}`, this.w / 2, this.h * 0.42 + 34 * S, 40 * S, '#ffffff', 'center');
+  _dead(state, me) {
+    const c = this.ctx, S = this.scale;
+    drawText(c, 'RECONSTITUTING', this.w / 2, this.h * 0.40,
+      { scale: S * 2, align: 'center', color: PAL.chrome });
+    drawText(c, String(Math.ceil(me.respawnTimer)), this.w / 2, this.h * 0.40 + 24 * S,
+      { scale: S * 4, align: 'center', color: '#ffffff' });
   }
 
-  _drawToast(S) {
+  _toast(state) {
     if (this.toastTime <= 0 || !this.toast) return;
-    const a = clamp01(this.toastTime);
-    this.ctx.globalAlpha = Math.min(1, a * 2);
-    this._text(this.toast.text, this.w / 2, this.h * 0.26, 24 * S, this.toast.color, 'center');
-    this.ctx.globalAlpha = 1;
-  }
-
-  /* On-screen stick ring and buttons; the Input module reads the
-     hit areas we register here. */
-  _drawTouchControls(S) {
-    const c = this.ctx;
-    const r = 52 * S;
-    const x = 90 * S, y = this.h - 90 * S;
-    c.strokeStyle = 'rgba(200, 225, 255, 0.20)';
-    c.lineWidth = 2 * S;
-    c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.stroke();
-    c.beginPath(); c.arc(x, y, r * 0.42, 0, Math.PI * 2); c.stroke();
-  }
-
-  hitTest(x, y) {
-    for (const b of this.buttons) {
-      if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b.name;
+    const c = this.ctx, S = this.scale;
+    const a = Math.min(1, this.toastTime * 2);
+    c.globalAlpha = a;
+    drawText(c, this.toast.text, this.w / 2, this.h * 0.22,
+      { scale: S * 2, align: 'center', color: this.toast.color });
+    if (this.toast.sub) {
+      drawText(c, this.toast.sub, this.w / 2, this.h * 0.22 + 20 * S,
+        { scale: S, align: 'center', color: PAL.dim });
     }
-    return null;
+    c.globalAlpha = 1;
+  }
+
+  _touch(state) {
+    const c = this.ctx, S = this.scale;
+    const r = 26 * S;
+    const x = 44 * S, y = this.h - 44 * S;
+    c.strokeStyle = 'rgba(200, 225, 255, 0.18)';
+    c.lineWidth = 2;
+    c.beginPath(); c.arc(px(x), px(y), r, 0, Math.PI * 2); c.stroke();
+    c.beginPath(); c.arc(px(x), px(y), r * 0.42, 0, Math.PI * 2); c.stroke();
+    const btn = (name, label, bx, by, size) => {
+      frame(c, bx, by, size, size, { notch: 3 });
+      drawText(c, label, bx + size / 2, by + size / 2,
+        { scale: S, align: 'center', baseline: 'middle', color: PAL.text });
+      this.hit(name, bx, by, size, size);
+    };
+    const s = 22 * S;
+    btn('touch:use', 'USE', this.w - s - 6 * S, this.h - s * 2 - 12 * S, s);
+    btn('touch:dash', 'DSH', this.w - s * 2 - 12 * S, this.h - s - 6 * S, s);
+    btn('touch:inv', 'BAG', this.w - s - 6 * S, this.h - s * 3 - 18 * S, s);
   }
 }

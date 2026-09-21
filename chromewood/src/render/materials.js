@@ -10,6 +10,7 @@
 
 import * as THREE from '../../vendor/three.module.js';
 import { RENDER } from '../core/config.js';
+import { getDetailAtlas, GRID, RANGE } from './textures.js';
 
 const gradientCache = new Map();
 
@@ -51,6 +52,44 @@ const RIM_PARS = /* glsl */`
   uniform float uRimStrength;
 `;
 
+/* The detail atlas is indexed per vertex, so a whole terrain chunk
+   with its grass, dirt, stone and bark is still one draw call. */
+const DETAIL_VERT_PARS = /* glsl */`
+  attribute float texCell;
+  varying float vTexCell;
+  varying vec2 vDetailUv;
+`;
+
+const DETAIL_VERT = /* glsl */`
+  vTexCell = texCell;
+  vDetailUv = uv;
+`;
+
+const DETAIL_FRAG_PARS = /* glsl */`
+  uniform sampler2D tDetail;
+  uniform float uDetailStrength;
+  uniform float uAtlasGrid;
+  uniform float uDetailRange;
+  varying float vTexCell;
+  varying vec2 vDetailUv;
+`;
+
+const DETAIL_FRAG = /* glsl */`
+  {
+    vec2 acell = vec2(mod(vTexCell, uAtlasGrid), floor(vTexCell / uAtlasGrid));
+    vec2 auv = (acell + fract(vDetailUv)) / uAtlasGrid;
+    vec3 detail = texture2D(tDetail, auv).rgb * uDetailRange;
+    diffuseColor.rgb *= mix(vec3(1.0), detail, uDetailStrength);
+  }
+`;
+
+export const detailUniforms = {
+  tDetail: { value: null },
+  uDetailStrength: { value: RENDER.detail === undefined ? 1.0 : RENDER.detail },
+  uAtlasGrid: { value: GRID },
+  uDetailRange: { value: RANGE },
+};
+
 const RIM_APPLY = /* glsl */`
   {
     vec3 viewDir = normalize(vViewPosition);
@@ -80,10 +119,11 @@ export function makeToonMaterial(opts = {}) {
     bands = RENDER.toonBands,
     fog = true,
     shadowSide = null,
+    detail = true,
   } = opts;
 
   const key = [color, vertexColors, emissive, emissiveIntensity, rim, transparent,
-    opacity, side, depthWrite, bands, fog].join('|');
+    opacity, side, depthWrite, bands, fog, detail].join('|');
   if (materialCache.has(key)) return materialCache.get(key);
 
   const mat = new THREE.MeshToonMaterial({
@@ -101,6 +141,7 @@ export function makeToonMaterial(opts = {}) {
   if (shadowSide) mat.shadowSide = shadowSide;
 
   mat.userData.rimMul = { value: rim };
+  if (detail) detailUniforms.tDetail.value = getDetailAtlas();
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uRimColor = rimUniforms.uRimColor;
     shader.uniforms.uRimPower = rimUniforms.uRimPower;
@@ -109,10 +150,22 @@ export function makeToonMaterial(opts = {}) {
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${RIM_PARS}\nuniform float uRimMul;`)
       .replace('#include <opaque_fragment>', `${RIM_APPLY}\n#include <opaque_fragment>`);
+    if (detail) {
+      shader.uniforms.tDetail = detailUniforms.tDetail;
+      shader.uniforms.uDetailStrength = detailUniforms.uDetailStrength;
+      shader.uniforms.uAtlasGrid = detailUniforms.uAtlasGrid;
+      shader.uniforms.uDetailRange = detailUniforms.uDetailRange;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>\n${DETAIL_VERT_PARS}`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>\n${DETAIL_VERT}`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>\n${DETAIL_FRAG_PARS}`)
+        .replace('#include <color_fragment>', `#include <color_fragment>\n${DETAIL_FRAG}`);
+    }
   };
   /* Materials that differ only in their patch still need distinct
      programs, which this key gives them. */
-  mat.customProgramCacheKey = () => `toon-rim-${bands}`;
+  mat.customProgramCacheKey = () => `toon-rim-${bands}-${detail ? 'd' : 'p'}`;
 
   materialCache.set(key, mat);
   return mat;

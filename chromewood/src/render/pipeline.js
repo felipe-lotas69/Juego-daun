@@ -71,11 +71,14 @@ export class PixelPipeline {
         uTexel: { value: new THREE.Vector2() },
         uNear: { value: 0.1 }, uFar: { value: 200 },
         uLineAlpha: { value: RENDER.outlineAlpha },
-        uHighlight: { value: 0.30 },
-        uShadow: { value: 0.46 },
+        uHighlight: { value: 0.58 },
+        uShadow: { value: 0.62 },
         uDepthScale: { value: 1.0 },
         uDepthBias: { value: 0.3 },
-        uOutlineTint: { value: new THREE.Color(1.0, 0.98, 0.92) },
+        /* Not white: a cool, slightly desaturating multiplier, so a
+           shadowed edge stays the colour of the thing it is on. */
+        uShadowTint: { value: new THREE.Color(0.20, 0.19, 0.31) },
+        uOutlineWhite: { value: 0.10 },
       },
     });
 

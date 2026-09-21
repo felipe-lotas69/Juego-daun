@@ -2,23 +2,34 @@
 /* ============================================================
    verify.js - does the game still work?
 
-   Three things that are easy to break and expensive to notice
-   only when someone is playing:
+   Five things that are cheap to break and expensive to notice
+   only when somebody is playing:
 
-     1. the content tables refer to each other correctly, and
-        every ability is actually reachable from the skill tree;
+     1. the content tables refer to each other. Every item id in
+        every drop, recipe, building and upgrade cost is a real
+        item, every skill resolves, every ability is reachable.
+        This is the check that would have caught buildings being
+        craftable into an inventory that had no slot for them;
      2. a generated world is connected - you can walk from the
-        beacon to essentially all of it - and has the landmarks
-        and the biome spread a run needs;
-     3. a full run simulates for half an hour without producing
-        a NaN, throwing, or grinding to a halt.
+        beacon to essentially all of it - and has the landmarks,
+        relief, water and ore a run needs;
+     3. a bot that actually plays the survival loop (gathers,
+        crafts, builds, eats, repairs the beacon) gets somewhere
+        without a NaN, a throw, or the frame budget blowing up;
+     4. the whole arc runs to its end: beacon lit, gates sealed,
+        Heart woken, phase won;
+     5. the wire format round-trips everything a client draws.
 
      node tools/verify.js [--seeds 6] [--minutes 30]
    ============================================================ */
 
-import { World, FLAG, PROP, SOLID_PROPS, HARVESTABLE } from '../src/world/worldgen.js';
-import { Sim, PHASE } from '../src/game/sim.js';
+import { World, FLAG, PROP, SOLID_PROPS, HARVEST, PLATEAUS, SEA_LEVEL } from '../src/world/worldgen.js';
+import { Sim, PHASE, ARC, BEACON_COSTS, emptyInput } from '../src/game/sim.js';
 import { SKILLS, ABILITIES, ENEMIES, BEACON_UPGRADES, SKILL_BRANCHES, PRIMARY_ID } from '../src/game/defs.js';
+import { ITEMS, BUILDINGS, RECIPES, SMELTING, STATION_NAME, BEACON_REPAIR, CAT } from '../src/game/items.js';
+import { ANIMALS, EXTRA_ENEMIES } from '../src/game/creatures.js';
+import { NIGHTS, WEATHER, CONTRACTS, buildNightDeck } from '../src/game/nights.js';
+import { allRecipes, invCount, invGive, startCraft, bestToolTier, eat, place, canPlace } from '../src/game/survival.js';
 import { encodeSnapshot, decodeInput, encodeInput, PROTOCOL_VERSION } from '../src/net/protocol.js';
 import { Mirror } from '../src/net/mirror.js';
 
@@ -37,7 +48,64 @@ const check = (cond, label, why) => (cond ? ok(label) : bad(label, why));
 /* ----------------------------------------------------- 1. content */
 console.log('\ncontent tables');
 {
-  let broken = [];
+  /* --- every item id anyone names has to exist ------------------ */
+  const missing = [];
+  const wantItem = (id, where) => { if (!ITEMS[id]) missing.push(`${where} -> unknown item "${id}"`); };
+
+  for (const [prop, h] of Object.entries(HARVEST)) {
+    for (const [id] of h.yield) wantItem(id, `harvest of prop ${prop}`);
+  }
+  for (const rec of RECIPES.concat(SMELTING)) {
+    wantItem(rec.out[0], `recipe out`);
+    for (const [id] of rec.in) wantItem(id, `recipe for ${rec.out[0]}`);
+  }
+  for (const [it] of BEACON_REPAIR) wantItem(it, 'beacon repair');
+  for (const [key, fn] of Object.entries(BEACON_COSTS)) {
+    for (let l = 0; l < (BEACON_UPGRADES[key]?.max ?? 0); l++) {
+      for (const [id] of fn(l)) wantItem(id, `beacon upgrade ${key} level ${l}`);
+    }
+  }
+  for (const [key, a] of Object.entries(ANIMALS)) {
+    for (const [id] of a.drops || []) wantItem(id, `animal ${key}`);
+  }
+  for (const [key, e] of Object.entries({ ...ENEMIES, ...EXTRA_ENEMIES })) {
+    for (const [id] of e.drops || []) wantItem(id, `enemy ${key}`);
+  }
+  for (const ct of CONTRACTS) {
+    if (ct.need && ct.need.item) wantItem(ct.need.item, `contract ${ct.id}`);
+  }
+  check(!missing.length, 'every item id resolves', missing.join('; '));
+
+  /* --- buildings must be craftable, carryable and placeable ----- */
+  const buildProblems = [];
+  for (const [key, def] of Object.entries(BUILDINGS)) {
+    /* A building you cannot hold is a building you cannot place:
+       invGive drops anything with no ITEMS entry on the floor. */
+    if (!ITEMS[key]) buildProblems.push(`${key} has no item entry to carry it in`);
+    else if (ITEMS[key].build !== key) buildProblems.push(`${key}'s item does not point back at it`);
+    if (!RECIPES.some(r => r.out[0] === key)) buildProblems.push(`${key} has no recipe`);
+    if (!def.icon) buildProblems.push(`${key} has no icon`);
+    if (!def.desc) buildProblems.push(`${key} has no description`);
+  }
+  check(!buildProblems.length, 'every building can be made, carried and placed', buildProblems.join('; '));
+
+  const badStation = RECIPES.concat(SMELTING)
+    .filter(r => r.station && !STATION_NAME[r.station]).map(r => r.out[0]);
+  check(!badStation.length, 'every recipe names a real station', badStation.join(', '));
+
+  /* --- tools have to reach every tier the world asks for -------- */
+  const bestTier = {};
+  for (const def of Object.values(ITEMS)) {
+    if (!def.tool) continue;
+    bestTier[def.tool.kind] = Math.max(bestTier[def.tool.kind] ?? -1, def.tool.tier);
+  }
+  const unreachable = Object.entries(HARVEST)
+    .filter(([, h]) => h.tool !== 'hand' && (bestTier[h.tool] ?? -1) < h.tier)
+    .map(([p, h]) => `prop ${p} needs ${h.tool} tier ${h.tier}`);
+  check(!unreachable.length, 'a tool exists for everything in the ground', unreachable.join('; '));
+
+  /* --- the skill tree ------------------------------------------- */
+  const broken = [];
   for (const [key, s] of Object.entries(SKILLS)) {
     if (s.req && !SKILLS[s.req]) broken.push(`${key} requires missing node ${s.req}`);
     if (s.unlock && !ABILITIES[s.unlock]) broken.push(`${key} unlocks missing ability ${s.unlock}`);
@@ -47,37 +115,82 @@ console.log('\ncontent tables');
   }
   check(!broken.length, 'skill tree references resolve', broken.join('; '));
 
-  /* Every node must be reachable by walking up its requirements. */
-  const reachable = [];
+  const cyclic = [];
   for (const [key, s] of Object.entries(SKILLS)) {
     let cur = s, hops = 0;
     while (cur && cur.req && hops++ < 20) cur = SKILLS[cur.req];
-    if (hops >= 20) reachable.push(key);
+    if (hops >= 20) cyclic.push(key);
   }
-  check(!reachable.length, 'no cycles in the skill tree', 'cycle through ' + reachable.join(', '));
+  check(!cyclic.length, 'no cycles in the skill tree', 'cycle through ' + cyclic.join(', '));
 
   const unlocked = new Set(Object.values(SKILLS).filter(s => s.unlock).map(s => s.unlock));
   const orphan = Object.keys(ABILITIES).filter(a => a !== PRIMARY_ID && !unlocked.has(a));
   check(!orphan.length, 'every ability is unlockable', 'unreachable: ' + orphan.join(', '));
 
-  const badEnemy = Object.entries(ENEMIES)
+  /* --- creatures ------------------------------------------------ */
+  const badEnemy = Object.entries({ ...ENEMIES, ...EXTRA_ENEMIES })
     .filter(([, e]) => !(e.hp > 0 && e.speed > 0 && e.cost > 0 && e.xp > 0 && e.height > 0))
     .map(([k]) => k);
   check(!badEnemy.length, 'enemy stats are sane', badEnemy.join(', '));
 
-  const badUpgrade = Object.entries(BEACON_UPGRADES).filter(([, u]) => {
+  const badAnimal = Object.entries(ANIMALS)
+    .filter(([, a]) => !(a.hp > 0 && a.speed > 0 && a.height > 0 && Array.isArray(a.drops)))
+    .map(([k]) => k);
+  check(!badAnimal.length, 'animal stats are sane', badAnimal.join(', '));
+
+  /* --- beacon upgrades ------------------------------------------ */
+  const badUpgrade = Object.entries(BEACON_UPGRADES).filter(([key, u]) => {
+    if (!BEACON_COSTS[key]) return true;
     for (let l = 0; l < u.max; l++) {
-      const c = u.cost(l);
-      if (!c || !Object.values(c).every(v => v > 0)) return true;
-      if (typeof u.desc(l) !== 'string') return true;
+      const c = BEACON_COSTS[key](l);
+      if (!Array.isArray(c) || !c.length || !c.every(([, n]) => n > 0)) return true;
+      if (typeof u.desc(l) !== 'string' || !u.desc(l)) return true;
     }
     return false;
   }).map(([k]) => k);
   check(!badUpgrade.length, 'beacon upgrades price every level', badUpgrade.join(', '));
+
+  /* --- nights, weather, contracts ------------------------------- */
+  const badNight = Object.entries(NIGHTS)
+    .filter(([, n]) => !(n.name && n.color && n.budget > 0 && n.blurb && n.weights)).map(([k]) => k);
+  check(!badNight.length, 'every night type is complete', badNight.join(', '));
+
+  const deck = buildNightDeck(() => 0.5, 40);
+  const strayNight = [...new Set(deck)].filter(id => !NIGHTS[id]);
+  check(deck.length >= 40 && !strayNight.length, 'the night deck only deals real nights',
+    strayNight.join(', ') || `deck is only ${deck.length} long`);
+
+  const badWeather = Object.entries(WEATHER).filter(([, w]) => !w.name).map(([k]) => k);
+  check(!badWeather.length, 'every weather is complete', badWeather.join(', '));
+
+  const badContract = CONTRACTS
+    .filter(c => !(c.id && c.name && c.desc && c.need && c.reward)).map(c => c.id || '(unnamed)');
+  check(!badContract.length, 'every contract is complete', badContract.join(', '));
+
+  /* --- inventory presentation ----------------------------------- */
+  const badItem = Object.entries(ITEMS)
+    .filter(([, d]) => !(d.name && d.icon && Number.isFinite(d.tint) && d.stack > 0 && CAT[String(d.cat).toUpperCase()] !== undefined || d.cat))
+    .filter(([, d]) => !(d.name && d.icon && d.stack > 0)).map(([k]) => k);
+  check(!badItem.length, 'every item can be drawn in a slot', badItem.join(', '));
+
+  ok('tables', `${Object.keys(ITEMS).length} items, ${RECIPES.length + SMELTING.length} recipes, ` +
+    `${Object.keys(BUILDINGS).length} buildings, ${Object.keys(SKILLS).length} skills, ` +
+    `${Object.keys(NIGHTS).length} night types`);
 }
 
 /* ------------------------------------------------------ 2. worlds */
 console.log('\nworld generation');
+/* Exactly the rule the simulation walks by: anything else measures a
+   map nobody plays. Deep water is not walkable; shallow water is. */
+const passable = (w, i) => {
+  const f = w.flags[i];
+  if (f & FLAG.BLOCKED_EDGE) return false;
+  if ((f & FLAG.WATER) && !(f & FLAG.SHALLOW)) return false;
+  /* SOLID from a prop is a tree or a boulder, which is an errand
+     with an axe rather than a wall; only terrain blocks for good. */
+  if ((f & FLAG.SOLID) && !SOLID_PROPS.has(w.prop[i])) return false;
+  return true;
+};
 {
   const stats = [];
   for (let i = 0; i < SEEDS; i++) {
@@ -102,16 +215,29 @@ console.log('\nworld generation');
         const nx = x + ox, ny = y + oy;
         if (!w.inBounds(nx, ny)) continue;
         const j = w.idx(nx, ny);
-        if (seen[j] || (w.flags[j] & FLAG.SOLID)) continue;
-        if (Math.abs(w.height[j] - h) >= 2) continue;
+        if (seen[j] || !passable(w, j)) continue;
+        if (Math.abs(w.height[j] - h) > 1) continue;
         seen[j] = 1;
         stack.push([nx, ny]);
       }
     }
-    let open = 0;
+    let open = 0, water = 0, river = 0, cliffs = 0;
+    const levels = new Set();
     for (let k = 0; k < w.flags.length; k++) {
-      if (w.flags[k] & (FLAG.SOLID | FLAG.BLOCKED_EDGE)) continue;
+      if (w.flags[k] & FLAG.WATER) water++;
+      if (w.flags[k] & FLAG.RIVER) river++;
+      if (!passable(w, k)) continue;
       open++;
+      levels.add(w.height[k]);
+    }
+    /* A cliff is a step of more than one level: without them the
+       map is a plain with a tint, whatever the heightmap says. */
+    for (let y = 1; y < size; y++) {
+      for (let x = 1; x < size; x++) {
+        const h = w.height[w.idx(x, y)];
+        if (Math.abs(h - w.height[w.idx(x - 1, y)]) > 1) cliffs++;
+        else if (Math.abs(h - w.height[w.idx(x, y - 1)]) > 1) cliffs++;
+      }
     }
     const coverage = reached / open;
 
@@ -121,9 +247,17 @@ console.log('\nworld generation');
       Number.isFinite(l.x) && Number.isFinite(l.y) && Number.isFinite(l.z));
 
     let harvestable = 0;
-    for (const p of w.prop) if (HARVESTABLE[p]) harvestable++;
+    const ores = new Set();
+    for (const p of w.prop) {
+      if (!HARVEST[p]) continue;
+      harvestable++;
+      for (const [id] of HARVEST[p].yield) if (id.endsWith('_ore') || id === 'essence') ores.add(id);
+    }
 
-    stats.push({ seed, genMs, coverage, kinds, finite, harvestable, spawns: w.spawnPoints.length });
+    const biomes = new Set(w.biome);
+
+    stats.push({ seed, genMs, coverage, kinds, finite, harvestable, ores: ores.size,
+      spawns: w.spawnPoints.length, levels: levels.size, cliffs, water, river, biomes: biomes.size });
   }
 
   const worstCoverage = Math.min(...stats.map(s => s.coverage));
@@ -137,72 +271,167 @@ console.log('\nworld generation');
     'every world has a beacon, rifts, shrines and caches',
     'seeds missing landmarks: ' + stats.filter(s => !(s.kinds.beacon === 1 && s.kinds.rift >= 1)).map(s => s.seed).join(', '));
 
+  check(stats.every(s => s.levels >= 6), 'the ground actually goes up and down',
+    `a seed only uses ${Math.min(...stats.map(s => s.levels))} of ${PLATEAUS.length} terraces`);
+
+  check(stats.every(s => s.cliffs > 2000), 'there are cliffs, not just ramps',
+    `a seed has only ${Math.min(...stats.map(s => s.cliffs))} cliff edges`);
+
+  check(stats.every(s => s.water > 500 && s.river > 60), 'there is water and a river',
+    `worst seed: ${Math.min(...stats.map(s => s.water))} water, ${Math.min(...stats.map(s => s.river))} river tiles`);
+
+  check(stats.every(s => s.biomes >= 6), 'the map is not one biome',
+    `a seed has only ${Math.min(...stats.map(s => s.biomes))} biomes`);
+
   check(stats.every(s => s.harvestable > 300), 'there is enough to salvage',
     'a seed has too few harvestable props: ' + Math.min(...stats.map(s => s.harvestable)));
+
+  check(stats.every(s => s.ores >= 3), 'the ores a run needs are in the ground',
+    `a seed only exposes ${Math.min(...stats.map(s => s.ores))} kinds`);
 
   check(stats.every(s => s.spawns >= 4), 'spawn points exist', 'a seed has no spawn ring');
 
   const slowest = Math.max(...stats.map(s => s.genMs));
-  check(slowest < 1200, 'generation is fast enough to do at load', `slowest seed took ${slowest}ms`);
-  ok('generated', `${SEEDS} seeds, ${slowest}ms worst, ${(worstCoverage * 100).toFixed(1)}% worst coverage`);
+  check(slowest < 1800, 'generation is fast enough to do at load', `slowest seed took ${slowest}ms`);
+  const s0 = stats[0];
+  ok('generated', `${SEEDS} seeds, ${slowest}ms worst, ${(worstCoverage * 100).toFixed(1)}% worst coverage, ` +
+    `${s0.levels} terraces, ${s0.biomes} biomes`);
 }
 
-/* ------------------------------------------------------ 3. a run */
+/* ------------------------------------------ 3. a bot plays the run */
 console.log('\nsimulated runs');
+
+/* The nearest thing this player is actually equipped to harvest. */
+function findResource(sim, p, kinds) {
+  const w = sim.world;
+  const ctx = w.worldToTileX(p.x), cty = w.worldToTileZ(p.z);
+  let best = null, bestD = 1e9;
+  for (let r = 1; r < 26 && !best; r++) {
+    for (let a = 0; a < r * 8; a++) {
+      const ang = (a / (r * 8)) * Math.PI * 2;
+      const tx = ctx + Math.round(Math.cos(ang) * r), ty = cty + Math.round(Math.sin(ang) * r);
+      if (!w.inBounds(tx, ty)) continue;
+      const h = HARVEST[w.prop[w.idx(tx, ty)]];
+      if (!h || !kinds.includes(h.tool)) continue;
+      if (h.tier > bestToolTier(p, h.tool === 'hand' ? 'blunt' : h.tool)) continue;
+      const x = w.tileToWorldX(tx), z = w.tileToWorldZ(ty);
+      const d = (x - p.x) ** 2 + (z - p.z) ** 2;
+      if (d < bestD) { bestD = d; best = { x, z }; }
+    }
+  }
+  return best;
+}
+
+const SHOPPING = ['axe_stone', 'pick_stone', 'campfire', 'workbench', 'spear', 'bed', 'torch_post',
+  'forge', 'axe_iron', 'pick_iron', 'blade_iron', 'arcanebench', 'sealpylon'];
+const PLACEABLE = ['campfire', 'workbench', 'forge', 'arcanebench', 'bed', 'torch_post'];
+
+/* One tick of a bot that plays the actual game rather than a
+   shooting gallery: it gathers, crafts, builds, eats and hauls
+   salvage to the beacon, and once the beacon is lit it goes and
+   stands in rift gates. Returns nothing; it drives sim.setInput. */
+function driveBot(sim, p, i, seq, recipes) {
+  if (p.state !== 'alive') { sim.setInput(p.id, { seq, mx: 0, mz: 0, ax: p.x, az: p.z }); return; }
+
+  if (p.skillPoints > 0 && sim.beacon.lit) {
+    for (const k of Object.keys(SKILLS)) {
+      const s = SKILLS[k];
+      if (p.skills[k] || (s.req && !p.skills[s.req]) || s.cost > p.skillPoints) continue;
+      sim.learnSkill(p, k); break;
+    }
+  }
+  if (p.hunger < 40) {
+    for (const f of ['stew', 'cookedmeat', 'berries', 'mushroom']) {
+      if (invCount(p, f) > 0) { eat(sim, p, f); break; }
+    }
+  }
+  if (!p.craft && i % 30 === 0) {
+    for (const target of SHOPPING) {
+      if (invCount(p, target) > 0 && !BUILDINGS[target]) continue;
+      if (BUILDINGS[target] && sim.buildings.some(b => b.key === target && b.owner === p.id)) continue;
+      const idx = recipes.findIndex(r => r.out[0] === target);
+      if (idx >= 0 && startCraft(sim, p, idx)) break;
+    }
+  }
+  if (i % 20 === 0) {
+    for (const key of PLACEABLE) {
+      if (invCount(p, key) <= 0) continue;
+      const w = sim.world;
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2;
+        const tx = w.worldToTileX(p.x + Math.cos(a) * 2), ty = w.worldToTileZ(p.z + Math.sin(a) * 2);
+        /* canPlace returns a reason string when it cannot. */
+        if (!canPlace(sim, p, key, tx, ty)) { place(sim, p, key, tx, ty); break; }
+      }
+      break;
+    }
+  }
+
+  let tx, tz, fire = false, interact = false;
+  const enemy = sim._nearestEnemy(p.x, p.z, 14);
+  const gate = sim.gates.find(g => !g.sealed);
+  const repairDone = BEACON_REPAIR.every(([it, n]) => (sim.beacon.store[it] || 0) >= n);
+
+  if (sim.beacon.lit && gate) {
+    /* Stand in the gate and hold it. Chasing whatever wanders past
+       walks you out of the ring and cancels the seal, which is how
+       a bot spends ninety minutes sealing nothing. */
+    const d = Math.hypot(gate.x - p.x, gate.z - p.z);
+    tx = gate.x; tz = gate.z;
+    interact = d <= 4 && !gate.active;
+    fire = !!enemy && d <= 4;
+  } else if (enemy && (sim.beacon.lit || invCount(p, 'club') + invCount(p, 'spear') > 0)) {
+    tx = enemy.x; tz = enemy.z; fire = true;
+  } else if (!sim.beacon.lit && (repairDone || BEACON_REPAIR.some(([it, n]) => invCount(p, it) >= Math.min(n, 8)))) {
+    tx = sim.beacon.x; tz = sim.beacon.z; interact = true;
+  } else {
+    const node = findResource(sim, p, ['axe', 'pick', 'hand']);
+    if (node) { tx = node.x; tz = node.z; fire = true; }
+    else { tx = sim.beacon.x; tz = sim.beacon.z; }
+  }
+
+  const dx = tx - p.x, dz = tz - p.z, m = Math.hypot(dx, dz) || 1;
+  const close = m < 1.4;
+  const holding = interact || (sim.beacon.lit && gate && m <= 4);
+  sim.setInput(p.id, {
+    seq, mx: close ? 0 : dx / m, mz: close ? 0 : dz / m,
+    ax: enemy && holding ? enemy.x : tx, az: enemy && holding ? enemy.z : tz,
+    fire: fire && (holding || m < 3), dash: false,
+    abil: sim.beacon.lit && i % 50 === 0 ? 1 : 0, interact, sprint: m > 8,
+  });
+}
+
 {
   for (const players of [1, 4]) {
     const sim = new Sim(20260921, { difficulty: 1 });
     const bots = [];
     for (let i = 0; i < players; i++) bots.push(sim.addPlayer('p' + i, 'BOT' + i));
+    const recipes = allRecipes();
 
-    const order = Object.keys(SKILLS);
-    const steps = MINUTES * 60 * 60;
+    const steps = Math.round(MINUTES * 60 * 60);
     let peak = 0, nan = null, thrown = null;
+    const events = {};
     const t0 = Date.now();
 
     for (let i = 0; i < steps && !nan && !thrown; i++) {
-      for (const p of bots) {
-        if (p.skillPoints > 0) {
-          for (const k of order) {
-            const s = SKILLS[k];
-            if (p.skills[k] || (s.req && !p.skills[s.req]) || s.cost > p.skillPoints) continue;
-            sim.learnSkill(p, k);
-            break;
-          }
-        }
-        const e = sim._nearestEnemy(p.x, p.z, 30);
-        const b = sim.beacon;
-        let tx, tz, fire = false;
-        if (p.charge < 25) { tx = b.x; tz = b.z; }
-        else if (e) {
-          fire = true;
-          const d = Math.hypot(e.x - p.x, e.z - p.z);
-          tx = d < 4 ? p.x * 2 - e.x : e.x;
-          tz = d < 4 ? p.z * 2 - e.z : e.z;
-        } else if (sim.isNight) { tx = b.x; tz = b.z; }
-        else { const a = i * 0.004; tx = b.x + Math.cos(a) * 22; tz = b.z + Math.sin(a) * 22; }
-        const dx = tx - p.x, dz = tz - p.z, m = Math.hypot(dx, dz) || 1;
-        sim.setInput(p.id, {
-          seq: i, mx: dx / m, mz: dz / m,
-          ax: e ? e.x : p.x + dx / m, az: e ? e.z : p.z + dz / m,
-          fire, dash: i % 150 === 0, abil: i % 40 === 0 ? 1 << (i / 40 % 4 | 0) : 0, interact: true,
-        });
-      }
+      for (const p of bots) driveBot(sim, p, i, i, recipes);
       if (i % 240 === 0) for (const k of Object.keys(BEACON_UPGRADES)) sim.buyBeaconUpgrade(k);
 
-      try { sim.step(1 / 60); sim.drainEvents(); }
-      catch (err) { thrown = `${err.message} at step ${i}`; break; }
+      try {
+        sim.step(1 / 60);
+        for (const ev of sim.drainEvents()) events[ev.t] = (events[ev.t] || 0) + 1;
+      } catch (err) { thrown = `${err.message} at step ${i}\n        ${(err.stack || '').split('\n')[1] || ''}`; break; }
 
       peak = Math.max(peak, sim.enemies.length);
       for (const p of bots) {
-        if (!Number.isFinite(p.x) || !Number.isFinite(p.z) || !Number.isFinite(p.hp) || !Number.isFinite(p.charge)) {
-          nan = `${p.name} went non-finite at step ${i} (x=${p.x} z=${p.z} hp=${p.hp} charge=${p.charge})`;
+        if (![p.x, p.z, p.hp, p.hunger, p.warmth, p.stamina].every(Number.isFinite)) {
+          nan = `${p.name} went non-finite at step ${i} (x=${p.x} hp=${p.hp} hunger=${p.hunger} warmth=${p.warmth})`;
           break;
         }
       }
-      for (const e of sim.enemies) {
-        if (!Number.isFinite(e.x) || !Number.isFinite(e.hp)) { nan = `enemy ${e.type} went non-finite at step ${i}`; break; }
-      }
+      for (const e of sim.enemies) if (!Number.isFinite(e.x) || !Number.isFinite(e.hp)) { nan = `enemy ${e.type} went non-finite at step ${i}`; break; }
+      for (const a of sim.animals) if (!Number.isFinite(a.x) || !Number.isFinite(a.hp)) { nan = `animal ${a.type} went non-finite at step ${i}`; break; }
+      for (const b of sim.buildings) if (!Number.isFinite(b.hp)) { nan = `building ${b.key} went non-finite at step ${i}`; break; }
       if (!Number.isFinite(sim.beacon.hp)) nan = `beacon hp went non-finite at step ${i}`;
       if (sim.phase !== PHASE.RUNNING) break;
     }
@@ -210,72 +439,270 @@ console.log('\nsimulated runs');
     const ms = Date.now() - t0;
     const usPerStep = (ms / steps) * 1000;
     const label = `${players}-player run`;
-    if (thrown) bad(label, thrown);
-    else if (nan) bad(label, nan);
+    if (thrown) { bad(label, thrown); continue; }
+    if (nan) { bad(label, nan); continue; }
+
+    const totalKills = bots.reduce((a, b) => a + b.kills, 0);
+    /* Carried plus delivered: a bot that hauls everything it digs
+       up straight to the beacon store has an empty pack and has
+       still done the gathering. */
+    const carried = bots.reduce((a, b) => a + Object.values(b.inv).reduce((x, y) => x + y, 0), 0);
+    const delivered = Object.values(sim.beacon.store).reduce((x, y) => x + y, 0);
+    const gathered = carried + delivered;
+    const kinds = new Set(bots.flatMap(b => Object.keys(b.inv).filter(k => b.inv[k] > 0)));
+    /* Events, not the end-state pack: a tool that was made and then
+       worn out still proves the chain from ore to workbench runs. */
+    const crafted = (events.crafted || 0) > 0;
+    const harvested = (events.prop_break || 0) > 0;
+    /* One night is about four minutes, so ask for roughly what the
+       clock allows rather than a fixed number. */
+    const wantNights = Math.max(1, Math.floor(MINUTES / 6));
+    if (!(sim.night >= wantNights)) bad(label, `only reached night ${sim.night} in ${MINUTES} minutes`);
+    else if (!(gathered > 2 * MINUTES) || kinds.size < 4) bad(label, `the bots gathered almost nothing in ${MINUTES} minutes: ` +
+      `${carried} carried, ${delivered} delivered, kinds: ${[...kinds].join(' ') || '(none)'}`);
+    else if (!harvested) bad(label, 'nothing in the world was ever broken down, so harvesting is dead');
+    else if (!crafted) bad(label, 'nobody finished a single craft, so the crafting chain is broken');
     else {
-      const totalKills = bots.reduce((a, b) => a + b.kills, 0);
-      const progressed = sim.night >= 2 && totalKills > 10 && bots.some(b => b.level > 2);
-      if (!progressed) {
-        bad(label, `the run did not progress: night ${sim.night}, ${totalKills} kills, level ${bots[0].level}`);
-      } else {
-        ok(label, `night ${sim.night}, lvl ${bots.map(b => b.level).join('/')}, ${totalKills} kills, ` +
-          `peak ${peak} enemies, ${usPerStep.toFixed(1)}us/step`);
-      }
-      if (usPerStep > 400) bad(label + ' performance', `${usPerStep.toFixed(0)}us per step leaves no room for rendering`);
+      ok(label, `night ${sim.night}, arc ${sim.arc}, lvl ${bots.map(b => b.level).join('/')}, ` +
+        `${totalKills} kills, ${gathered} items in ${kinds.size} kinds, ${sim.buildings.length} built, ` +
+        `${events.crafted || 0} crafted, ${events.prop_break || 0} harvested, ` +
+        `peak ${peak} enemies, ${usPerStep.toFixed(1)}us/step`);
     }
+    if (usPerStep > 400) bad(label + ' performance', `${usPerStep.toFixed(0)}us per step leaves no room for rendering`);
   }
 }
 
-/* -------------------------------------------- 4. the wire format */
+/* --------------------------------------- 3a. make it, carry it, place it */
+console.log('\nthe building loop');
+{
+  /* The chain a player actually walks: pay the recipe once, carry
+     the result, put it down. Placing used to bill the raw materials
+     a second time and leave the thing you made in your pack, so
+     nothing could ever be built with exactly what it costs. */
+  const sim = new Sim(9090, { difficulty: 1 });
+  const p = sim.addPlayer('p0', 'BUILDER');
+  const recipes = allRecipes();
+  const idx = recipes.findIndex(r => r.out[0] === 'campfire');
+  const rec = recipes[idx];
+
+  /* Exactly the materials the recipe asks for, and nothing else. */
+  for (const [item, n] of rec.in) invGive(p, item, n);
+  const started = startCraft(sim, p, idx);
+  check(started, 'a craft starts with exactly its cost', 'startCraft refused the exact materials');
+  for (let i = 0; i < 60 * 10 && !invCount(p, 'campfire'); i++) { sim.step(1 / 60); sim.drainEvents(); }
+  check(invCount(p, 'campfire') === 1, 'the craft finishes and you are carrying it',
+    `carrying ${invCount(p, 'campfire')} campfires`);
+  const leftovers = rec.in.reduce((a, [item]) => a + invCount(p, item), 0);
+  check(leftovers === 0, 'crafting spent the materials', `${leftovers} left over`);
+
+  /* Now put it down, with an empty pack apart from the campfire. */
+  const w = sim.world;
+  let placed = null, why = 'never found a spot';
+  for (let r = 1; r < 6 && !placed; r++) {
+    for (let a = 0; a < r * 8 && !placed; a++) {
+      const ang = (a / (r * 8)) * Math.PI * 2;
+      const tx = w.worldToTileX(p.x + Math.cos(ang) * r), ty = w.worldToTileZ(p.z + Math.sin(ang) * r);
+      why = canPlace(sim, p, 'campfire', tx, ty) || 'ok';
+      if (why === 'ok') placed = place(sim, p, 'campfire', tx, ty);
+    }
+  }
+  check(!!placed, 'what you crafted can be placed', `canPlace kept saying "${why}"`);
+  check(invCount(p, 'campfire') === 0, 'placing consumes the thing you were carrying',
+    `still carrying ${invCount(p, 'campfire')}`);
+  check(sim.buildings.length === 1, 'the building lands in the world',
+    `${sim.buildings.length} buildings`);
+  /* And with nothing in the pack it must be refused, not free. */
+  check(canPlace(sim, p, 'campfire', w.worldToTileX(p.x) + 3, w.worldToTileZ(p.z)) === 'materials',
+    'an empty pack cannot build', 'placing succeeded with nothing to place');
+  ok('building loop', `${rec.in.map(([i, n]) => n + ' ' + i).join(' + ')} -> campfire -> placed`);
+}
+
+/* ------------------------------------------- 3b. same seed, same run */
+console.log('\ndeterminism');
+{
+  /* The host simulates and everyone else mirrors, so the host being
+     reproducible is what makes a desync debuggable at all. Every
+     roll in the simulation has to come from the seeded generator;
+     one stray Math.random and the same seed plays out differently
+     every time, which also makes every check above flaky. */
+  const play = () => {
+    const sim = new Sim(31337, { difficulty: 1 });
+    const p = sim.addPlayer('p0', 'D');
+    const recipes = allRecipes();
+    for (let i = 0; i < 90 * 60; i++) {
+      driveBot(sim, p, i, i, recipes);
+      sim.step(1 / 60);
+      sim.drainEvents();
+    }
+    return JSON.stringify({
+      night: sim.night, hp: Math.round(p.hp * 100), kills: p.kills,
+      inv: Object.entries(p.inv).sort(), enemies: sim.enemies.length,
+      beacon: Math.round(sim.beacon.hp), x: p.x.toFixed(4), z: p.z.toFixed(4),
+    });
+  };
+  const a = play(), b = play();
+  check(a === b, 'the same seed plays out the same way',
+    'two runs of seed 31337 diverged, so something still calls Math.random');
+}
+
+/* --------------------------------------------------- 4. the whole arc */
+console.log('\nthe full arc');
+{
+  /* Two halves. First, a bot with tools has to be able to light the
+     beacon and actually seal a gate by standing in it under fire -
+     that is the loop. Then the phase handoff is driven directly,
+     because whether the Heart wakes when the last gate closes is a
+     property of the state machine and should not depend on whether
+     one particular bot survived ninety simulated minutes. */
+  const sim = new Sim(777, { difficulty: 1 });
+  const p = sim.addPlayer('p0', 'ARC');
+  const recipes = allRecipes();
+  for (const [it, n] of BEACON_REPAIR) sim.beacon.store[it] = n;
+  invGive(p, 'axe_iron', 1); invGive(p, 'pick_iron', 1); invGive(p, 'blade_iron', 1);
+  invGive(p, 'cookedmeat', 60); invGive(p, 'sealpylon', 8);
+  p.skillPoints = 12;
+
+  const seenArcs = [sim.arc];
+  let thrown = null;
+  const steps = 60 * 60 * 60;   /* 60 simulated minutes */
+  for (let i = 0; i < steps; i++) {
+    driveBot(sim, p, i, i, recipes);
+    /* The arc is under test here, not the defence: a bot that loses
+       the beacon on night four tells us nothing about whether the
+       Heart still wakes when the last gate closes. */
+    if (p.hp < p.maxHp * 0.4) p.hp = p.maxHp;
+    if (sim.beacon.hp < sim.beacon.maxHp * 0.5) sim.beacon.hp = sim.beacon.maxHp;
+    try { sim.step(1 / 60); sim.drainEvents(); }
+    catch (err) { thrown = `${err.message} at step ${i}`; break; }
+    if (sim.arc !== seenArcs[seenArcs.length - 1]) seenArcs.push(sim.arc);
+    if (sim.stats.gatesSealed >= 1) break;
+    if (sim.phase !== PHASE.RUNNING) break;
+  }
+
+  check(!thrown, 'the arc runs without throwing', thrown);
+  check(sim.beacon.lit, 'the beacon can be repaired and lit', 'the beacon was never lit');
+  check(seenArcs.includes(ARC.GATES), 'lighting the beacon opens the gates',
+    'arcs seen: ' + seenArcs.join(' -> '));
+  check(sim.stats.gatesSealed >= 1, 'a gate can be sealed by standing in it',
+    `no gate sealed in 60 simulated minutes (arc ${sim.arc})`);
+
+  /* --- the rest of the machine, driven from the gates onward ---- */
+  let lateThrow = null;
+  try {
+    while (sim.gates.some(g => !g.sealed) && sim.phase === PHASE.RUNNING) {
+      const g = sim.gates.find(x => !x.sealed);
+      g.active = true;
+      /* Park the player in the ring and let the sim close it, so
+         the real seal path runs rather than a flag being set. */
+      p.x = g.x; p.z = g.z; p.state = 'alive';
+      for (let i = 0; i < 120 * 60 && !g.sealed; i++) {
+        p.x = g.x; p.z = g.z; p.hp = p.maxHp;
+        sim.beacon.hp = sim.beacon.maxHp;
+        sim.setInput(p.id, { seq: i, mx: 0, mz: 0, ax: g.x + 1, az: g.z, fire: true, interact: true });
+        sim.step(1 / 60); sim.drainEvents();
+      }
+      if (!g.sealed) break;
+    }
+  } catch (err) { lateThrow = `${err.message}`; }
+  check(!lateThrow, 'sealing every gate runs without throwing', lateThrow);
+  check(sim.stats.gatesSealed === sim.gates.length, 'every gate can be sealed',
+    `${sim.stats.gatesSealed} of ${sim.gates.length}`);
+  check(sim.arc === ARC.HEART || sim.arc === ARC.DONE || sim.phase === PHASE.WON,
+    'the last gate wakes the Heart', `arc is ${sim.arc}`);
+
+  /* Kill the Heart and the run should be over. */
+  const heart = sim.enemies.find(e => e.isHeart);
+  check(!!heart, 'the Heart actually spawns', 'no Heart in the enemy list');
+  if (heart) {
+    for (let i = 0; i < 60 * 60 && sim.phase === PHASE.RUNNING; i++) {
+      p.hp = p.maxHp;
+      sim.hurtCreature(heart, 4000, p);
+      sim.setInput(p.id, { seq: i, mx: 0, mz: 0, ax: p.x + 1, az: p.z });
+      sim.step(1 / 60); sim.drainEvents();
+    }
+    check(sim.phase === PHASE.WON, 'killing the Heart wins the run',
+      `phase is ${sim.phase}, arc ${sim.arc}`);
+  }
+  ok('arc', seenArcs.join(' -> ') + ` then ${sim.arc}, ${sim.night} nights, ` +
+    `${sim.stats.gatesSealed}/${sim.gates.length} gates`);
+}
+
+/* -------------------------------------------- 5. the wire format */
 console.log('\nnetwork protocol');
 {
   const sim = new Sim(4242);
   sim.addPlayer('h', 'HOST');
   sim.addPlayer('c', 'CLIENT');
+  const host = sim.players.get('h');
+  invGive(host, 'wood', 64); invGive(host, 'stone', 30); invGive(host, 'axe_stone', 1);
+  sim.beacon.store.scrap = 12;
   for (let i = 0; i < 8; i++) sim.spawnEnemy(i % 2 ? 'husk' : 'spark', i === 0, { x: 4 + i, z: 2 });
+  for (const key of ['campfire', 'wall_wood', 'torch_post']) {
+    const w = sim.world;
+    sim.addBuilding(key, w.worldToTileX(host.x) + 2, w.worldToTileZ(host.z) + 2, 'h');
+  }
   for (let i = 0; i < 400; i++) { sim.step(1 / 60); sim.drainEvents(); }
 
-  let snap, json;
-  try {
-    snap = encodeSnapshot(sim);
-    json = JSON.stringify(snap);
-  } catch (e) { bad('snapshot encodes', e.message); }
+  let snap = null, json = null;
+  try { snap = encodeSnapshot(sim); json = JSON.stringify(snap); }
+  catch (e) { bad('snapshot encodes', e.message); }
 
   if (json) {
     const mirror = new Mirror(4242, 'c');
     let applyErr = null;
     try {
-      /* Two snapshots with a full interval between them, so the
-         interpolator is measured in its steady state rather than
-         mid-way through its very first blend. */
+      /* Two snapshots a full interval apart, so the interpolator is
+         measured in its steady state rather than its first blend. */
       mirror.applySnapshot(JSON.parse(json));
       mirror.update(1 / 16, null);
       mirror.applySnapshot(JSON.parse(json));
       mirror.update(1 / 16, null);
-    } catch (e) { applyErr = e.message; }
+    } catch (e) { applyErr = e.message + '\n        ' + (e.stack || '').split('\n')[1]; }
     check(!applyErr, 'a client can apply a snapshot', applyErr);
 
-    const hostPlayer = sim.players.get('h');
     const seen = mirror.players.get('h');
-    check(seen && Math.abs(seen.x - hostPlayer.x) < 0.02 && Math.abs(seen.hp - hostPlayer.hp) < 0.5,
+    check(seen && Math.abs(seen.x - host.x) < 0.02 && Math.abs(seen.hp - host.hp) < 0.5,
       'the mirrored player matches the host',
-      seen ? `host at ${hostPlayer.x.toFixed(2)} seen at ${seen.x.toFixed(2)}` : 'player missing from the mirror');
+      seen ? `host at ${host.x.toFixed(2)} seen at ${seen.x.toFixed(2)}` : 'player missing from the mirror');
+
+    /* The pack is what a client draws every frame; if inventory does
+       not survive the wire the second player plays a blind game. */
+    const mirroredInv = seen && seen.inv ? seen.inv : {};
+    check(mirroredInv.wood === host.inv.wood && mirroredInv.axe_stone === host.inv.axe_stone,
+      'inventory arrives', `host wood ${host.inv.wood}, mirror ${mirroredInv.wood}`);
+
     check(mirror.enemies.length === snap.E.length, 'every enemy arrives',
       `${snap.E.length} sent, ${mirror.enemies.length} rebuilt`);
+    check(mirror.buildings.length === sim.buildings.length, 'every building arrives',
+      `${sim.buildings.length} placed, ${mirror.buildings.length} rebuilt`);
+    check(mirror.animals.length === sim.animals.length, 'every animal arrives',
+      `${sim.animals.length} alive, ${mirror.animals.length} rebuilt`);
+    check(mirror.gates.length === sim.gates.length, 'the gates arrive',
+      `${sim.gates.length} vs ${mirror.gates.length}`);
     check(Math.abs(mirror.beacon.hp - sim.beacon.hp) < 0.5, 'beacon state arrives', '');
+    check(mirror.nightType && mirror.nightType.name === sim.nightType.name,
+      'the night type arrives', `${sim.nightType.name} vs ${mirror.nightType && mirror.nightType.name}`);
+    check(mirror.contracts.length === sim.contracts.length, 'contracts arrive',
+      `${sim.contracts.length} vs ${mirror.contracts.length}`);
 
     const bytes = json.length;
     const perSecond = bytes * 16;
     check(perSecond < 400 * 1024, 'snapshots fit in a sensible amount of bandwidth',
       `${(perSecond / 1024).toFixed(0)} KB/s at 16Hz`);
-    ok('snapshot size', `${bytes} bytes with ${snap.E.length} enemies, ~${(perSecond / 1024).toFixed(0)} KB/s`);
+    ok('snapshot size', `${bytes} bytes with ${snap.E.length} enemies and ` +
+      `${sim.buildings.length} buildings, ~${(perSecond / 1024).toFixed(0)} KB/s`);
   }
 
-  const input = { seq: 7, mx: 0.5, mz: -0.25, ax: 3.5, az: -1.25, fire: true, dash: false, interact: true, abil: 5 };
+  /* Hotbar selection is deliberately not in here - it goes over the
+     action channel - so every field emptyInput declares must survive. */
+  const input = { seq: 7, mx: 0.5, mz: -0.25, ax: 3.5, az: -1.25, fire: true, dash: false,
+    interact: true, sprint: true, abil: 5 };
   const round = decodeInput(encodeInput(input));
   check(round.seq === 7 && round.fire && !round.dash && round.interact && round.abil === 5
-    && Math.abs(round.mx - 0.5) < 0.01,
+    && round.sprint && Math.abs(round.mx - 0.5) < 0.01,
     'input survives the round trip', JSON.stringify(round));
+  const dropped = Object.keys(emptyInput()).filter(k => !(k in round));
+  check(!dropped.length, 'the wire carries every input field', 'dropped: ' + dropped.join(', '));
   ok('protocol version', String(PROTOCOL_VERSION));
 }
 

@@ -2,29 +2,32 @@
    main.js - the game
 
    Boots the renderer, owns the loop, and switches between three
-   roles that the rest of the code barely notices:
+   roles the rest of the code barely notices:
 
      solo    - a Sim right here, nothing on the wire
      host    - the same Sim, publishing snapshots to a room
      client  - a Mirror fed by someone else's snapshots
 
-   Everything downstream (the view, the HUD, the effects) reads a
-   world-shaped object and cannot tell which of the three it got.
+   Everything downstream reads a world-shaped object and cannot
+   tell which of the three it got.
    ============================================================ */
 
 import * as THREE from '../vendor/three.module.js';
 
-import { PixelPipeline, LAYER_WORLD } from './render/pipeline.js';
+import { PixelPipeline, LAYER_WORLD, LAYER_NO_OUTLINE } from './render/pipeline.js';
 import { IsoCamera } from './render/camera.js';
 import { SceneRig } from './render/scene.js';
 import { WorldView } from './render/worldview.js';
-import { Actor, PLAYER_COLORS } from './render/actors.js';
+import { Actor, PLAYER_COLORS, ALL_CREATURES } from './render/actors.js';
 import { FxSystem } from './render/fx.js';
 import { MeshBuilder } from './render/geom.js';
 import { makeToonMaterial } from './render/materials.js';
+import { buildStructureMesh, makeGhostMaterial } from './render/buildings.js';
+import { TEX } from './render/textures.js';
 
-import { Sim, PHASE, emptyInput } from './game/sim.js';
-import { ENEMIES } from './game/defs.js';
+import { Sim, PHASE, ARC, emptyInput } from './game/sim.js';
+import { ITEMS, BUILDINGS } from './game/items.js';
+import { allRecipes, stationsNear, startCraft, eat, canPlace, heldItem, invCount } from './game/survival.js';
 
 import { Mirror } from './net/mirror.js';
 import { RoomClient } from './net/client.js';
@@ -33,10 +36,11 @@ import { encodeSnapshot, encodeInput, decodeInput, filterEvents } from './net/pr
 import { Input } from './core/input.js';
 import { Audio } from './core/audio.js';
 import { hashString } from './core/rng.js';
-import { NET, DAY } from './core/config.js';
+import { NET, DAY, RESONANCE, SURVIVAL, TILE } from './core/config.js';
 import { clamp, clamp01, damp, lerp, TAU } from './core/util.js';
 
 import { Hud } from './ui/hud.js';
+import { Panels } from './ui/panels.js';
 import { Menus } from './ui/menus.js';
 
 /* ------------------------------------------------------------- boot */
@@ -53,26 +57,23 @@ const audio = new Audio();
 const hud = new Hud(hudCanvas);
 
 const game = {
-  role: 'menu',            /* menu | solo | host | client */
-  sim: null,
-  view: null,
-  net: null,
-  localId: null,
-  paused: false,
-  running: false,
-  actors: new Map(),
-  decor: null,
+  role: 'menu', sim: null, view: null, net: null, localId: null,
+  paused: false, running: false, over: false,
+  actors: new Map(), buildingViews: new Map(), decor: null,
   colorByPlayer: new Map(),
-  inputSeq: 0,
-  inputAccum: 0,
-  snapAccum: 0,
-  pendingEvents: [],
-  lastSnapshotAt: 0,
-  difficulty: 1,
-  seedText: 'MOSSGATE',
-  name: 'RUNNER',
-  over: false,
+  inputSeq: 0, inputAccum: 0, snapAccum: 0, pendingEvents: [],
+  difficulty: 1, seedText: 'MOSSGATE', name: 'RUNNER',
+  stations: new Set(['hand']),
+  ghost: null,
 };
+
+const panels = new Panels(hud, {
+  useItem: (id) => useItem(id),
+  craft: (index) => doCraft(index),
+  setBuild: (key) => setBuildKey(key),
+  learnSkill: (key) => requestLearnSkill(key),
+  buyUpgrade: (key) => requestBuyUpgrade(key),
+});
 
 const menus = new Menus(uiRoot, {
   startSolo: (f) => startRun('solo', f),
@@ -85,8 +86,6 @@ const menus = new Menus(uiRoot, {
     { name: game.name, seed: game.seedText, difficulty: game.difficulty, room: '', server: game.serverInput || '' }),
   getPlayer: () => localPlayer(),
   getSim: () => game.sim,
-  learnSkill: (key) => requestLearnSkill(key),
-  buyUpgrade: (key) => requestBuyUpgrade(key),
   sendChat: (text) => sendChat(text),
   setPixelScale: (v) => { pipeline.setPixelScale(v); resize(); },
   setZoom: (v) => cam.setZoom(v),
@@ -111,7 +110,6 @@ function toggleEffect(key) {
   if (key === 'shadows') {
     pipeline.renderer.shadowMap.enabled = !pipeline.renderer.shadowMap.enabled;
     rig.sun.castShadow = pipeline.renderer.shadowMap.enabled;
-    /* Materials compiled with shadows need rebuilding without them. */
     rig.scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; });
     return pipeline.renderer.shadowMap.enabled;
   }
@@ -140,26 +138,21 @@ async function startRun(role, form) {
     const seed = seedFrom(game.seedText);
     game.sim = new Sim(seed, { difficulty: game.difficulty });
     game.localId = 'local';
-    const p = game.sim.addPlayer('local', game.name);
+    game.sim.addPlayer('local', game.name);
     game.colorByPlayer.set('local', 0);
     beginWorld(seed, 'solo');
     menus.setNetStat('<span class="good">SOLO</span>');
     return;
   }
 
-  /* Both networked roles need a room first. */
   const net = new RoomClient();
   game.net = net;
   menus.setNetStat('<span class="warn">CONNECTING…</span>');
   let welcome;
   try {
     welcome = await net.connect({
-      server: form.server,
-      room: form.room,
-      name: game.name,
-      host: role === 'host',
-      seed: game.seedText,
-      difficulty: game.difficulty,
+      server: form.server, room: form.room, name: game.name,
+      host: role === 'host', seed: game.seedText, difficulty: game.difficulty,
     });
   } catch (err) {
     game.net = null;
@@ -197,17 +190,11 @@ function wireNet(net) {
     menus.addChat(`${msg.name} joined`, '#63ff9d');
     hud.pushKill(`${msg.name} JOINED`, '#63ff9d');
   });
-
   net.on('gone', (msg) => {
     if (game.role === 'host' && game.sim.removePlayer) game.sim.removePlayer(msg.id);
-    menus.addChat(`a runner left`, '#ffb03a');
+    menus.addChat('a runner left', '#ffb03a');
   });
-
   net.on('hostchange', (msg) => {
-    /* The old host vanished. Whoever is promoted rebuilds a world
-       from the same seed and keeps the run alive; progress inside
-       that run is lost, which is the honest trade for a relay that
-       stores nothing. */
     if (msg.id === net.id && game.role === 'client') {
       const seed = seedFrom(game.seedText);
       game.sim = new Sim(seed, { difficulty: game.difficulty });
@@ -216,19 +203,13 @@ function wireNet(net) {
       assignColors();
       beginWorld(seed, 'host');
       broadcastRoster();
-      menus.addChat('you are hosting now', '#ffb03a');
       hud.showToast('HOST MIGRATED', '#ffb03a');
     }
   });
-
   net.on('msg', (msg) => handleNetMessage(msg.from, msg.d));
-
   net.on('close', ({ wasOpen }) => {
     menus.setNetStat('<span class="bad">DISCONNECTED</span>');
-    if (wasOpen) {
-      menus.addChat('lost the connection', '#ff5a5a');
-      hud.showToast('CONNECTION LOST', '#ff5a5a', 5);
-    }
+    if (wasOpen) hud.showToast('CONNECTION LOST', '#ff5a5a', 5);
   });
 }
 
@@ -243,21 +224,14 @@ function handleNetMessage(from, d) {
         broadcastRoster();
         break;
       }
-      case 'skill': game.sim.learnSkill(game.sim.players.get(from), d.key); break;
-      case 'buy': game.sim.buyBeaconUpgrade(d.key); break;
+      case 'act': applyRemoteAction(from, d); break;
       case 'chat': relayChat(from, d.text); break;
       default: break;
     }
   } else {
     switch (d.k) {
-      case 'S':
-        game.sim.applySnapshot(d);
-        game.lastSnapshotAt = performance.now();
-        menus.setNetStat(pingLabel());
-        break;
-      case 'EV':
-        for (const ev of d.e) consumeEvent(ev);
-        break;
+      case 'S': game.sim.applySnapshot(d); menus.setNetStat(pingLabel()); break;
+      case 'EV': for (const ev of d.e) consumeEvent(ev); break;
       case 'R':
         for (const [id, name, color] of d.r) {
           const p = game.sim.players.get(id);
@@ -269,6 +243,35 @@ function handleNetMessage(from, d) {
       default: break;
     }
   }
+}
+
+/* Clients cannot touch the world directly, so everything that is
+   not movement travels as a named action the host performs. */
+function applyRemoteAction(from, d) {
+  const sim = game.sim;
+  const p = sim.players.get(from);
+  if (!p) return;
+  switch (d.a) {
+    case 'craft': startCraft(sim, p, d.i); break;
+    case 'skill': sim.learnSkill(p, d.key); break;
+    case 'upgrade': sim.buyBeaconUpgrade(d.key); break;
+    case 'build': p.buildKey = d.key; break;
+    case 'slot': p.hotbarIndex = clamp(d.i | 0, 0, p.hotbar.length - 1); break;
+    case 'eat': eat(sim, p, d.item); break;
+    case 'hold': {
+      const idx = p.hotbar.indexOf(d.item);
+      if (idx >= 0) p.hotbarIndex = idx;
+      else {
+        p.hotbar[p.hotbarIndex] = d.item;
+      }
+      break;
+    }
+    default: break;
+  }
+}
+
+function sendAction(obj) {
+  if (game.role === 'client') game.net.sendTo(hostId(), { k: 'act', ...obj });
 }
 
 function broadcastRoster() {
@@ -292,8 +295,6 @@ function beginWorld(seed, role) {
   game.paused = false;
   clearActors();
   if (game.view) game.view.dispose();
-  /* The title screen has its own world behind the panel; drop it
-     before the real one goes in or both render at once. */
   if (game.menuView) { game.menuView.dispose(); game.menuView = null; }
   game.view = new WorldView(game.sim.world, rig.scene);
   buildDecor();
@@ -304,8 +305,8 @@ function beginWorld(seed, role) {
   game.view.buildAllNear({ x: start.x, z: start.z }, 3);
   rig.setTime(game.sim.dayTime);
   menus.close();
-  hud.showToast(role === 'client' ? 'JOINED THE RUN' : 'HOLD THE BEACON', '#b07bff', 3.4);
-  menus.addChat('press G at the beacon to spend salvage', '#8794ab');
+  panels.close();
+  hud.showToast('CHROMEWOOD', '#b07bff', 4, 'you have nothing. start with a tree.');
 }
 
 function quitToMenu() {
@@ -319,8 +320,10 @@ function quitToMenu() {
 function teardown() {
   if (game.net) { game.net.close(); game.net = null; }
   clearActors();
+  clearBuildingViews();
   if (game.view) { game.view.dispose(); game.view = null; }
   if (game.decor) { rig.scene.remove(game.decor.group); game.decor = null; }
+  if (game.ghost) { rig.scene.remove(game.ghost.mesh); game.ghost = null; }
   game.sim = null;
   game.localId = null;
   game.colorByPlayer.clear();
@@ -333,19 +336,15 @@ function localPlayer() {
 }
 
 /* --------------------------------------------------- moving scenery */
-/* A few pieces have to animate, which means they cannot live in the
-   static chunk meshes: the beacon's floating core and a ring over
-   each rift gate. */
 function buildDecor() {
   const group = new THREE.Group();
   const glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, fog: false });
   const solidMat = makeToonMaterial({ vertexColors: true, rim: 1.3 });
 
   const coreB = new MeshBuilder();
-  coreB.at(0, 0, 0).crystal(0.34, 1.1, 0xb07bff, { sides: 6, tipColor: 0xf0e6ff });
+  coreB.at(0, 0, 0).crystal(0.34, 1.1, 0xb07bff, { sides: 6, tipColor: 0xf0e6ff, tex: TEX.CRYSTAL });
   const core = new THREE.Mesh(coreB.build(), solidMat);
-  core.layers.set(LAYER_WORLD);
-  core.castShadow = true;
+  core.layers.set(LAYER_WORLD); core.castShadow = true;
 
   const haloB = new MeshBuilder();
   haloB.at(0, 0, 0).crystal(0.16, 0.9, 0xe6d6ff, { sides: 6, tipColor: 0xffffff });
@@ -361,12 +360,10 @@ function buildDecor() {
   ringB.rot(0);
   const ring = new THREE.Mesh(ringB.build(), glowMat);
   ring.layers.set(LAYER_WORLD);
-
   group.add(core, halo, ring);
 
   const riftRings = [];
-  for (const lm of game.sim.world.landmarks) {
-    if (lm.kind !== 'rift') continue;
+  for (const g of game.sim.gates) {
     const rb = new MeshBuilder();
     for (let i = 0; i < 12; i++) {
       const a = (i / 12) * TAU;
@@ -376,9 +373,9 @@ function buildDecor() {
     rb.rot(0);
     const m = new THREE.Mesh(rb.build(), glowMat);
     m.layers.set(LAYER_WORLD);
-    m.position.set(lm.x, lm.y + 1.35, lm.z);
+    m.position.set(g.x, g.y + 1.35, g.z);
     group.add(m);
-    riftRings.push(m);
+    riftRings.push({ mesh: m, gate: g });
   }
 
   rig.scene.add(group);
@@ -390,37 +387,41 @@ function updateDecor(dt, sim) {
   if (!d) return;
   d.t += dt;
   const b = sim.beacon;
-  const health = clamp01(b.hp / b.maxHp);
+  const lit = b.lit;
+  const health = lit ? clamp01(b.hp / b.maxHp) : 0;
   const lift = 2.55 + Math.sin(d.t * 0.9) * 0.14;
-  d.core.position.set(b.x, b.y + lift, b.z);
-  d.core.rotation.y = d.t * 0.5;
-  d.halo.position.set(b.x, b.y + lift + 0.08, b.z);
-  d.halo.rotation.y = -d.t * 0.8;
-  /* The core dims and reddens as the beacon takes damage, which is
-     readable from across the map. */
-  const pulse = 0.65 + 0.35 * Math.sin(d.t * (health < 0.35 ? 8 : 2.2));
-  d.halo.scale.setScalar(lerp(0.6, 1.05, health) * pulse);
-  d.ring.position.set(b.x, b.y + 0.62, b.z);
-  d.ring.rotation.y = -d.t * 0.35;
-  d.ring.scale.setScalar(1 + Math.sin(d.t * 1.7) * 0.03);
+  d.core.position.set(b.x, b.y + (lit ? lift : 1.9), b.z);
+  d.core.rotation.y = lit ? d.t * 0.5 : 0;
+  /* Dark and fallen before it is repaired: the state of the beacon
+     should be obvious from across the valley. */
+  d.core.rotation.z = lit ? 0 : 0.55;
+  d.halo.visible = lit;
+  d.ring.visible = lit;
+  if (lit) {
+    d.halo.position.set(b.x, b.y + lift + 0.08, b.z);
+    d.halo.rotation.y = -d.t * 0.8;
+    const pulse = 0.65 + 0.35 * Math.sin(d.t * (health < 0.35 ? 8 : 2.2));
+    d.halo.scale.setScalar(lerp(0.6, 1.05, health) * pulse);
+    d.ring.position.set(b.x, b.y + 0.62, b.z);
+    d.ring.rotation.y = -d.t * 0.35;
+    rig.addDynamicLight(b.x, b.y + lift, b.z, health > 0.35 ? 0xb07bff : 0xff4f6b, 3.0 + pulse, 17);
+  }
 
-  rig.addDynamicLight(b.x, b.y + lift, b.z,
-    health > 0.35 ? 0xb07bff : 0xff4f6b, 3.0 + pulse, 17);
-
-  for (let i = 0; i < d.riftRings.length; i++) {
-    const m = d.riftRings[i];
-    m.rotation.y = d.t * (0.4 + i * 0.07);
-    m.rotation.x = Math.sin(d.t * 0.6 + i) * 0.22;
-    m.scale.setScalar(1 + Math.sin(d.t * 2 + i) * 0.06);
+  for (const r of d.riftRings) {
+    r.mesh.visible = !r.gate.sealed;
+    if (!r.mesh.visible) continue;
+    r.mesh.rotation.y = d.t * (r.gate.active ? 2.4 : 0.5);
+    r.mesh.rotation.x = Math.sin(d.t * 0.6) * 0.22;
+    r.mesh.scale.setScalar(1 + Math.sin(d.t * 2) * 0.06 + (r.gate.active ? r.gate.progress * 0.4 : 0));
+    rig.addDynamicLight(r.gate.x, r.gate.y + 1.6, r.gate.z, 0xff4fd8, r.gate.active ? 4 : 2, 12);
   }
 }
 
-/* --------------------------------------------------------- actors */
+/* ---------------------------------------------------------- actors */
 function actorKey(kind, id) { return kind + ':' + id; }
 
 function syncActors(dt, sim) {
   const live = new Set();
-
   let idx = 0;
   for (const p of sim.players.values()) {
     const key = actorKey('p', p.id);
@@ -433,6 +434,10 @@ function syncActors(dt, sim) {
     }
     a.setVisible(p.state !== 'dead');
     a.update(dt, p, { groundY: sim.world.groundAt(p.x, p.z), shadowRadius: 0.95 });
+    /* A carried torch lights the ground around you. */
+    if (p.lightItem) {
+      rig.addDynamicLight(p.x, p.y + 1.0, p.z, p.lightItem.color, p.lightItem.intensity, p.lightItem.range);
+    }
     idx++;
   }
 
@@ -441,17 +446,23 @@ function syncActors(dt, sim) {
     const key = actorKey('e', e.id);
     live.add(key);
     let a = game.actors.get(key);
-    if (!a) {
-      a = new Actor(rig.scene, e.type, 0);
-      game.actors.set(key, a);
-    }
-    const scale = e.elite ? 1.25 : 1;
+    if (!a) { a = new Actor(rig.scene, e.type, 0); game.actors.set(key, a); }
     a.setVisible(true);
-    a.update(dt, e, { scale, shadowRadius: e.def.radius * 2.8 });
+    a.update(dt, e, { scale: e.elite ? 1.25 : 1, shadowRadius: e.def.radius * 2.8 });
     if (e.elite || e.boss) {
       rig.addDynamicLight(e.x, e.y + e.def.height * 0.6, e.z,
         e.def.accent, e.boss ? 3.0 : 1.4, e.boss ? 12 : 6);
     }
+  }
+
+  for (const w of sim.animals) {
+    const key = actorKey('a', w.id);
+    live.add(key);
+    let a = game.actors.get(key);
+    if (!a) { a = new Actor(rig.scene, w.type, 0); game.actors.set(key, a); }
+    a.setVisible(true);
+    a.update(dt, w, { shadowRadius: w.def.radius * 2.6 });
+    if (w.def.glow) rig.addDynamicLight(w.x, w.y + 0.6, w.z, w.def.color, 1.1, 5);
   }
 
   for (const [key, a] of game.actors) {
@@ -464,28 +475,119 @@ function clearActors() {
   game.actors.clear();
 }
 
-/* Pickups, constructs and traps are small and numerous; they get a
-   shared pool of glowing boxes rather than an Actor each. */
-const pickupPool = { free: [], live: [] };
-let pickupGeo = null, pickupMats = null;
+/* -------------------------------------------------------- buildings */
+let buildSolidMat = null, buildGlowMat = null;
 
-function ensurePickupAssets() {
-  if (pickupGeo) return;
-  const b = new MeshBuilder();
-  b.at(0, 0, 0).box(0.26, 0.26, 0.26, 0xffffff, { centered: true });
-  pickupGeo = b.build();
-  pickupMats = {
-    scrap: new THREE.MeshBasicMaterial({ color: 0xffb03a, toneMapped: false, fog: false }),
-    essence: new THREE.MeshBasicMaterial({ color: 0xb07bff, toneMapped: false, fog: false }),
-    cores: new THREE.MeshBasicMaterial({ color: 0xff4fd8, toneMapped: false, fog: false }),
-    health: new THREE.MeshBasicMaterial({ color: 0x63ff9d, toneMapped: false, fog: false }),
-    charge: new THREE.MeshBasicMaterial({ color: 0x3fe0ff, toneMapped: false, fog: false }),
-  };
-  for (const m of Object.values(pickupMats)) m.color.multiplyScalar(2.2);
+function syncBuildings(dt, sim, time) {
+  if (!buildSolidMat) {
+    buildSolidMat = makeToonMaterial({ vertexColors: true, rim: 1.0 });
+    buildGlowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, fog: false });
+  }
+  const live = new Set();
+  for (const b of sim.buildings) {
+    live.add(b.id);
+    let view = game.buildingViews.get(b.id);
+    /* Rebuild only when something about the look actually changed. */
+    const stateKey = `${b.open ? 1 : 0}:${b.def.seal ? Math.floor((b.progress || 0) * 12) : 0}`;
+    if (!view || view.stateKey !== stateKey) {
+      if (view) {
+        rig.scene.remove(view.group);
+        view.group.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+      }
+      const sb = new MeshBuilder(), gb = new MeshBuilder();
+      const gate = sim.gates && sim.gates.find(g => Math.abs(g.x - b.x) < 2 && Math.abs(g.z - b.z) < 2);
+      buildStructureMesh(sb, gb, b.key, 0, 0, 0, {
+        open: b.open, t: 0, angle: 0, progress: gate ? gate.progress : 0,
+      });
+      const group = new THREE.Group();
+      if (!sb.isEmpty) {
+        const m = new THREE.Mesh(sb.build(), buildSolidMat);
+        m.castShadow = true; m.receiveShadow = true;
+        m.layers.set(LAYER_WORLD);
+        group.add(m);
+      }
+      if (!gb.isEmpty) {
+        const c = gb.col;
+        for (let i = 0; i < c.length; i++) c[i] *= 2.6;
+        const m = new THREE.Mesh(gb.build(), buildGlowMat);
+        m.layers.set(LAYER_WORLD);
+        group.add(m);
+      }
+      group.position.set(b.x, b.y, b.z);
+      rig.scene.add(group);
+      view = { group, stateKey };
+      game.buildingViews.set(b.id, view);
+    }
+    if (b.def.turret) view.group.rotation.y = -(b.angle || 0) + Math.PI / 2;
+    if (b.def.light) {
+      rig.addDynamicLight(b.x, b.y + (b.def.height || 1) * 0.8, b.z,
+        b.def.light.color, b.def.light.intensity, b.def.light.range);
+    }
+  }
+  for (const [id, view] of game.buildingViews) {
+    if (live.has(id)) continue;
+    rig.scene.remove(view.group);
+    view.group.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    game.buildingViews.delete(id);
+  }
+}
+
+function clearBuildingViews() {
+  for (const view of game.buildingViews.values()) {
+    rig.scene.remove(view.group);
+    view.group.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+  }
+  game.buildingViews.clear();
+}
+
+/* The translucent preview of what you are about to place. */
+function updateGhost(sim, me) {
+  if (!me || !me.buildKey || !BUILDINGS[me.buildKey]) {
+    if (game.ghost) { game.ghost.mesh.visible = false; }
+    return;
+  }
+  const w = sim.world;
+  const tx = w.worldToTileX(me.aimX), ty = w.worldToTileZ(me.aimZ);
+  const key = `${me.buildKey}`;
+  if (!game.ghost || game.ghost.key !== key) {
+    if (game.ghost) { rig.scene.remove(game.ghost.mesh); game.ghost.mesh.geometry.dispose(); }
+    const sb = new MeshBuilder(), gb = new MeshBuilder();
+    buildStructureMesh(sb, gb, me.buildKey, 0, 0, 0, { open: false, progress: 0 });
+    const mesh = new THREE.Mesh(sb.build(), makeGhostMaterial(true));
+    mesh.layers.set(LAYER_NO_OUTLINE);
+    mesh.renderOrder = 3;
+    rig.scene.add(mesh);
+    game.ghost = { key, mesh };
+  }
+  const g = game.ghost;
+  g.mesh.visible = true;
+  g.mesh.position.set(w.tileToWorldX(tx), w.heightAtTile(tx, ty) + 0.02, w.tileToWorldZ(ty));
+  /* canPlace returns a reason, or null when the spot is fine. */
+  const ok = game.role === 'client' || !canPlace(sim, me, me.buildKey, tx, ty);
+  g.mesh.material.color.set(ok ? 0x63ff9d : 0xff5a5a);
+}
+
+/* ----------------------------------------------- pickups on the floor */
+const pickupPool = { free: [], live: [] };
+let pickupGeo = null;
+const pickupMats = new Map();
+
+function pickupMaterial(tint) {
+  let m = pickupMats.get(tint);
+  if (!m) {
+    m = new THREE.MeshBasicMaterial({ color: new THREE.Color(tint).multiplyScalar(1.8),
+      toneMapped: false, fog: false });
+    pickupMats.set(tint, m);
+  }
+  return m;
 }
 
 function syncPickups(dt, sim, time) {
-  ensurePickupAssets();
+  if (!pickupGeo) {
+    const b = new MeshBuilder();
+    b.at(0, 0, 0).box(0.24, 0.24, 0.24, 0xffffff, { centered: true });
+    pickupGeo = b.build();
+  }
   while (pickupPool.live.length > sim.pickups.length) {
     const m = pickupPool.live.pop();
     m.visible = false;
@@ -494,7 +596,7 @@ function syncPickups(dt, sim, time) {
   while (pickupPool.live.length < sim.pickups.length) {
     let m = pickupPool.free.pop();
     if (!m) {
-      m = new THREE.Mesh(pickupGeo, pickupMats.scrap);
+      m = new THREE.Mesh(pickupGeo, pickupMaterial(0xffffff));
       m.layers.set(LAYER_WORLD);
       rig.scene.add(m);
     }
@@ -503,11 +605,11 @@ function syncPickups(dt, sim, time) {
   }
   for (let i = 0; i < sim.pickups.length; i++) {
     const pk = sim.pickups[i];
+    const def = ITEMS[pk.item];
     const m = pickupPool.live[i];
-    m.material = pickupMats[pk.kind] || pickupMats.scrap;
-    m.position.set(pk.x, pk.y + 0.34 + Math.sin(time * 3 + i) * 0.07, pk.z);
+    m.material = pickupMaterial(def ? def.tint : 0xcccccc);
+    m.position.set(pk.x, pk.y + Math.sin(time * 3 + i) * 0.07, pk.z);
     m.rotation.set(0.5, time * 1.6 + i, 0.4);
-    m.scale.setScalar(pk.kind === 'cores' ? 1.25 : 1);
   }
 }
 
@@ -517,9 +619,9 @@ let constructGeo = null, constructMat = null;
 function syncConstructs(dt, sim, time) {
   if (!constructGeo) {
     const b = new MeshBuilder();
-    b.at(0, 0, 0).taper(0.44, 0.32, 0.44, 0.7, 0x5c6470, { topColor: 0x8a93a1 });
-    b.at(0, 0.32, 0).box(0.20, 0.20, 0.20, 0x7d8694, { topColor: 0xa3acba });
-    b.at(0.22, 0.38, 0).box(0.34, 0.09, 0.09, 0x3e4550, { centered: true });
+    b.at(0, 0, 0).taper(0.44, 0.32, 0.44, 0.7, 0x5c6470, { topColor: 0x8a93a1, tex: TEX.METAL });
+    b.at(0, 0.32, 0).box(0.20, 0.20, 0.20, 0x7d8694, { topColor: 0xa3acba, tex: TEX.PANEL });
+    b.at(0.22, 0.38, 0).box(0.34, 0.09, 0.09, 0x3e4550, { centered: true, tex: TEX.METAL });
     constructGeo = b.build();
     constructMat = makeToonMaterial({ vertexColors: true, rim: 1.3 });
   }
@@ -554,70 +656,151 @@ function consumeEvent(ev) {
   fx.handleEvent(ev, { localId: game.localId });
   switch (ev.t) {
     case 'shot': audio.shoot(ev.hostile ? 0.7 : 1); break;
+    case 'swing': audio.swing ? audio.swing() : audio.dash(); break;
     case 'impact': audio.hit(false); break;
     case 'dmg': if (ev.crit) audio.hit(true); break;
     case 'boom': audio.boom(clamp(ev.radius / 4, 0.6, 2)); break;
     case 'cast': audio.cast(); break;
     case 'dash': audio.dash(); break;
-    case 'pickup': audio.pickup(ev.kind); break;
+    case 'pickup': audio.pickup(ev.item); break;
     case 'prop_break': audio.breakProp(); break;
+    case 'crafted': {
+      audio.ui();
+      if (ev.id === game.localId) {
+        const d = ITEMS[ev.item];
+        hud.pushKill(`MADE ${d ? d.name.toUpperCase() : ev.item}`, '#ffd24a');
+      }
+      break;
+    }
+    case 'built': audio.ui(); break;
+    case 'toolneeded':
+      if (ev.id === game.localId) {
+        audio.ui('deny');
+        hud.showToast(`NEEDS A BETTER ${ev.need.toUpperCase()}`, '#ff8a5a', 1.8);
+      }
+      break;
+    case 'buildfail':
+      if (ev.id === game.localId) {
+        audio.ui('deny');
+        hud.showToast(BUILD_FAIL[ev.why] || 'CANNOT BUILD THERE', '#ff8a5a', 1.4);
+      }
+      break;
+    case 'craftfail':
+      if (ev.id === game.localId) audio.ui('deny');
+      break;
     case 'levelup':
-      if (ev.id === game.localId) { audio.levelUp(); hud.showToast(`LEVEL ${ev.level} — A SKILL POINT`, '#ffe45e'); }
+      if (ev.id === game.localId) { audio.levelUp(); hud.showToast(`LEVEL ${ev.level}`, '#ffd24a', 2.4, 'a skill point'); }
       break;
     case 'hurt': if (ev.id === game.localId) audio.hurt(); break;
-    case 'down': {
-      audio.down();
-      const p = game.sim.players.get(ev.id);
-      hud.pushKill(`${p ? p.name : 'A RUNNER'} IS DOWN`, '#ff6b6b');
-      break;
-    }
-    case 'die': {
-      const p = game.sim.players.get(ev.id);
-      hud.pushKill(`${p ? p.name : 'A RUNNER'} DIED`, '#ff5a5a');
-      break;
-    }
-    case 'revive': {
-      const p = game.sim.players.get(ev.id);
-      hud.pushKill(`${p ? p.name : 'A RUNNER'} IS BACK UP`, '#63ff9d');
-      break;
-    }
+    case 'down': audio.down(); hud.pushKill(`${nameOf(ev.id)} IS DOWN`, '#ff6b6b'); break;
+    case 'die': hud.pushKill(`${nameOf(ev.id)} DIED`, '#ff5a5a'); break;
+    case 'revive': hud.pushKill(`${nameOf(ev.id)} IS BACK UP`, '#63ff9d'); break;
     case 'kill':
-      if (ev.boss) hud.showToast(`${(ENEMIES[ev.type] || {}).name || 'BOSS'} DOWN`, '#ff8ae0', 4);
-      else if (ev.elite) hud.pushKill(`ELITE ${(ENEMIES[ev.type] || {}).name || ''} DOWN`, '#ffb03a');
+      if (ev.boss) hud.showToast(`${(ALL_CREATURES[ev.type] || {}).name || 'BOSS'} DOWN`, '#ff8ae0', 4);
+      else if (ev.elite) hud.pushKill(`ELITE DOWN`, '#ffb03a');
       break;
     case 'nightfall':
       audio.nightfall();
-      hud.showToast(`NIGHT ${ev.night} — THEY ARE COMING`, '#c79bff', 4);
+      hud.showToast(ev.name, ev.color, 4.5, ev.blurb);
       break;
     case 'dawn':
       audio.dawn();
-      hud.showToast(`DAWN — ${ev.night} NIGHT${ev.night === 1 ? '' : 'S'} HELD`, '#ffd98a', 3.5);
+      hud.showToast('DAWN', '#ffd98a', 3, `${ev.night} night${ev.night === 1 ? '' : 's'} held`);
       break;
+    case 'weather':
+      if (ev.id !== 'clear') hud.showToast(ev.name.toUpperCase(), '#9fd8ff', 3, ev.blurb);
+      break;
+    case 'beacon_lit':
+      audio.levelUp();
+      hud.showToast('THE BEACON IS LIT', '#b07bff', 6, 'your core is awake — press K');
+      break;
+    case 'seal_start': hud.showToast('HOLD THE GATE', '#7ee8ff', 4, 'it will not seal itself'); break;
+    case 'seal_done':
+      hud.showToast('GATE SEALED', '#63ff9d', 5, `${ev.sealed} down — the nights get quieter`);
+      break;
+    case 'heart_wakes':
+      hud.showToast('THE RIFT HEART WAKES', '#ff4fd8', 7, 'it is at the beacon');
+      break;
+    case 'contract': hud.pushKill(`CONTRACT: ${ev.name.toUpperCase()}`, '#ffd24a'); break;
     case 'boon': if (ev.id === game.localId) hud.showToast(`BOON: ${ev.name.toUpperCase()}`, '#7ee8ff'); break;
     case 'cache': hud.showToast('CACHE OPENED', '#ffb03a', 2); break;
-    case 'upgrade': hud.pushKill(`BEACON UPGRADED`, '#3fe0ff'); break;
-    case 'nocharge': if (ev.id === game.localId) audio.ui('deny'); break;
-    case 'beacon_down':
-      game.over = true;
-      hud.showToast('THE BEACON IS DARK', '#ff4f4f', 6);
-      break;
+    case 'deposit': if (ev.id === game.localId) hud.pushKill(`STORED ${ev.moved}`, '#3fe0ff'); break;
+    case 'won': game.over = true; break;
+    case 'beacon_down': game.over = true; hud.showToast('THE BEACON IS DARK', '#ff4f4f', 6); break;
     default: break;
   }
 }
 
+const BUILD_FAIL = {
+  occupied: 'SOMETHING IS ALREADY THERE', water: 'NOT IN THE WATER',
+  blocked: 'CLEAR THE GROUND FIRST', far: 'TOO FAR AWAY',
+  uneven: 'THE GROUND IS TOO STEEP', materials: 'NOT ENOUGH MATERIALS',
+  needs: 'YOU NEED A STATION NEARBY',
+};
+
+function nameOf(id) {
+  const p = game.sim && game.sim.players.get(id);
+  return p ? p.name : 'A RUNNER';
+}
+
 /* --------------------------------------------------------- actions */
+function doCraft(index) {
+  const me = localPlayer();
+  if (!me) return;
+  audio.ui();
+  if (game.role === 'client') sendAction({ a: 'craft', i: index });
+  else startCraft(game.sim, me, index);
+}
+
+function setBuildKey(key) {
+  const me = localPlayer();
+  if (!me) return;
+  audio.ui();
+  const next = me.buildKey === key ? null : key;
+  if (game.role === 'client') sendAction({ a: 'build', key: next });
+  else me.buildKey = next;
+  if (next) panels.close();
+}
+
+function useItem(id) {
+  const me = localPlayer();
+  if (!me) return;
+  const def = ITEMS[id];
+  if (!def) return;
+  audio.ui();
+  if (def.build) { setBuildKey(id); return; }
+  if (def.food || def.heal || def.energy) {
+    if (game.role === 'client') sendAction({ a: 'eat', item: id });
+    else eat(game.sim, me, id);
+    return;
+  }
+  if (game.role === 'client') sendAction({ a: 'hold', item: id });
+  else {
+    const idx = me.hotbar.indexOf(id);
+    if (idx >= 0) me.hotbarIndex = idx;
+    else me.hotbar[me.hotbarIndex] = id;
+  }
+}
+
 function requestLearnSkill(key) {
   const me = localPlayer();
   if (!me) return;
   audio.ui();
-  if (game.role === 'client') game.net.sendTo(hostId(), { k: 'skill', key });
+  if (game.role === 'client') sendAction({ a: 'skill', key });
   else game.sim.learnSkill(me, key);
 }
 
 function requestBuyUpgrade(key) {
   audio.ui();
-  if (game.role === 'client') game.net.sendTo(hostId(), { k: 'buy', key });
+  if (game.role === 'client') sendAction({ a: 'upgrade', key });
   else game.sim.buyBeaconUpgrade(key);
+}
+
+function setSlot(i) {
+  const me = localPlayer();
+  if (!me) return;
+  if (game.role === 'client') sendAction({ a: 'slot', i });
+  else me.hotbarIndex = clamp(i, 0, me.hotbar.length - 1);
 }
 
 function hostId() {
@@ -630,9 +813,7 @@ function sendChat(text) {
   const t = (text || '').trim().slice(0, 90);
   if (!t) return;
   if (game.role === 'client') game.net.sendTo('all', { k: 'chat', text: `${game.name}: ${t}` });
-  else {
-    relayChat(game.localId, t);
-  }
+  else relayChat(game.localId, t);
 }
 
 function relayChat(fromId, text) {
@@ -654,15 +835,13 @@ function pingLabel() {
 function gatherInput(me) {
   const mv = input.moveVector();
   const dir = cam.screenToWorldDir(mv.x, mv.y, new THREE.Vector3());
-  const aim = cam.screenToGround(input.mouse.nx, input.mouse.ny, me.y + 0.6);
+  const aim = cam.screenToGround(input.mouse.nx, input.mouse.ny, me.y + 0.35);
   const pad = input.gamepad();
   if (pad && (Math.abs(pad.rx) > 0.2 || Math.abs(pad.ry) > 0.2)) {
-    /* Right stick aims in screen space, same mapping as movement. */
     const ad = cam.screenToWorldDir(pad.rx, pad.ry, new THREE.Vector3());
-    aim.set(me.x + ad.x * 7, me.y, me.z + ad.z * 7);
+    aim.set(me.x + ad.x * 5, me.y, me.z + ad.z * 5);
   }
   let abil = 0;
-  if (input.wasPressed('ability1') || (pad && pad.a1)) abil |= 1;
   if (input.wasPressed('ability2') || (pad && pad.a2)) abil |= 2;
   if (input.wasPressed('ability3') || (pad && pad.a3)) abil |= 4;
   if (input.wasPressed('ability4') || (pad && pad.a4)) abil |= 8;
@@ -670,17 +849,19 @@ function gatherInput(me) {
     seq: ++game.inputSeq,
     mx: dir.x, mz: dir.z,
     ax: aim.x, az: aim.z,
-    fire: input.firing(),
+    fire: input.firing() && !panels.isOpen,
     dash: input.wasPressed('dash') || (pad && pad.dash),
     interact: input.isDown('interact'),
+    sprint: input.isDown('sprint') || (pad && pad.sprint),
     abil,
   };
 }
 
 /* ------------------------------------------------------------- loop */
+const FIXED = 1 / 60;
+let stepAccum = 0;
 let last = performance.now();
 let frames = 0;
-let fpsAccum = 0, fpsCount = 0, fps = 60;
 
 function frame(now) {
   requestAnimationFrame(frame);
@@ -689,14 +870,9 @@ function frame(now) {
   frames++;
   window.__frames = frames;
 
-  fpsAccum += rawDt; fpsCount++;
-  if (fpsAccum > 0.5) { fps = fpsCount / fpsAccum; fpsAccum = 0; fpsCount = 0; }
-
   handleHotkeys();
 
   if (!game.running || !game.sim) {
-    /* The menu still gets a living background: the world keeps
-       turning behind the panel. */
     rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance);
     cam.update(rawDt, null, null);
     pipeline.render(rig.scene, cam.camera, cam.subpixel);
@@ -711,9 +887,9 @@ function frame(now) {
   const me = localPlayer();
   const dt = game.paused ? 0 : rawDt;
 
-  /* ---- input ---- */
   let myInput = null;
-  if (me && !game.paused && !menus.isOpen && !menus.chatOpen) {
+  const blocked = game.paused || menus.isOpen || menus.chatOpen || panels.isOpen;
+  if (me && !blocked) {
     myInput = gatherInput(me);
     if (game.role === 'client') {
       game.inputAccum += rawDt;
@@ -721,25 +897,17 @@ function frame(now) {
         game.inputAccum = 0;
         game.net.sendTo(hostId(), { k: 'in', a: encodeInput(myInput) });
       }
-    } else {
-      sim.setInput(game.localId, myInput);
-    }
+    } else sim.setInput(game.localId, myInput);
   } else if (me && game.role !== 'client') {
     sim.setInput(game.localId, emptyInput());
   }
 
-  /* ---- step ---- */
   if (game.role === 'client') {
     sim.update(dt, myInput);
   } else if (dt > 0) {
-    /* Fixed steps keep physics and cooldowns identical whatever the
-       frame rate; leftovers carry to the next frame. */
     stepAccum += dt;
     let guard = 0;
-    while (stepAccum >= FIXED && guard++ < 6) {
-      sim.step(FIXED);
-      stepAccum -= FIXED;
-    }
+    while (stepAccum >= FIXED && guard++ < 6) { sim.step(FIXED); stepAccum -= FIXED; }
     for (const ev of sim.drainEvents()) {
       consumeEvent(ev);
       if (game.role === 'host') game.pendingEvents.push(ev);
@@ -747,38 +915,38 @@ function frame(now) {
     if (game.role === 'host') publish(rawDt);
   }
 
-  if (sim.phase === PHASE.LOST && !game.over) game.over = true;
+  if (sim.phase !== PHASE.RUNNING && !game.over) game.over = true;
   if (game.over && !menus.isOpen) {
-    menus.showOver(sim, game.localId);
+    menus.showOver(sim, game.localId, sim.phase === PHASE.WON);
     game.paused = true;
   }
 
-  /* ---- camera and world ---- */
   const focus = me || sim.beacon;
-  const aimPoint = me ? { x: me.aimX !== undefined ? me.aimX : me.x, z: me.aimZ !== undefined ? me.aimZ : me.z } : null;
+  const aimPoint = me ? { x: me.aimX, z: me.aimZ } : null;
   cam.update(rawDt, new THREE.Vector3(focus.x, focus.y, focus.z),
     aimPoint ? new THREE.Vector3(aimPoint.x, focus.y, aimPoint.z) : null);
   cam.addShake(fx.drainShake());
-  if (input.mouse.wheel) cam.nudgeZoom(input.mouse.wheel * 1.2);
+  if (input.mouse.wheel && !panels.isOpen) cam.nudgeZoom(input.mouse.wheel * 1.2);
   if (input.isDown('zoomIn')) cam.nudgeZoom(-rawDt * 8);
   if (input.isDown('zoomOut')) cam.nudgeZoom(rawDt * 8);
 
   rig.setTime(sim.dayTime);
-  rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance);
+  rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance, sim.weather);
   audio.setAmbient(rig.nightAmount);
 
   game.view.update(cam.smoothed, cam.zoom);
   updateDecor(rawDt, sim);
   syncActors(rawDt, sim);
+  syncBuildings(rawDt, sim, now / 1000);
   syncPickups(rawDt, sim, now / 1000);
   syncConstructs(rawDt, sim, now / 1000);
+  if (me) updateGhost(sim, me);
   fx.syncBolts(sim.projectiles);
   fx.update(rawDt, pipeline.pixelScale);
 
   for (const l of fx.drainLights()) rig.addDynamicLight(l.x, l.y, l.z, l.color, l.intensity, l.range);
   rig.updatePointLights(game.view.lightSites, cam.smoothed);
 
-  /* Damage flash and the grey-out while downed. */
   const flash = fx.drainFlash();
   pipeline.grade.flash = Math.max(pipeline.grade.flash * Math.pow(0.001, rawDt), flash);
   pipeline.grade.flashColor.copy(fx.flashColor);
@@ -787,11 +955,16 @@ function frame(now) {
 
   pipeline.render(rig.scene, cam.camera, cam.subpixel);
 
-  /* ---- hud ---- */
+  /* ---- interface ---- */
   hud.update(rawDt);
   if (me) {
-    hud.draw({
+    if (game.role !== 'client') game.stations = stationsNear(sim, me);
+    const state = {
       sim, me, fx, localId: game.localId,
+      stations: game.stations,
+      objective: sim.objective ? sim.objective() : null,
+      resonanceHere: sim.resonance ? sim.resonance.at(me.x, me.z) : 0,
+      aimY: sim.world.groundAt(me.aimX, me.aimZ),
       project: (x, y, z) => {
         const v = new THREE.Vector3(x, y, z).project(cam.camera);
         return {
@@ -801,7 +974,9 @@ function frame(now) {
           behind: v.z >= 1,
         };
       },
-    });
+    };
+    hud.draw(state);
+    panels.draw(state);
   }
   menus.renderChat();
   if (game.net && frames % 30 === 0) menus.setNetStat(pingLabel());
@@ -809,11 +984,6 @@ function frame(now) {
   input.endFrame();
 }
 
-const FIXED = 1 / 60;
-let stepAccum = 0;
-
-/* The host publishes state at a fixed rate and events as they
-   happen, batched into the same tick to keep message count down. */
 function publish(dt) {
   if (!game.net) return;
   game.snapAccum += dt;
@@ -831,49 +1001,89 @@ function publish(dt) {
 /* ---------------------------------------------------------- hotkeys */
 function handleHotkeys() {
   if (menus.chatOpen) return;
+  const me = localPlayer();
 
-  if (input.wasPressed('chat') && game.running && !menus.isOpen) {
+  if (input.wasPressed('chat') && game.running && !menus.isOpen && !panels.isOpen) {
     menus.openChat();
     return;
   }
   if (input.wasPressed('pause') && game.running) {
     audio.ui();
-    if (menus.isOpen) { menus.close(); game.paused = false; }
+    if (panels.isOpen) panels.close();
+    else if (menus.isOpen) { menus.close(); game.paused = false; }
     else {
       menus.setPauseInfo(game.role === 'solo'
-        ? 'A solo run pauses with you.'
-        : 'Co-op keeps running while this is open.');
+        ? 'A solo run pauses with you.' : 'Co-op keeps running while this is open.');
       menus.open('pause');
       game.paused = game.role === 'solo';
     }
+    return;
   }
-  if (input.wasPressed('skills') && game.running) {
+  if (!game.running || menus.isOpen) return;
+
+  const toggle = (key, panel) => {
+    if (!input.wasPressed(key)) return false;
     audio.ui();
-    if (menus.current === 'skills') { menus.close(); game.paused = false; }
-    else { menus.open('skills'); game.paused = game.role === 'solo'; }
+    panels.toggle(panel);
+    return true;
+  };
+  if (toggle('inventory', 'inventory')) return;
+  if (toggle('build', 'build')) return;
+  if (toggle('skills', 'skills')) return;
+  if (toggle('journal', 'journal')) return;
+
+  for (let i = 0; i < 6; i++) {
+    if (input.wasPressed('slot' + (i + 1))) { setSlot(i); audio.ui(); }
   }
-  /* Holding interact at the beacon opens the console. */
-  const me = localPlayer();
+
+  /* Q eats the best food you have, which is what the key is for in
+     every survival game and saves a trip to the pack. */
+  if (input.wasPressed('eat') && me) {
+    for (const food of ['stew', 'cookedmeat', 'berries', 'mushroom', 'brew', 'bandage']) {
+      if ((me.inv[food] || 0) > 0) { useItem(food); break; }
+    }
+  }
+
+  if (input.rmbPressed && me && me.buildKey) setBuildKey(me.buildKey);
+
   if (me && me.interactTarget && me.interactTarget.kind === 'beacon'
-      && input.wasPressed('interact') && !menus.isOpen && game.running) {
+      && game.sim.beacon.lit && input.wasPressed('interact') && !panels.isOpen) {
     audio.ui();
-    menus.open('beacon');
-    game.paused = game.role === 'solo';
+    panels.open('beacon');
   }
 }
 
-/* The HUD registers touch hit areas; feed presses back to Input. */
-hudCanvas.addEventListener('pointerdown', () => { /* handled by the view canvas */ });
+/* --------------------------------------------- pointer into the HUD */
+function hudPoint(e) {
+  const r = hudCanvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+window.addEventListener('pointermove', (e) => {
+  const p = hudPoint(e);
+  hud.pointer.x = p.x; hud.pointer.y = p.y;
+});
+
 viewCanvas.addEventListener('pointerdown', (e) => {
   audio.resume();
-  if (!hud.touch) return;
-  const r = viewCanvas.getBoundingClientRect();
-  const name = hud.hitTest(e.clientX - r.left, e.clientY - r.top);
-  if (name) input.setTouchButton(name === 'dash' ? 'dash' : name, 'pressed');
+  const p = hudPoint(e);
+  hud.pointer.x = p.x; hud.pointer.y = p.y;
+  const hit = hud.hitTest(p.x, p.y);
+  if (!hit) return;
+  if (hit.name === 'hotbar') { setSlot(hit.data); e.preventDefault(); return; }
+  if (hit.name.startsWith('touch:')) {
+    const which = hit.name.slice(6);
+    if (which === 'inv') panels.toggle('inventory');
+    else input.setTouchButton(which === 'dash' ? 'dash' : 'interact', 'pressed');
+    e.preventDefault();
+    return;
+  }
+  if (panels.handle(hit, null)) { e.preventDefault(); }
 });
-viewCanvas.addEventListener('pointerup', () => {
-  for (const k of ['dash', 'ability1', 'ability2', 'ability3', 'ability4']) input.setTouchButton(k, 'up');
-});
+
+viewCanvas.addEventListener('wheel', (e) => {
+  if (panels.isOpen && panels.wheel(e.deltaY)) e.preventDefault();
+}, { passive: false });
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && game.role === 'solo' && game.running) {
@@ -882,10 +1092,9 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-/* A menu background world, so the first thing you see is the game. */
+/* A living world behind the title, rather than a flat colour. */
 (function menuBackdrop() {
   const seed = hashString('CHROMEWOOD-TITLE');
-  const backdropSim = { world: null };
   import('./world/worldgen.js').then(({ World }) => {
     const world = new World(seed);
     game.menuView = new WorldView(world, rig.scene);
@@ -893,7 +1102,7 @@ document.addEventListener('visibilitychange', () => {
     cam.snapTo(lm.x + 6, lm.y, lm.z + 6);
     cam.setZoom(11);
     game.menuView.buildAllNear({ x: lm.x, z: lm.z }, 2);
-    rig.setTime(DAY.dayLength * 0.80);   /* a long golden dusk */
+    rig.setTime(DAY.dayLength * 0.80);
   });
 })();
 
@@ -902,7 +1111,8 @@ requestAnimationFrame(frame);
 
 window.__ready = true;
 window.__game = game;
-/* Handles for the headless harness that screenshots the game. */
 game.__setZoom = (z) => cam.setZoom(z);
 game.__camera = cam;
 game.__pipeline = pipeline;
+game.__panels = panels;
+game.__hud = hud;

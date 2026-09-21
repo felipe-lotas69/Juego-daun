@@ -120,7 +120,7 @@ export class SceneRig {
 
   setTime(t) { this.time = t; }
 
-  update(dt, cameraTarget, grade, cameraDistance = 52) {
+  update(dt, cameraTarget, grade, cameraDistance = 52, weather = null) {
     this.time += dt;
     const t = this.time % this.cycleLength;
 
@@ -170,9 +170,14 @@ export class SceneRig {
     this._tmp.copy(this._fogDay).lerp(this._fogDusk, duskAmt).lerp(this._fogNight, night);
     this.scene.fog.color.copy(this._tmp);
     /* Only the far half of the view fogs: enough for aerial depth,
-       never enough to grey out the ground you are standing on. */
-    this.scene.fog.near = cameraDistance + lerp(10, 4, night);
-    this.scene.fog.far = cameraDistance + lerp(54, 34, night);
+       never enough to grey out the ground you are standing on.
+       Weather pulls the far plane in, which is the whole effect of
+       fog and a snowstorm. */
+    const vis = weather && weather.fog !== undefined ? weather.fog : 1;
+    this.scene.fog.near = cameraDistance + lerp(10, 4, night) * vis;
+    this.scene.fog.far = cameraDistance + lerp(54, 34, night) * vis;
+    if (weather && weather.id === 'ashfall') this.scene.fog.color.lerp(new THREE.Color(0x5a4658), 0.45);
+    if (weather && weather.id === 'snowstorm') this.scene.fog.color.lerp(new THREE.Color(0xc8d6e4), 0.4);
 
     this.starField.material.opacity = Math.max(0, night * night * 0.9);
     this.starField.position.set(cameraTarget.x, 0, cameraTarget.z);

@@ -13,18 +13,24 @@ export const DEFAULT_BINDS = {
   down: ['KeyS', 'ArrowDown'],
   left: ['KeyA', 'ArrowLeft'],
   right: ['KeyD', 'ArrowRight'],
-  dash: ['Space', 'ShiftLeft'],
-  ability1: ['KeyQ'],
+  sprint: ['ShiftLeft', 'ShiftRight'],
+  dash: ['Space'],
   ability2: ['KeyE'],
   ability3: ['KeyR'],
   ability4: ['KeyF'],
-  interact: ['KeyG', 'KeyH'],
-  skills: ['Tab'],
+  interact: ['KeyG'],
+  inventory: ['Tab'],
+  build: ['KeyB'],
+  skills: ['KeyK'],
+  journal: ['KeyJ'],
+  eat: ['KeyQ'],
   map: ['KeyM'],
   pause: ['Escape', 'KeyP'],
   chat: ['Enter'],
   zoomIn: ['Equal', 'NumpadAdd'],
   zoomOut: ['Minus', 'NumpadSubtract'],
+  slot1: ['Digit1'], slot2: ['Digit2'], slot3: ['Digit3'],
+  slot4: ['Digit4'], slot5: ['Digit5'], slot6: ['Digit6'],
 };
 
 export class Input {
@@ -56,7 +62,8 @@ export class Input {
       }
       if (!this.enabled) return;
       /* Tab and Space would scroll or move focus out of the canvas. */
-      if (['Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+      if (['Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+        'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6'].includes(e.code)) e.preventDefault();
       if (!this.down.has(e.code)) this.pressed.add(e.code);
       this.down.add(e.code);
     };
