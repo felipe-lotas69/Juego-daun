@@ -12,9 +12,9 @@
    ============================================================ */
 
 import { ITEMS, BUILDINGS, RECIPES, SMELTING, BEACON_REPAIR } from './items.js';
-import { HARVEST, PROP, FLAG, SOLID_PROPS, CLIMB } from '../world/worldgen.js';
-import { PLAYER, SURVIVAL, RESONANCE, TILE, LEVEL_STEP } from '../core/config.js';
-import { clamp, clamp01, dist2, dist, TAU } from '../core/util.js';
+import { HARVEST, PROP, FLAG, CLIMB } from '../world/worldgen.js';
+import { SURVIVAL, RESONANCE, TILE } from '../core/config.js';
+import { clamp, dist2 } from '../core/util.js';
 
 /* ------------------------------------------------------ inventory */
 export function invCount(p, item) { return p.inv[item] || 0; }

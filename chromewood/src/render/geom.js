@@ -13,7 +13,7 @@
    ============================================================ */
 
 import * as THREE from '../../vendor/three.module.js';
-import { TEX, GRID } from './textures.js';
+import { TEX } from './textures.js';
 
 /* Per-face multipliers. Top faces catch the sky, the two visible
    side directions differ so cliffs read as solid volumes. */

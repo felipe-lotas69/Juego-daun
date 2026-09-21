@@ -8,7 +8,7 @@
    glyph on a half pixel.
    ============================================================ */
 
-import { PAL, frame, bar, slot, button, rivets, divider, px, drawText, textWidth, clipText, drawIcon } from './draw.js';
+import { PAL, frame, bar, slot, rivets, px, drawText, textWidth, clipText } from './draw.js';
 import { lineHeight } from './font.js';
 import { ITEMS } from '../game/items.js';
 import { ABILITIES } from '../game/defs.js';

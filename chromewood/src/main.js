@@ -25,9 +25,9 @@ import { makeToonMaterial } from './render/materials.js';
 import { buildStructureMesh, makeGhostMaterial } from './render/buildings.js';
 import { TEX } from './render/textures.js';
 
-import { Sim, PHASE, ARC, emptyInput } from './game/sim.js';
+import { Sim, PHASE, emptyInput } from './game/sim.js';
 import { ITEMS, BUILDINGS } from './game/items.js';
-import { allRecipes, stationsNear, startCraft, eat, canPlace, heldItem, invCount } from './game/survival.js';
+import { stationsNear, startCraft, eat, canPlace } from './game/survival.js';
 
 import { Mirror } from './net/mirror.js';
 import { RoomClient } from './net/client.js';
@@ -36,7 +36,7 @@ import { encodeSnapshot, encodeInput, decodeInput, filterEvents } from './net/pr
 import { Input } from './core/input.js';
 import { Audio } from './core/audio.js';
 import { hashString } from './core/rng.js';
-import { NET, DAY, RESONANCE, SURVIVAL, TILE } from './core/config.js';
+import { NET, DAY } from './core/config.js';
 import { clamp, clamp01, damp, lerp, TAU } from './core/util.js';
 
 import { Hud } from './ui/hud.js';

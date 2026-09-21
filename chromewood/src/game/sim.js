@@ -18,19 +18,17 @@
    Where the night goes is decided by where the noise was.
    ============================================================ */
 
-import { World, HARVEST, FLAG, PROP, BIOME, BIOME_NAME, SEA_LEVEL, CLIMB } from '../world/worldgen.js';
+import { World, HARVEST, FLAG, BIOME } from '../world/worldgen.js';
 import {
-  PLAYER, BEACON, WAVE, DAY, COMBAT, XP_CURVE, WORLD_HALF,
-  SURVIVAL, RESONANCE, GATE, LEVEL_STEP, TILE,
+  PLAYER, BEACON, WAVE, DAY, COMBAT, XP_CURVE, WORLD_HALF, SURVIVAL, RESONANCE, GATE,
 } from '../core/config.js';
 import { ENEMIES, ELITE, SKILLS, BEACON_UPGRADES, STATUS, BOONS, PRIMARY_ID } from './defs.js';
-import { ITEMS, BUILDINGS, BEACON_REPAIR } from './items.js';
+import { ITEMS, BUILDINGS } from './items.js';
 import { ANIMALS, EXTRA_ENEMIES, FACTION, animalsForBiome } from './creatures.js';
 import { NIGHTS, WEATHER, buildNightDeck, rollWeather, CONTRACTS } from './nights.js';
 import {
-  ResonanceField, swing, tickCraft, tickBody, startCraft, place, eat,
-  invGive, invTake, invCount, heldItem, heldTool, bestToolTier,
-  stationsNear, depositToBeacon, beaconRepairProgress, allRecipes,
+  ResonanceField, swing, tickCraft, tickBody, place, invGive, invTake, invCount, heldItem,
+  depositToBeacon, beaconRepairProgress,
 } from './survival.js';
 import { makeRng } from '../core/rng.js';
 import { clamp, clamp01, lerp, dist2, dist, damp, TAU } from '../core/util.js';

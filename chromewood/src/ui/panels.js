@@ -7,14 +7,15 @@
    frame; the game forwards clicks back by name.
    ============================================================ */
 
-import { PAL, frame, bar, slot, button, rivets, divider, px, drawText, textWidth, clipText, drawIcon } from './draw.js';
+import {
+  PAL, frame, bar, slot, button, rivets, divider, px, drawText, textWidth, clipText, drawIcon,
+} from './draw.js';
 import { lineHeight, drawWrapped, wrapLines } from './font.js';
-import { ITEMS, BUILDINGS, STATION_NAME, BEACON_REPAIR, CAT } from '../game/items.js';
+import { ITEMS, BUILDINGS, STATION_NAME, BEACON_REPAIR } from '../game/items.js';
 import { SKILLS, SKILL_BRANCHES, BEACON_UPGRADES } from '../game/defs.js';
 import { NIGHTS } from '../game/nights.js';
-import { allRecipes, stationsNear, invHasAll } from '../game/survival.js';
+import { allRecipes, invHasAll } from '../game/survival.js';
 import { BEACON_COSTS } from '../game/sim.js';
-import { clamp01 } from '../core/util.js';
 
 export const PANELS = ['inventory', 'build', 'skills', 'journal', 'beacon'];
 
@@ -130,6 +131,11 @@ export class Panels {
     const colW = Math.floor(r.w * 0.44);
 
     drawText(c, 'CARRIED', r.x, r.y, { scale: S, color: PAL.dim });
+    const tally = Object.entries(me.inv).filter(([, n]) => n > 0);
+    if (tally.length) {
+      drawText(c, `${tally.length} KINDS - ${tally.reduce((a, [, n]) => a + n, 0)}`,
+        r.x + colW - 8 * S, r.y, { scale: S, align: 'right', color: PAL.faint });
+    }
     const size = 20 * S, gap = 3 * S;
     const perRow = Math.max(1, Math.floor((colW + gap) / (size + gap)));
     const entries = Object.entries(me.inv).filter(([, n]) => n > 0)
@@ -179,11 +185,7 @@ export class Panels {
     } else {
       drawText(c, 'BARE HANDS', r.x, sy2 + 11 * S, { scale: S, color: PAL.faint });
     }
-    const kinds = entries.length;
-    const total = entries.reduce((a, [, n]) => a + n, 0);
-    drawText(c, `${kinds} KINDS - ${total} ITEMS`, r.x + colW, sy2, {
-      scale: S, align: 'right', color: PAL.faint,
-    });
+
 
     /* Crafting, filtered by the stations you are standing near. */
     const bx = r.x + colW + 8 * S;

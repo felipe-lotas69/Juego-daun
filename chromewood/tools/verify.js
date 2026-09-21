@@ -23,14 +23,22 @@
      node tools/verify.js [--seeds 6] [--minutes 30]
    ============================================================ */
 
-import { World, FLAG, PROP, SOLID_PROPS, HARVEST, PLATEAUS, SEA_LEVEL } from '../src/world/worldgen.js';
+import { World, FLAG, SOLID_PROPS, HARVEST, PLATEAUS } from '../src/world/worldgen.js';
 import { Sim, PHASE, ARC, BEACON_COSTS, emptyInput } from '../src/game/sim.js';
-import { SKILLS, ABILITIES, ENEMIES, BEACON_UPGRADES, SKILL_BRANCHES, PRIMARY_ID } from '../src/game/defs.js';
-import { ITEMS, BUILDINGS, RECIPES, SMELTING, STATION_NAME, BEACON_REPAIR, CAT } from '../src/game/items.js';
+import {
+  SKILLS, ABILITIES, ENEMIES, BEACON_UPGRADES, SKILL_BRANCHES, PRIMARY_ID,
+} from '../src/game/defs.js';
+import {
+  ITEMS, BUILDINGS, RECIPES, SMELTING, STATION_NAME, BEACON_REPAIR, CAT,
+} from '../src/game/items.js';
 import { ANIMALS, EXTRA_ENEMIES } from '../src/game/creatures.js';
 import { NIGHTS, WEATHER, CONTRACTS, buildNightDeck } from '../src/game/nights.js';
-import { allRecipes, invCount, invGive, startCraft, bestToolTier, eat, place, canPlace } from '../src/game/survival.js';
-import { encodeSnapshot, decodeInput, encodeInput, PROTOCOL_VERSION } from '../src/net/protocol.js';
+import {
+  allRecipes, invCount, invGive, startCraft, bestToolTier, eat, place, canPlace,
+} from '../src/game/survival.js';
+import {
+  encodeSnapshot, decodeInput, encodeInput, PROTOCOL_VERSION,
+} from '../src/net/protocol.js';
 import { Mirror } from '../src/net/mirror.js';
 
 const arg = (name, fallback) => {

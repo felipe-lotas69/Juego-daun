@@ -8,9 +8,7 @@
    ============================================================ */
 
 import * as THREE from '../../vendor/three.module.js';
-import { MeshBuilder } from './geom.js';
 import { TEX } from './textures.js';
-import { lerpHex } from './props.js';
 import { TAU } from '../core/util.js';
 
 export function buildStructureMesh(b, g, key, x, y, z, state = {}) {
