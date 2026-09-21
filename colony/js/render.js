@@ -20,8 +20,15 @@
 (function (root) {
   'use strict';
 
-  var PX = 16;                 /* authored pixels per tile */
-  var CHUNK = 32;              /* tiles per cached terrain chunk */
+  /* Three different "pixels per tile" live in this file and conflating them
+     is how every sprite ended up four times too big: art.js authors at 64,
+     the screen shows a tile at 16 times the zoom, and the terrain cache
+     sits in between at a size chosen to keep a chunk canvas small.
+     ART_PX is rebound from Art.PX at init so the two files cannot drift. */
+  var ART_PX = 64;             /* authored pixels per tile, as art.js draws them */
+  var BASE_TS = 16;            /* screen pixels per tile at zoom 1 */
+  var CACHE_PX = 32;           /* pixels per tile inside a cached terrain chunk */
+  var CHUNK = 16;              /* tiles per cached terrain chunk (16 x 32px = 512px canvas) */
   var ZOOM_MIN = 1, ZOOM_MAX = 3;
   var OVERSCROLL = 6;          /* tiles of void the camera may pull past an edge */
   var DARK_STEPS = 16;         /* quantisation of the night tint, to merge fill runs */
@@ -148,7 +155,7 @@
      sprite carries ox/oy in authored pixels, so one blit honours all of
      them and nothing has to know which sprite is which size. */
   function blitAt(art, px, py) {
-    var u = TS / PX;
+    var u = TS / ART_PX;
     ctx.drawImage(art,
       Math.round(px + (art.ox || 0) * u), Math.round(py + (art.oy || 0) * u),
       art.width * u, art.height * u);
@@ -249,7 +256,11 @@
     if (canvas.height !== ch) canvas.height = ch;
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
-    ctx.imageSmoothingEnabled = false;
+    if (root.Art && root.Art.PX) ART_PX = root.Art.PX;
+    /* Sprites are authored larger than a tile and land downscaled, and
+       nearest-neighbour downscaling tears detail apart. */
+    ctx.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
     backdrop = null;
     syncView();
   };
@@ -258,7 +269,7 @@
     var cam = Render.camera;
     var z = Math.round(cam.zoom);
     cam.zoom = z < ZOOM_MIN ? ZOOM_MIN : (z > ZOOM_MAX ? ZOOM_MAX : z);
-    TS = PX * cam.zoom * pixelScale;
+    TS = BASE_TS * cam.zoom * pixelScale;
 
     var map = root.Game && Game.map;
     if (map) clampCamera(map);
@@ -428,8 +439,8 @@
     var ci = cy * chunksX + cx, c = chunks[ci];
     if (!c) {
       var el = document.createElement('canvas');
-      el.width = CHUNK * PX;
-      el.height = CHUNK * PX;
+      el.width = CHUNK * CACHE_PX;
+      el.height = CHUNK * CACHE_PX;
       var g = el.getContext('2d');
       g.imageSmoothingEnabled = false;
       c = chunks[ci] = { canvas: el, ctx: g, snap: new Uint8Array(CHUNK * CHUNK), painted: false, seen: 0 };
@@ -454,12 +465,12 @@
 
   function repaintChunk(map, c, cx, cy) {
     var g = c.ctx;
-    g.clearRect(0, 0, CHUNK * PX, CHUNK * PX);
+    g.clearRect(0, 0, CHUNK * CACHE_PX, CHUNK * CACHE_PX);
     var terrain = map.terrain, w = map.w, snap = c.snap;
     var x0 = cx * CHUNK, y0 = cy * CHUNK;
     var x1 = Math.min(x0 + CHUNK, map.w), y1 = Math.min(y0 + CHUNK, map.h);
     for (var y = y0; y < y1; y++) {
-      var base = y * w, row = (y - y0) * CHUNK - x0, dy = (y - y0) * PX;
+      var base = y * w, row = (y - y0) * CHUNK - x0, dy = (y - y0) * CACHE_PX;
       for (var x = x0; x < x1; x++) {
         var ti = terrain[base + x];
         snap[row + x] = ti;
@@ -467,12 +478,17 @@
         if (!def) continue;
         var variant = terrainVariant(x, y);
         var art = artTerrain(def, variant);
-        var dx = (x - x0) * PX;
+        var dx = (x - x0) * CACHE_PX;
         if (art) {
-          g.drawImage(art, dx + (art.ox || 0), dy + (art.oy || 0));
+          /* Terrain art is authored at ART_PX and the cache holds CACHE_PX,
+             so it lands scaled rather than one-to-one. */
+          var k = CACHE_PX / ART_PX;
+          g.drawImage(art,
+            dx + (art.ox || 0) * k, dy + (art.oy || 0) * k,
+            art.width * k, art.height * k);
         } else {
           g.fillStyle = (variant & 1) && def.color2 ? def.color2 : (def.color || '#4a4a52');
-          g.fillRect(dx, dy, PX, PX);
+          g.fillRect(dx, dy, CACHE_PX, CACHE_PX);
           /* Two speckles of the other shade keep a flat fill from reading
              as a solid colour field when art.js is not there. */
           g.fillStyle = (variant & 1) ? (def.color || '#4a4a52') : (def.color2 || def.color || '#4a4a52');
