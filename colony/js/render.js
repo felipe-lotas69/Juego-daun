@@ -839,6 +839,7 @@
      hang back inside it, which is the difference between a chunk boundary
      you cannot find and a faint grid every sixteen tiles. */
   function repaintChunk(map, c, cx, cy) {
+    var __t = performance.now();
     var g = c.ctx, side = CHUNK * CACHE_PX;
     g.globalAlpha = 1;
     g.globalCompositeOperation = 'source-over';
@@ -856,6 +857,7 @@
       }
     }
     snapshotChunk(map, c, cx, cy);
+    Render.__t.base.push(performance.now() - __t);
     c.painted = true;
     c.detailed = false;
   }
@@ -864,6 +866,7 @@
      Seams run after every base coat is down so a blend always lands on
      finished ground rather than under the cell painted next. */
   function detailChunk(map, c, cx, cy) {
+    var __t = performance.now();
     var g = c.ctx;
     var x0 = cx * CHUNK, y0 = cy * CHUNK;
     var x1 = Math.min(x0 + CHUNK, map.w), y1 = Math.min(y0 + CHUNK, map.h);
@@ -872,6 +875,7 @@
       for (var x = x0; x < x1; x++) paintSeams(g, map, x, y, (x - x0) * CACHE_PX, dy);
     }
     paintMacroShade(g, x0, y0);
+    Render.__t.detail.push(performance.now() - __t);
     c.detailed = true;
   }
 
@@ -2204,6 +2208,8 @@
       if (frameErrors <= 3 && typeof console !== 'undefined') console.error('render frame:', err);
     }
   };
+
+  Render.__t = { base: [], detail: [] };
 
   root.Render = Render;
 })(this);

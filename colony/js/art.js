@@ -4098,7 +4098,14 @@
      and there are a few hundred of them. */
 
   var EDGE_PX = 32;
-  var EDGE_LO = [0.08, 0.30], EDGE_SPAN = [0.11, 0.34];
+  /* How deep each reach cuts, as a fraction of a tile: a minimum plus a
+     span the tearing wanders through. The shallow one is deeper than it
+     first looks it needs to be, and on purpose - it is only ever asked
+     for between two grounds that already look alike, where a wide blend
+     costs nothing and a narrow one leaves the rectangle showing. Two
+     shades of the same earth meeting along a ruled line is exactly what
+     a field of soil and rich soil looked like before. */
+  var EDGE_LO = [0.10, 0.30], EDGE_SPAN = [0.20, 0.36];
   var edgeKeys = [];
   var EDGE_CACHE_MAX = 512;
 

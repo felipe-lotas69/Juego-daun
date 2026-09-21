@@ -1250,7 +1250,7 @@
               }
               s.lost = 0;
               C.tryAttack(pawn, foe);
-              stateOf(pawn).targetId = foe.id;
+              if (s.noted !== foe.id) { s.noted = foe.id; stateOf(pawn).targetId = foe.id; }
               return (--s.left <= 0) ? 'done' : 'stay';
             },
             end: function (pawn) {
@@ -1285,10 +1285,13 @@
             tick: function (pawn, job, s) {
               var st = stateOf(pawn);
               /* Still shooting back, if there is anything in front of
-                 the new position worth shooting at. */
+                 the new position worth shooting at. Four times a second
+                 is plenty to notice one, and a target scan every tick
+                 for every withdrawing pawn is not free. */
               var C = sys('Combat');
               var w = rangedWeapon(pawn);
-              if (C && w && !pawn.isAnimal) {
+              if (C && w && !pawn.isAnimal && (s.left % 15) === 0 &&
+                  !(C.stanceOf && C.stanceOf(pawn))) {
                 var foe = Tactics.pickTarget(pawn, hostilesNear(pawn, w.range));
                 if (foe && C.lineOfSight(pawn.map, pawn.x, pawn.y, foe.x, foe.y)) {
                   C.tryAttack(pawn, foe);
@@ -1513,7 +1516,10 @@
     nerve *= 1 + Tactics.senseOf(pawn);
     var N = sys('Needs');
     if (N && N.mood) nerve *= U.lerp(0.6, 1.25, U.clamp01(N.mood(pawn)));
-    var chance = U.clamp(0.10 / Math.max(0.3, nerve), 0.01, 0.35);
+    /* Per half-second of being pinned: an ordinary pawn under sustained
+       fire has about even odds of losing its nerve inside ten seconds,
+       an iron-willed veteran almost never does. */
+    var chance = U.clamp(0.06 / Math.max(0.3, nerve), 0.004, 0.2);
     if (pawn.drafted) chance *= 0.25;
     if (!U.chance(chance)) return;
     st.broken = true;
@@ -1536,7 +1542,15 @@
      rock without rewriting the raid driver.
      ------------------------------------------------------------------ */
 
+  /* Jobs whose position tactics may adjust, and the wider set that
+     says "this pawn is in a fight" - a colonist swinging a knife earns
+     combat sense too, and a pawn running from a raider is still in the
+     engagement it is running from. */
   var STEERABLE = { attackStatic: 1, waitCombat: 1 };
+  var COMBAT_JOBS = {
+    attackStatic: 1, waitCombat: 1, attackMelee: 1, flee: 1,
+    takeCover: 1, combatRetreat: 1
+  };
 
   function steer(pawn, st) {
     var job = pawn.job;
@@ -1615,19 +1629,22 @@
       /* Nothing has happened to this pawn yet. Only give it a mind once
          it is holding a combat job or has been drafted. */
       if (pawn.isAnimal) return;
-      if (!pawn.drafted && !(pawn.job && STEERABLE[pawn.job.defId])) return;
+      if (!pawn.drafted && !(pawn.job && COMBAT_JOBS[pawn.job.defId])) return;
       st = stateOf(pawn);
     }
 
     if (st.suppression > 0) {
       st.suppression -= SUP_DECAY;
-      if (st.suppression <= 0) st.suppression = 0;
-      else if (!pawn.downed) breakCheck(pawn, st);
+      if (st.suppression < 0) st.suppression = 0;
     }
     if (pawn.downed) { st.suppression = 0; st.broken = false; return; }
 
-    /* The rest is the expensive half, on a staggered slice. */
+    /* The rest is the expensive half, on a staggered slice. The nerve
+       check belongs here rather than in the decay above: rolled every
+       tick it would break a pinned pawn within a second of the fire
+       arriving, which is a panic, not a firefight. */
     if (((gameTick() + pawn.id) % 30) !== 0) return;
+    if (st.suppression > 0) breakCheck(pawn, st);
 
     var near = hostilesNear(pawn, SCAN_RADIUS);
     if (near.length) {

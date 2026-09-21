@@ -333,11 +333,26 @@ for (let i = 0; i < 3000; i++) Game.doTick();
 let d1 = process.hrtime.bigint();
 const soloCost = Number(d1 - d0) / 1e6;
 console.log(`  3000 ticks, surface only        ${soloCost.toFixed(0)}ms  (${(3000 / soloCost * 1000) | 0} ticks/s)`);
-console.log(`  3000 ticks, ${Levels.count()} level(s) restored  pending...`);
 console.log(`  3000 ticks, with ${shape}`);
 console.log(`                                  ${withCost.toFixed(0)}ms  (${(3000 / withCost * 1000) | 0} ticks/s)`);
 ok(!Game.gameOver, 'the colony survived the teardown');
 ok(soloCost < withCost, 'the surface-only run is the cheaper of the two, as it must be');
+/* The precise number. A live colony drifts too much between two 6000
+   tick runs to measure a fraction of a percent through Game.doTick, so
+   the added work is timed directly: the tick guard, the level-count
+   check, and the once-a-second reconcile scan, on an undug colony. */
+Levels.reset(); Levels.init(map);
+console.log('  DEBUG connectors on surface: ' + ['stairsUp','stairsDown','levelLadder','freightLift'].map(d => d + '=' + map.byDef(d).length).join(' ') + ' levels=' + Levels.count());
+const keptTick = Game.tick;
+let m0 = process.hrtime.bigint();
+for (let i = 0; i < 300000; i++) { Game.tick++; Levels.tick(map, Game); }
+let m1 = process.hrtime.bigint();
+Game.tick = keptTick;
+const perTick = Number(m1 - m0) / 300000;
+console.log(`  Levels.tick() on an undug colony: ${perTick.toFixed(0)} ns per game tick ` +
+            `(${(perTick * 60 / 1e6 * 100).toFixed(4)}% of one second of simulation at 1x)`);
+ok(perTick < 300, 'an undug level costs under 300ns a tick, which is nothing');
+ok(Levels.count() === 1, 'and no level was created by ticking 300000 times; levels now: ' + Levels.all().map(l => l.z).join(','));
 
 hr('11. save and load');
 const json = keep;

@@ -116,6 +116,15 @@
 
   function sys(name) { return root[name]; }
   function game() { return root.Game || null; }
+
+  /* game.js's slow tickers are called with the Game; its map tickers are
+     called with (map, game). Taking either means it does not matter
+     which list this file is wired into, now or later. */
+  function gameArg(a, b) {
+    if (a && a.doTick) return a;
+    if (b && b.doTick) return b;
+    return game();
+  }
   function tickNow() { var g = game(); return g && g.tick !== undefined ? g.tick : 0; }
   function dayNow() { return Math.floor(tickNow() / TICKS_PER_DAY); }
   function msg(text, opts) { var g = game(); if (g && g.msg) g.msg(text, opts); }
@@ -1374,7 +1383,7 @@
   /* The generator the storyteller can call. Returns the offer, or null
      if the world is not in a state to make one. */
   Economy.generateContract = function (g, opts) {
-    g = g || game();
+    g = gameArg(g, null);
     opts = opts || {};
     if (!g || !g.map) return null;
 
@@ -1744,8 +1753,8 @@
     return g.tick >= c.deadlineTick;
   }
 
-  Economy.tickContracts = function (g) {
-    g = g || game();
+  Economy.tickContracts = function (a, b) {
+    var g = gameArg(a, b);
     if (!g || !g.map) return;
     syncGame(g);
 
@@ -1855,7 +1864,7 @@
      Everything here goes through trade.js's own deal: it owns moving
      goods, and an order is only a decision made in advance. */
   Economy.fillOrders = function (g) {
-    g = g || game();
+    g = gameArg(g, null);
     var T = sys('Trade');
     var st = Economy.state;
     if (!g || !g.map || !T || !T.open || !st.orders.length) return 0;
@@ -1938,8 +1947,8 @@
     return st;
   }
 
-  Economy.tick = function (g) {
-    g = g || game();
+  Economy.tick = function (a, b) {
+    var g = gameArg(a, b);
     if (!g || !g.map) return;
 
     var before = Economy.state.lastTick;
