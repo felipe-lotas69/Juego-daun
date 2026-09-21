@@ -990,6 +990,19 @@
     else { b.consumed += -value; st.totals.consumed += -value; }
   }
 
+  /* Goods this file moved on purpose, so the sampler below can leave them
+     alone. A crate that went over a counter was not eaten, and a sack of
+     rice handed to a faction was not built with; both of those already
+     have an entry under trade or contracts, and booking the goods again
+     under whatever category they look like is the same sale counted
+     twice, once as income and once as expenditure. */
+  function noteOwnGoods(defId, units) {
+    var def = thingDef(defId);
+    if (!def || !units) return;
+    var own = Economy.state.goodsBooked;
+    own[def.id] = (own[def.id] || 0) + units;
+  }
+
   /* Compare the colony's stores with the last look and write down the
      difference. Silver is skipped here: money moving is a trade or a
      contract, and both of those book themselves. */
@@ -997,14 +1010,16 @@
     var st = Economy.state;
     var now = sampleColony(map);
     var prev = st.stock;
+    var own = st.goodsBooked;
     st.stock = now;
+    st.goodsBooked = {};
     if (!prev) return;
 
     var seen = {}, id;
     for (id in now) {
       seen[id] = true;
       if (id === 'silver') continue;
-      var delta = now[id] - (prev[id] || 0);
+      var delta = now[id] - (prev[id] || 0) - (own[id] || 0);
       if (!delta) continue;
       var def = thingDef(id);
       if (!def) continue;
@@ -1015,7 +1030,10 @@
       if (seen[id] || id === 'silver') continue;
       var d2 = thingDef(id);
       if (!d2) continue;
-      bookGoods(id, -prev[id], -baseValue(d2) * prev[id], categoryForLoss(d2));
+      var gone = -prev[id] - (own[id] || 0);
+      if (!gone) continue;
+      var v2 = baseValue(d2) * gone;
+      bookGoods(id, gone, v2, gone > 0 ? categoryForGain(d2) : categoryForLoss(d2));
     }
   }
 
@@ -1675,6 +1693,7 @@
     c.delivered += took;
     if (took) {
       Economy.book('contracts', -baseValue(c.defId) * took);
+      noteOwnGoods(c.defId, -took);
       Economy.noteFlow(c.defId, took, { faction: c.factionId, settlement: settlementOf(c) });
     }
     return took;
@@ -1718,6 +1737,7 @@
         want -= took;
         Economy.noteFlow(c.defId, took, { faction: c.factionId });
         Economy.book('contracts', -baseValue(c.defId) * took);
+        noteOwnGoods(c.defId, -took);
         msg('Handed ' + took + ' ' + c.label + ' to ' + visit.factionName + "'s trader.", { type: 'good' });
         if (want <= 0) return;
       }
@@ -2178,6 +2198,9 @@
       /* Positive in the basket is coming to you, so the market gave it
          up; negative is going to them, so the market took it in. */
       Economy.noteFlow(id, -n, opts);
+      /* ...and it is the same crate either way, so the colony's stores
+         moving by this much next tick is this deal and not a harvest. */
+      if (!deal.caravan) noteOwnGoods(id, n);
     }
 
     var key = partnerKey(partner);
@@ -2224,6 +2247,7 @@
          over a save would have the sampler book a contract's payment a
          second time as income the next time it looks at the pile. */
       silverBooked: st.silverBooked || 0,
+      goodsBooked: st.goodsBooked,
       days: st.days,
       today: st.today,
       offers: st.offers,
@@ -2249,6 +2273,7 @@
     st.restock = obj.restock || {};
     st.silverSeen = obj.silverSeen === null ? undefined : obj.silverSeen;
     st.silverBooked = obj.silverBooked || 0;
+    st.goodsBooked = obj.goodsBooked || {};
     st.days = obj.days || [];
     st.today = obj.today || null;
     st.nextOrderId = obj.nextOrderId || 1;

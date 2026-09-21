@@ -1538,6 +1538,50 @@
   };
 
   /* ------------------------------------------------------------------
+     Wiring
+
+     think.js publishes its level list precisely so a system can add a
+     rung without that file knowing this one exists; abilities.js and
+     policies.js both splice themselves in, and this is the third. The
+     rung sits directly above DRAFTED and below ORDERED: a squad order
+     and a pawn standing in a fire have to reach a drafted colonist,
+     and a right-click order still outranks both. combatJob answers
+     null unless it has something to add, so the defend and fight
+     levels below it carry on exactly as they did.
+
+     It is spliced on the first tick rather than at load, because
+     tactics.js is evaluated before think.js and Think does not exist
+     yet while this file is running.
+     ------------------------------------------------------------------ */
+
+  var thinkInstalled = false;
+
+  Tactics.installThinkLevel = function () {
+    if (thinkInstalled) return true;
+    var Think = sys('Think');
+    if (!Think || !Think.LEVELS || !Think.TIER) return false;
+    var i;
+    for (i = 0; i < Think.LEVELS.length; i++) {
+      if (Think.LEVELS[i].name === 'tactics') { thinkInstalled = true; return true; }
+    }
+    var tier = Think.TIER.TACTICS;
+    if (tier === undefined) { tier = 3.9; Think.TIER.TACTICS = tier; }
+
+    var at = -1;
+    for (i = 0; i < Think.LEVELS.length; i++) {
+      if (Think.LEVELS[i].name === 'drafted') { at = i; break; }
+      if (Think.LEVELS[i].name === 'animal') { at = i; break; }
+    }
+    if (at < 0) at = Think.LEVELS.length - 1;
+    Think.LEVELS.splice(at, 0, {
+      tier: tier, name: 'tactics',
+      fn: function (p) { return Tactics.combatJob(p); }
+    });
+    thinkInstalled = true;
+    return true;
+  };
+
+  /* ------------------------------------------------------------------
      Engagements and what they teach
      ------------------------------------------------------------------ */
 
