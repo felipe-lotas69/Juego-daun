@@ -13,8 +13,12 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  colony:
+    name: RIMDAUN
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: colony
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,5 +28,25 @@ jobs:
         run: for f in js/*.js tools/*.js; do node --check "$f" || exit 1; done
       - name: Defs are internally consistent
         run: node tools/verify-defs.js
-      - name: A colony survives ten simulated days
-        run: node tools/verify-sim.js
+      - name: Every contract global and function exists
+        run: node tools/verify-api.js
+      - name: A colony survives three simulated days
+        run: node tools/verify-sim.js 3
+      - name: The renderer, UI and input boot and run frames
+        run: node tools/verify-client.js 200
+
+  getaway:
+    name: Getaway Daun
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: getaway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax-check every script
+        run: for f in js/*.js server/*.js tools/*.js; do node --check "$f" || exit 1; done
+      - name: Levels are completable and nothing respawns inside a hazard
+        run: bash tools/verify-all.sh

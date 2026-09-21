@@ -2,98 +2,168 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<title>RIMDAUN</title>
-<meta name="description" content="A colony sim in the spirit of RimWorld: crash-landed survivors, work priorities, mood, raids and a storyteller that keeps finding new ways to ruin your day. Runs in a browser, no install.">
-<meta name="theme-color" content="#141821">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%235c7a3e'/><rect x='4' y='18' width='24' height='10' fill='%236b533b'/><rect x='9' y='8' width='14' height='11' fill='%238f97a3'/><rect x='14' y='13' width='4' height='6' fill='%23141821'/><rect x='11' y='4' width='10' height='4' fill='%23c0392b'/></svg>">
-<link rel="stylesheet" href="styles.css">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Juego Daun</title>
+<meta name="description" content="Two browser games in one repository: RIMDAUN, a colony simulation, and Getaway Daun, a physics platformer. No install, no build step.">
+<meta name="theme-color" content="#0e1014">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230e1014'/><rect x='5' y='6' width='9' height='9' fill='%235c7a3e'/><rect x='18' y='17' width='9' height='9' fill='%23ffc23c'/></svg>">
+<style>
+  :root{
+    --bg:#0e1014;
+    --panel:#161a21;
+    --line:#242a34;
+    --ink:#e8e2d4;
+    --dim:#8a90a0;
+    --colony:#5c7a3e;
+    --getaway:#ffc23c;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    min-height:100vh;
+    background:var(--bg);
+    color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex;flex-direction:column;
+    padding:clamp(20px,5vw,64px);
+  }
+  header{max-width:980px;width:100%;margin:0 auto 40px}
+  h1{
+    font-size:13px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--dim);
+  }
+  header p{margin-top:10px;font-size:clamp(20px,3.2vw,28px);line-height:1.3;max-width:34ch}
+  main{
+    max-width:980px;width:100%;margin:0 auto;
+    display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+  }
+  .game{
+    display:flex;flex-direction:column;
+    background:var(--panel);
+    border:1px solid var(--line);
+    text-decoration:none;color:inherit;
+    transition:border-color .15s ease,transform .15s ease;
+  }
+  .game:hover,.game:focus-visible{border-color:var(--accent);transform:translateY(-2px);outline:none}
+  .game svg{display:block;width:100%;height:132px}
+  .body{padding:22px 24px 24px;display:flex;flex-direction:column;flex:1}
+  .body h2{font-size:19px;letter-spacing:.02em}
+  .kind{
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent);margin-bottom:10px;
+  }
+  .body p{color:var(--dim);margin-top:10px;flex:1}
+  ul{list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin-top:18px}
+  li{
+    font-size:11px;color:var(--dim);
+    border:1px solid var(--line);padding:3px 8px;
+  }
+  .play{
+    margin-top:20px;font-size:13px;font-weight:600;color:var(--accent);
+    display:inline-flex;align-items:center;gap:7px;
+  }
+  .play span{transition:transform .15s ease}
+  .game:hover .play span{transform:translateX(3px)}
+  footer{
+    max-width:980px;width:100%;margin:44px auto 0;
+    color:var(--dim);font-size:13px;
+    border-top:1px solid var(--line);padding-top:18px;
+    display:flex;flex-wrap:wrap;gap:6px 18px;
+  }
+  footer a{color:var(--dim)}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
 </head>
 <body>
-<div id="app">
-  <canvas id="game"></canvas>
 
-  <!-- Every panel below is filled in by js/ui.js; the markup here is only the
-       frame, so the UI code owns its own structure and can rebuild it. -->
-  <div id="topbar" class="hud"></div>
-  <div id="colonist-bar" class="hud"></div>
-  <div id="alerts" class="hud"></div>
-  <div id="messages" class="hud"></div>
-  <div id="letters" class="hud"></div>
-  <div id="inspect" class="hud hidden"></div>
-  <div id="architect" class="hud"></div>
-  <div id="tab-panel" class="hud hidden"></div>
-  <div id="float-menu" class="hud hidden"></div>
-  <div id="tooltip" class="hud hidden"></div>
-  <div id="menu" class="screen"></div>
-  <div id="modal" class="screen hidden"></div>
-</div>
+<header>
+  <h1>felipe-lotas69 / Juego&nbsp;Daun</h1>
+  <p>Two games that run in a browser tab. No install, no build step, no accounts.</p>
+</header>
 
-<script src="js/utils.js"></script>
-<script src="js/defs.js"></script>
-<script src="js/def_terrain.js"></script>
-<script src="js/def_things.js"></script>
-<script src="js/def_plants.js"></script>
-<script src="js/def_pawns.js"></script>
-<script src="js/def_recipes.js"></script>
-<script src="js/def_factions.js"></script>
-<script src="js/research.js"></script>
-<script src="js/map.js"></script>
-<script src="js/levels.js"></script>
-<script src="js/regions.js"></script>
-<script src="js/beauty.js"></script>
-<script src="js/pathfind.js"></script>
-<script src="js/zones.js"></script>
-<script src="js/health.js"></script>
-<script src="js/medicine.js"></script>
-<script src="js/drugs.js"></script>
-<script src="js/statuses.js"></script>
-<script src="js/needs.js"></script>
-<script src="js/pawn.js"></script>
-<script src="js/jobs.js"></script>
-<script src="js/construct.js"></script>
-<script src="js/production.js"></script>
-<script src="js/plants.js"></script>
-<script src="js/power.js"></script>
-<script src="js/breakdowns.js"></script>
-<script src="js/combat.js"></script>
-<script src="js/animals.js"></script>
-<script src="js/ecology.js"></script>
-<script src="js/gore.js"></script>
-<script src="js/tactics.js"></script>
-<script src="js/practice.js"></script>
-<script src="js/workgivers.js"></script>
-<script src="js/think.js"></script>
-<script src="js/mapgen.js"></script>
-<script src="js/world.js"></script>
-<script src="js/factions.js"></script>
-<script src="js/prisoners.js"></script>
-<script src="js/slavery.js"></script>
-<script src="js/trade.js"></script>
-<script src="js/economy.js"></script>
-<script src="js/caravan.js"></script>
-<script src="js/social.js"></script>
-<script src="js/training.js"></script>
-<script src="js/fire.js"></script>
-<script src="js/abilities.js"></script>
-<script src="js/policies.js"></script>
-<script src="js/ideology.js"></script>
-<script src="js/royalty.js"></script>
-<script src="js/biotech.js"></script>
-<script src="js/starmap.js"></script>
-<script src="js/aliens.js"></script>
-<script src="js/anomaly.js"></script>
-<script src="js/events.js"></script>
-<script src="js/game.js"></script>
-<script src="js/save.js"></script>
-<script src="js/art.js" data-client></script>
-<script src="js/particles.js" data-client></script>
-<script src="js/render.js" data-client></script>
-<script src="js/ui.js" data-client></script>
-<script src="js/worldview.js" data-client></script>
-<script src="js/dlcui.js" data-client></script>
-<script src="js/qolui.js" data-client></script>
-<script src="js/input.js" data-client></script>
-<script src="js/main.js" data-client></script>
+<main>
+
+  <a class="game" href="colony/" style="--accent:var(--colony)">
+    <!-- A patch of ground seen from above: soil, grass, a river, two trees. -->
+    <svg viewBox="0 0 320 132" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Top-down terrain with a river and trees">
+      <rect width="320" height="132" fill="#6b533b"/>
+      <rect y="0" width="320" height="46" fill="#5c7a3e"/>
+      <rect y="86" width="320" height="46" fill="#5c7a3e"/>
+      <path d="M0 52 h320 v28 H0 z" fill="#2f5d78"/>
+      <path d="M0 52 h320 v4 H0 z" fill="#3d7396"/>
+      <g fill="#3f6b33">
+        <circle cx="58" cy="24" r="15"/><circle cx="74" cy="30" r="11"/>
+        <circle cx="236" cy="108" r="14"/><circle cx="252" cy="102" r="10"/>
+      </g>
+      <g fill="#5a4227">
+        <rect x="55" y="30" width="5" height="10"/><rect x="233" y="112" width="5" height="10"/>
+      </g>
+      <g fill="#8f97a3">
+        <rect x="150" y="96" width="34" height="5"/><rect x="150" y="96" width="5" height="26"/>
+        <rect x="179" y="96" width="5" height="26"/>
+      </g>
+      <g fill="#6d8b48" opacity=".65">
+        <rect x="20" y="14" width="2" height="6"/><rect x="104" y="30" width="2" height="6"/>
+        <rect x="286" y="20" width="2" height="6"/><rect x="40" y="104" width="2" height="6"/>
+        <rect x="300" y="112" width="2" height="6"/>
+      </g>
+    </svg>
+    <div class="body">
+      <div class="kind">Colony simulation</div>
+      <h2>RIMDAUN</h2>
+      <p>Three survivors come down on an unclaimed world. You never move them directly — you
+        decide what matters, and they decide who does it, in what order, and whether they can
+        face doing it at all today.</p>
+      <ul>
+        <li>work priorities</li><li>mood &amp; mental breaks</li><li>body-part health</li>
+        <li>raids &amp; cover</li><li>a planet with civilizations</li><li>ideoligions</li>
+      </ul>
+      <div class="play">Play<span>&rarr;</span></div>
+    </div>
+  </a>
+
+  <a class="game" href="getaway/" style="--accent:var(--getaway)">
+    <!-- Rooftops at night, a van waiting, and someone mid-hop. -->
+    <svg viewBox="0 0 320 132" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Rooftop silhouettes at night with a getaway van">
+      <rect width="320" height="132" fill="#11131c"/>
+      <g fill="#1c2030">
+        <rect x="0" y="62" width="86" height="70"/><rect x="104" y="80" width="74" height="52"/>
+        <rect x="196" y="50" width="60" height="82"/><rect x="272" y="92" width="48" height="40"/>
+      </g>
+      <g fill="#ffc23c" opacity=".5">
+        <rect x="12" y="74" width="7" height="9"/><rect x="30" y="74" width="7" height="9"/>
+        <rect x="12" y="94" width="7" height="9"/><rect x="60" y="94" width="7" height="9"/>
+        <rect x="208" y="64" width="7" height="9"/><rect x="230" y="86" width="7" height="9"/>
+      </g>
+      <g fill="#f2efe6">
+        <rect x="140" y="58" width="8" height="12"/><rect x="138" y="70" width="4" height="9"/>
+        <rect x="146" y="70" width="4" height="9"/>
+      </g>
+      <rect x="132" y="47" width="22" height="3" fill="#ff4d5e"/>
+      <g fill="#ffc23c">
+        <rect x="278" y="76" width="36" height="16"/><rect x="286" y="68" width="20" height="9"/>
+      </g>
+      <g fill="#11131c"><rect x="284" y="90" width="8" height="6"/><rect x="302" y="90" width="8" height="6"/></g>
+    </svg>
+    <div class="body">
+      <div class="kind">Action platformer</div>
+      <h2>Getaway Daun</h2>
+      <p>You cannot walk. You lean, you hop, and you pray. Collapsing rooftops, elevator shafts
+        and glass towers, with a gun in hand and a van somewhere at the end of it.</p>
+      <ul>
+        <li>six campaign levels</li><li>versus mode</li><li>four bot personalities</li>
+        <li>ragdolls</li><li>LAN play</li>
+      </ul>
+      <div class="play">Play<span>&rarr;</span></div>
+    </div>
+  </a>
+
+</main>
+
+<footer>
+  <span>Both games are plain static files — open either folder's <code>index.html</code> straight off disk and it works.</span>
+  <a href="https://github.com/felipe-lotas69/Juego-daun">Source</a>
+</footer>
+
 </body>
 </html>

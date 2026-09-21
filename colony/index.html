@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>RIMDAUN</title>
+<meta name="description" content="A colony sim in the spirit of RimWorld: crash-landed survivors, work priorities, mood, raids and a storyteller that keeps finding new ways to ruin your day. Runs in a browser, no install.">
+<meta name="theme-color" content="#141821">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%235c7a3e'/><rect x='4' y='18' width='24' height='10' fill='%236b533b'/><rect x='9' y='8' width='14' height='11' fill='%238f97a3'/><rect x='14' y='13' width='4' height='6' fill='%23141821'/><rect x='11' y='4' width='10' height='4' fill='%23c0392b'/></svg>">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <canvas id="game"></canvas>
+
+  <!-- Every panel below is filled in by js/ui.js; the markup here is only the
+       frame, so the UI code owns its own structure and can rebuild it. -->
+  <div id="topbar" class="hud"></div>
+  <div id="colonist-bar" class="hud"></div>
+  <div id="alerts" class="hud"></div>
+  <div id="messages" class="hud"></div>
+  <div id="letters" class="hud"></div>
+  <div id="inspect" class="hud hidden"></div>
+  <div id="architect" class="hud"></div>
+  <div id="tab-panel" class="hud hidden"></div>
+  <div id="float-menu" class="hud hidden"></div>
+  <div id="tooltip" class="hud hidden"></div>
+  <div id="menu" class="screen"></div>
+  <div id="modal" class="screen hidden"></div>
+</div>
+
+<script src="js/utils.js"></script>
+<script src="js/defs.js"></script>
+<script src="js/def_terrain.js"></script>
+<script src="js/def_things.js"></script>
+<script src="js/def_plants.js"></script>
+<script src="js/def_pawns.js"></script>
+<script src="js/def_recipes.js"></script>
+<script src="js/def_factions.js"></script>
+<script src="js/research.js"></script>
+<script src="js/map.js"></script>
+<script src="js/regions.js"></script>
+<script src="js/pathfind.js"></script>
+<script src="js/zones.js"></script>
+<script src="js/health.js"></script>
+<script src="js/needs.js"></script>
+<script src="js/pawn.js"></script>
+<script src="js/jobs.js"></script>
+<script src="js/construct.js"></script>
+<script src="js/production.js"></script>
+<script src="js/plants.js"></script>
+<script src="js/power.js"></script>
+<script src="js/breakdowns.js"></script>
+<script src="js/combat.js"></script>
+<script src="js/animals.js"></script>
+<script src="js/practice.js"></script>
+<script src="js/workgivers.js"></script>
+<script src="js/think.js"></script>
+<script src="js/mapgen.js"></script>
+<script src="js/world.js"></script>
+<script src="js/factions.js"></script>
+<script src="js/prisoners.js"></script>
+<script src="js/trade.js"></script>
+<script src="js/caravan.js"></script>
+<script src="js/social.js"></script>
+<script src="js/training.js"></script>
+<script src="js/fire.js"></script>
+<script src="js/ideology.js"></script>
+<script src="js/royalty.js"></script>
+<script src="js/events.js"></script>
+<script src="js/game.js"></script>
+<script src="js/save.js"></script>
+<script src="js/art.js" data-client></script>
+<script src="js/particles.js" data-client></script>
+<script src="js/render.js" data-client></script>
+<script src="js/ui.js" data-client></script>
+<script src="js/worldview.js" data-client></script>
+<script src="js/input.js" data-client></script>
+<script src="js/main.js" data-client></script>
+</body>
+</html>
