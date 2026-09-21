@@ -39,11 +39,6 @@
     return G ? G.map : null;
   }
 
-  function debug(text) {
-    var G = root.Game;
-    if (G && G.debug && typeof console !== 'undefined') console.log('[policies] ' + text);
-  }
-
   var TICKS_PER_DAY = 60000;
 
   /* How often a single pawn is re-examined. The systems registry drives
@@ -55,11 +50,6 @@
   /* Home is rebuilt from what the colony has actually built, which is a
      walk over the building index and is not worth doing often. */
   var HOME_INTERVAL = 5000;
-
-  /* A pawn whose meal was refused is left alone for this long, so a
-     policy that turns out to be unsatisfiable costs one interrupted
-     walk rather than an endless loop of them. */
-  var FOOD_BLOCK_COOLDOWN = 1200;
 
   var AREA_LIMIT = 8;            /* one bit each, in a Uint8 mask grid */
   var CARE = ['none', 'herbal', 'normal', 'best'];
@@ -93,14 +83,37 @@
       nextId: 1,
       grid: null, gridW: 0, gridH: 0, gridDirty: true,
       homeAuto: true, homeTick: -HOME_INTERVAL,
-      ruleState: {},
-      pawnBeat: {}
+      ruleState: {}, ruleEverOk: {},
+      pawnBeat: {}, rebound: {}, drugSync: {}
     };
   }
 
   var st = blankState();
 
+  /* Whether anybody at all is currently restricted to an area. The area
+     check in the path wrapper below sits in the hottest loop in the
+     game, so when the colony has painted no restrictions it is one
+     boolean rather than a call. Set the moment a restriction is imposed
+     and re-derived on the slow beat. */
+  var anyRestricted = false;
+
   function nextId() { return st.nextId++; }
+
+  /* A save is a snapshot, not a window onto live state. Both directions
+     copy: a blob that is held rather than stringified must not be
+     rewritten by the next edit in the Assign tab, and a blob loaded
+     twice must not end up aliased by the policies it restored. */
+  function clone(x) {
+    if (x === null || typeof x !== 'object') return x;
+    if (Array.isArray(x)) {
+      var out = new Array(x.length);
+      for (var i = 0; i < x.length; i++) out[i] = clone(x[i]);
+      return out;
+    }
+    var o = {}, k;
+    for (k in x) if (Object.prototype.hasOwnProperty.call(x, k)) o[k] = clone(x[k]);
+    return o;
+  }
 
   /* ============================================================
      2. THE DEFAULT CONTENT
@@ -319,6 +332,7 @@
   Policies.reset = function () {
     st = blankState();
     booted = false;
+    anyRestricted = false;
     Policies.alerts = [];
     boot();
     return Policies;
@@ -550,13 +564,22 @@
       ops: { surgery: true, prosthetics: true, harvestOrgans: false, euthanasia: false },
       autoAssigned: false,
       lastDose: {},             /* drugId -> tick, for scheduled doses */
-      blockedFoodUntil: 0,
       wearScanTick: 0
     };
     pawn.policy = rec;
     return rec;
   }
   Policies.policyOf = record;
+
+  /* Reading somebody's care level is not a reason to give them a policy
+     record. medicineFor and operationAllowed are asked about raiders,
+     prisoners and animals, and answering from the group default costs
+     nothing where writing a record onto every pawn the doctor ever
+     looked at costs a field on each of them, for the whole save. */
+  function peek(pawn) {
+    var rec = pawn && pawn.policy;
+    return (rec && typeof rec === 'object') ? rec : null;
+  }
 
   Policies.areaOf = function (pawn) {
     var rec = record(pawn);
@@ -597,6 +620,11 @@
     var rec = record(pawn);
     if (!rec) return false;
     rec.areaId = areaId | 0;
+    /* An assignment the player made is an answer, not a gap waiting to
+       be filled: auto-assignment must never come along afterwards and
+       overwrite it. */
+    rec.autoAssigned = true;
+    if (rec.areaId) anyRestricted = true;
     /* A restriction the player just imposed has to bite now, not when
        the current haul happens to finish - the whole point of pulling
        an area up mid-raid is that it takes effect mid-raid. */
@@ -733,6 +761,7 @@
     var rec = record(pawn);
     if (!rec || !Policies.outfit(id)) return false;
     rec.outfitId = id;
+    rec.autoAssigned = true;
     return true;
   };
 
@@ -812,9 +841,9 @@
     /* Work givers are walked every time any colonist finishes anything.
        A naked pawn on a map with no clothes on it would otherwise pay
        for a reachability sweep dozens of times a second. */
-    var rec = record(pawn), t = now();
-    if (rec.wearScanTick && t - rec.wearScanTick < WEAR_RESCAN) return null;
-    rec.wearScanTick = t;
+    var rec = record(pawn), tick = now();
+    if (rec.wearScanTick && tick - rec.wearScanTick < WEAR_RESCAN) return null;
+    rec.wearScanTick = tick;
     var map = pawn.map, taken = slotsTaken(pawn);
     var Res = sys('Res'), T = sys('T'), Path = sys('Path');
     var apparel = Policies.apparelDefs(), cands = [];
@@ -836,19 +865,21 @@
 
       var list = map.byDef(def.id);
       for (var i = 0; i < list.length; i++) {
-        var t = list[i];
-        if (!t.spawned || t.isBlueprint || t.isFrame) continue;
-        if (!Policies.allowedAt(pawn, t.x, t.y)) continue;
-        if (Res && T && !Res.canReserve(pawn, T.thing(t), 1)) continue;
-        cands.push(t);
+        var item = list[i];
+        if (!item.spawned || item.isBlueprint || item.isFrame) continue;
+        if (!Policies.allowedAt(pawn, item.x, item.y)) continue;
+        if (Res && T && !Res.canReserve(pawn, T.thing(item), 1)) continue;
+        cands.push(item);
       }
     }
     if (!cands.length) return null;
     var found = (!Path || !Path.closestReachable) ? cands[0]
       : Path.closestReachable(map, pawn, cands, function (t, dist) { return -dist; });
-    /* A hit is worth re-asking about immediately: the pawn is about to
-       walk to it and the next scan decides whether it is still there. */
-    if (found) rec.wearScanTick = 0;
+    /* A hit is worth re-asking about sooner than a miss - the pawn is
+       about to walk to it and the next scan decides whether it is still
+       there - but not on the very next giver call, or a wear job the
+       reservation refuses puts this whole sweep in a hot loop. */
+    if (found) rec.wearScanTick = tick - (WEAR_RESCAN - 60);
     return found;
   };
 
@@ -904,6 +935,7 @@
     var rec = record(pawn);
     if (!rec || !Policies.foodPolicy(id)) return false;
     rec.foodId = id;
+    rec.autoAssigned = true;
     return true;
   };
 
@@ -919,25 +951,36 @@
     return filterAllows(f, defId);
   };
 
-  /* Is there anything this pawn IS allowed to eat within reach? Asked
-     before a meal is refused, so a policy nobody can satisfy costs
-     nothing instead of costing the colonist their dinner. */
-  function allowedFoodExists(pawn) {
+  /* The best thing this pawn is allowed to eat and can actually get to,
+     or null when the player's filter has left them nothing. Asked at the
+     moment the colonist decides to eat, which is the only moment the
+     answer can still change what happens - see policyFoodJob. */
+  function bestAllowedFood(pawn) {
     var map = pawn.map;
-    if (!map) return false;
-    var food = Policies.foodDefs(), Res = sys('Res'), T = sys('T');
+    if (!map) return null;
+    var N = sys('Needs'), Res = sys('Res'), T = sys('T'), Path = sys('Path');
+    var food = Policies.foodDefs(), cands = [];
     for (var d = 0; d < food.length; d++) {
       if (!Policies.foodAllowed(pawn, food[d])) continue;
       var list = map.byDef(food[d].id);
       for (var i = 0; i < list.length; i++) {
-        var t = list[i];
-        if (!t.spawned || t.stack <= 0) continue;
-        if (!Policies.allowedAt(pawn, t.x, t.y)) continue;
-        if (Res && T && !Res.canReserve(pawn, T.thing(t), 1)) continue;
-        return true;
+        var item = list[i];
+        if (!item.spawned || item.stack <= 0) continue;
+        if (!Policies.allowedAt(pawn, item.x, item.y)) continue;
+        if (Res && T && !Res.canReserve(pawn, T.thing(item), 1)) continue;
+        cands.push(item);
       }
     }
-    return false;
+    if (!cands.length) return null;
+    if (!Path || !Path.closestReachable) return cands[0];
+    /* Weighted the way jobs.js weighs its own search: a meal is worth a
+       longer walk than a handful of berries, and rot is worth avoiding.
+       Matching its shape keeps a policy that allows everything from
+       quietly reordering the colony's meals. */
+    return Path.closestReachable(map, pawn, cands, function (item, dist) {
+      var nut = (N && N.nutritionOf) ? N.nutritionOf(item.def) : (item.def.nutrition || 0);
+      return nut * 12 - dist * 0.3 - (item.rotProgress || 0) * 3;
+    });
   }
 
   /* ============================================================
@@ -1000,6 +1043,7 @@
     var rec = record(pawn);
     if (!rec || !Policies.drugPolicy(id)) return false;
     rec.drugId = id;
+    rec.autoAssigned = true;
     Policies.syncDrugs(pawn);
     return true;
   };
@@ -1130,7 +1174,7 @@
   };
 
   Policies.careLevel = function (pawn) {
-    var rec = record(pawn);
+    var rec = peek(pawn);
     if (rec && rec.care >= 0) return U.clamp(rec.care | 0, 0, 3);
     return Policies.careDefault(Policies.groupOf(pawn));
   };
@@ -1141,6 +1185,7 @@
     var rec = record(pawn);
     if (!rec) return false;
     rec.care = level < 0 ? -1 : U.clamp(level | 0, 0, 3);
+    rec.autoAssigned = true;
     return true;
   };
 
@@ -1151,8 +1196,13 @@
   Policies.medicineAllowed = function (pawn, defId) {
     var level = Policies.careLevel(pawn);
     if (level <= 0) return false;
-    if (defId === 'herbalMedicine') return level >= 1 && level <= 2;
-    if (defId === 'medicine') return level >= 2;
+    /* Herbal stays legal at every level above none. "Best" says what the
+       doctor reaches for FIRST, not that a patient would rather bleed
+       than be bandaged with the cheap stuff - and medicineFor already
+       falls back to herbal, so the two answers have to agree or a doctor
+       with nothing but herbal refuses to treat the colony's best-cared
+       colonist. */
+    if (defId === 'herbalMedicine') return true;
     return level >= 2;
   };
 
@@ -1186,7 +1236,7 @@
   };
 
   Policies.operationSettings = function (pawn) {
-    var rec = record(pawn);
+    var rec = peek(pawn);
     return rec ? rec.ops : null;
   };
 
@@ -1507,6 +1557,7 @@
     if (!r) return false;
     U.remove(st.rules, r);
     delete st.ruleState[id];
+    delete st.ruleEverOk[id];
     return true;
   };
 
@@ -1593,10 +1644,21 @@
       if (!st.ruleState[v.id]) {
         st.ruleState[v.id] = 1;
         var G = root.Game;
-        if (G && G.letter) {
+        /* A letter is for something that CHANGED. A colony on landing day
+           holds fifty wood and no medicine, so every stock rule is broken
+           before the first colonist has stood up, and five letters in the
+           first ten seconds is five letters nobody can act on. The rule
+           has to have been satisfied once for breaking it to be news -
+           until then the standing alert says it, quietly. */
+        if (st.ruleEverOk[v.id] && G && G.letter) {
           G.letter('Colony rule broken', v.label + '. Right now: ' + v.detail + '.', { kind: 'neutral' });
         }
       }
+    }
+    /* Anything enabled and not in violation is a rule the colony has now
+       met at least once, and is worth a letter the next time it slips. */
+    for (i = 0; i < st.rules.length; i++) {
+      if (st.rules[i].enabled && !live[st.rules[i].id]) st.ruleEverOk[st.rules[i].id] = 1;
     }
     for (var id in st.ruleState) if (!live[id]) delete st.ruleState[id];
   }
@@ -1679,9 +1741,41 @@
       }
     }
 
+    installPathGuard(Path);
     installThinkLevel();
     return true;
   };
+
+  /* Where an allowed area has to be consulted is where work is FOUND,
+     not only where it is walked to. Left to the think rung alone a
+     restricted colonist is still handed a haul on the far side of the
+     map, walks out, finishes it and is only pulled home afterwards -
+     measured at 55% of the day spent outside a painted area.
+
+     Every work scan in this game picks its target through
+     Path.closestReachable, which asks Path.reachable once per
+     candidate. One wrapper there filters every giver at once, and -
+     unlike rejecting the finished job - it lets each giver fall through
+     to its NEXT candidate, so a colonist restricted to the base still
+     hauls everything inside the base. pathfind.js is not edited: the
+     wrapper is installed from here, is idempotent, and costs one
+     boolean read while the colony has painted no restrictions.
+
+     Deliberately not applied to Path.find: a colonist who is already
+     outside their area has to be able to path back in. */
+  function installPathGuard(Path) {
+    if (!Path || typeof Path.reachable !== 'function') return false;
+    if (Path.reachable.policyGuard) return true;
+    var inner = Path.reachable;
+    var guarded = function (map, sx, sy, dx, dy, opts) {
+      if (anyRestricted && opts && opts.pawn &&
+          !Policies.allowedAt(opts.pawn, dx, dy)) return false;
+      return inner.call(this, map, sx, sy, dx, dy, opts);
+    };
+    guarded.policyGuard = true;
+    Path.reachable = guarded;
+    return true;
+  }
 
   /* think.js exports its level list so a system can add a rung
      without that file knowing about this one. The policy rung sits
@@ -1709,7 +1803,24 @@
     if (at < 0) at = Think.LEVELS.length - 1;
     Think.LEVELS.splice(at, 0, level);
 
-    /* The second rung is about where a restricted colonist idles, so
+    /* The food rung sits directly above think.js's own hunger level and
+       below bedtime, so the order of a colonist's day is exactly what it
+       was: this only decides WHICH food a colonist who was going to eat
+       anyway walks to. Enforcing it here rather than by interrupting the
+       meal afterwards is the difference between a filter that holds and
+       one that samples - the interrupt version refused nothing at all in
+       20000 ticks, because the pawn is only looked at every 500. */
+    var foodTier = Think.TIER.POLICY_FOOD;
+    if (foodTier === undefined) { foodTier = 8.9; Think.TIER.POLICY_FOOD = foodTier; }
+    var foodAt = -1;
+    for (i = 0; i < Think.LEVELS.length; i++) {
+      if (Think.LEVELS[i].name === 'hunger') { foodAt = i; break; }
+    }
+    if (foodAt < 0) foodAt = Think.LEVELS.length;
+    Think.LEVELS.splice(foodAt, 0,
+      { tier: foodTier, name: 'policyFood', fn: policyFoodJob });
+
+    /* The last rung is about where a restricted colonist idles, so
        it belongs below everything that is actually worth doing and
        above the idle level whose wander would undo it. */
     var idleTier = Think.TIER.POLICY_IDLE;
@@ -1735,6 +1846,46 @@
     if (job) return job;
     return scheduledDrugJob(pawn);
   }
+
+  function hungryAt() {
+    var N = sys('Needs');
+    var th = N && N.thresholds;
+    return (th && typeof th.hungry === 'number') ? th.hungry : 0.30;
+  }
+
+  /* A colonist who is about to eat, steered to something the player
+     allows. This does not decide WHETHER they eat - think.js's hunger
+     level is still the one that does that, one rung below - so a policy
+     with nothing in reach simply falls through and the colonist eats
+     whatever is nearest instead of starving on a filter. */
+  function policyFoodJob(pawn) {
+    if (!pawn || pawn.isHuman !== true || pawn.faction !== 'player') return null;
+    if (pawn.drafted || pawn.downed || pawn.mentalState) return null;
+    var f = Policies.foodOf(pawn);
+    if (!f || f.allowAll) return null;
+    var n = pawn.needs;
+    if (!n || typeof n.food !== 'number') return null;
+    if (n.food >= hungryAt()) return null;
+    /* Below this the pawn is in real trouble and foodAllowed already
+       waves the filter through; asking again would only cost a scan. */
+    if (n.food < 0.12) return null;
+
+    var J = sys('Jobs'), T = sys('T');
+    if (!J || !T || !J.isRegistered || !J.isRegistered('eat')) return null;
+
+    /* Already walking to something allowed: leave them to it. A meal job
+       that has not chosen its stack yet is still worth aiming, because
+       jobs.js picks the nearest food without asking anybody. */
+    if (pawn.job && pawn.job.defId === 'eat' && pawn.job.targetA) {
+      var current = T.resolve(pawn.job.targetA, pawn.map);
+      if (current && current.def && Policies.foodAllowed(pawn, current.def)) return null;
+    }
+
+    var food = bestAllowedFood(pawn);
+    if (!food) return null;
+    return J.make('eat', T.thing(food));
+  }
+  Policies.policyFoodJob = policyFoodJob;
 
   /* Somewhere inside the area to stand about in. Sampled rather than
      scanned: the point is variety, not the best cell, and an area can
@@ -1789,42 +1940,30 @@
     boot();
     var t = now(), rec = record(pawn);
 
-    /* Checked every time this is called rather than on the beat: it is
-       one field compare unless the pawn is actually walking to a meal,
-       and a refusal that arrives three seconds late arrives after the
-       colonist has already eaten the thing. */
-    enforceFood(pawn, rec, t);
     enforceArea(pawn);
 
     var last = st.pawnBeat[pawn.id] || 0;
     if (last && t - last < PAWN_INTERVAL) return;
     st.pawnBeat[pawn.id] = t;
 
+    /* A pawn restored from a save carries ids that may name a policy the
+       player deleted before saving, or one from a build that predates
+       this file. Healing it here means a reload does not need save.js to
+       remember to call rebind; the table is not saved, so it happens
+       once per pawn per load and never again. */
+    if (!st.rebound[pawn.id]) { st.rebound[pawn.id] = 1; Policies.rebind(pawn); }
+
     if (!rec.autoAssigned) Policies.autoAssign(pawn);
     Policies.scheduleOf(pawn);
-  };
 
-  /* A colonist walking across the colony to eat the fine meal the
-     player was saving is stopped here, once, and only when there is
-     something else they are allowed to have. */
-  function enforceFood(pawn, rec, t) {
-    var job = pawn.job;
-    if (!job || job.defId !== 'eat' || job.playerForced) return;
-    if (t < (rec.blockedFoodUntil || 0)) return;
-    var T = sys('T'), J = sys('Jobs');
-    if (!T || !J) return;
-    var food = job.targetA ? T.resolve(job.targetA, pawn.map) : null;
-    if (!food && pawn.carried) food = pawn.carried;
-    if (!food || !food.def) return;
-    if (Policies.foodAllowed(pawn, food.def)) return;
-    if (!allowedFoodExists(pawn)) {
-      rec.blockedFoodUntil = t + FOOD_BLOCK_COOLDOWN;
-      return;
+    /* drugs.js keeps the override on its own per-pawn state, so pushing
+       it again every beat is an allocation for nothing. Push when the
+       named policy changed, and once after a load. */
+    if (st.drugSync[pawn.id] !== rec.drugId) {
+      st.drugSync[pawn.id] = rec.drugId;
+      Policies.syncDrugs(pawn);
     }
-    rec.blockedFoodUntil = t + FOOD_BLOCK_COOLDOWN;
-    J.end(pawn, 'interrupted');
-    debug((pawn.name && pawn.name.first) + ' refused ' + food.def.id + ' on policy');
-  }
+  };
 
   /* A restricted pawn who is outside their area and doing nothing that
      needs doing there is sent home. Only the aimless jobs are cut:
@@ -1857,11 +1996,13 @@
       Policies.autoHome(map);
     }
 
-    var list = map.colonists();
+    var list = map.colonists(), restricted = false;
     for (var i = 0; i < list.length; i++) {
       Policies.tickPawn(list[i]);
-      Policies.syncDrugs(list[i]);
+      var rec = list[i].policy;
+      if (rec && rec.areaId) restricted = true;
     }
+    anyRestricted = restricted;
 
     /* Prisoners and animals never get a policy record of their own
        until something asks for one, and the care default is what
@@ -1916,13 +2057,13 @@
     return {
       v: 1,
       areas: areas,
-      outfits: st.outfits,
-      foods: st.foods,
-      drugs: st.drugs,
-      stockpilePresets: st.stockpilePresets,
-      billPresets: st.billPresets,
-      rules: st.rules,
-      careDefaults: st.careDefaults,
+      outfits: clone(st.outfits),
+      foods: clone(st.foods),
+      drugs: clone(st.drugs),
+      stockpilePresets: clone(st.stockpilePresets),
+      billPresets: clone(st.billPresets),
+      rules: clone(st.rules),
+      careDefaults: clone(st.careDefaults),
       homeAuto: st.homeAuto,
       nextId: st.nextId
     };
@@ -1934,10 +2075,21 @@
 
     if (Array.isArray(obj.areas) && obj.areas.length) {
       st.areas = [];
+      var usedBits = 0;
       for (var i = 0; i < obj.areas.length && i < AREA_LIMIT; i++) {
         var a = obj.areas[i];
+        /* Two areas sharing a bit would share a mask, so everybody in one
+           would be allowed everywhere in the other. A save that says so
+           is wrong; take the first claim and hand the rest a free bit. */
+        var bit = U.clamp(a.bit | 0, 0, AREA_LIMIT - 1);
+        if (usedBits & (1 << bit)) {
+          bit = -1;
+          for (var f = 0; f < AREA_LIMIT; f++) if (!(usedBits & (1 << f))) { bit = f; break; }
+          if (bit < 0) continue;
+        }
+        usedBits |= 1 << bit;
         st.areas.push({
-          id: a.id | 0, bit: U.clamp(a.bit | 0, 0, AREA_LIMIT - 1),
+          id: a.id | 0, bit: bit,
           label: a.label || 'Area', builtIn: a.builtIn || null,
           color: a.color || '#4a7fd4', cells: unpackCells(a.cells)
         });
@@ -1946,12 +2098,12 @@
         st.areas.unshift({ id: 1, bit: 0, label: 'Home area', builtIn: 'home', color: '#ffc23c', cells: [] });
       }
     }
-    if (Array.isArray(obj.outfits) && obj.outfits.length) st.outfits = obj.outfits;
-    if (Array.isArray(obj.foods) && obj.foods.length) st.foods = obj.foods;
-    if (Array.isArray(obj.drugs) && obj.drugs.length) st.drugs = obj.drugs;
-    if (Array.isArray(obj.stockpilePresets)) st.stockpilePresets = obj.stockpilePresets;
-    if (Array.isArray(obj.billPresets)) st.billPresets = obj.billPresets;
-    if (Array.isArray(obj.rules) && obj.rules.length) st.rules = obj.rules;
+    if (Array.isArray(obj.outfits) && obj.outfits.length) st.outfits = clone(obj.outfits);
+    if (Array.isArray(obj.foods) && obj.foods.length) st.foods = clone(obj.foods);
+    if (Array.isArray(obj.drugs) && obj.drugs.length) st.drugs = clone(obj.drugs);
+    if (Array.isArray(obj.stockpilePresets)) st.stockpilePresets = clone(obj.stockpilePresets);
+    if (Array.isArray(obj.billPresets)) st.billPresets = clone(obj.billPresets);
+    if (Array.isArray(obj.rules) && obj.rules.length) st.rules = clone(obj.rules);
     if (obj.careDefaults) {
       for (var g = 0; g < CARE_GROUPS.length; g++) {
         var key = CARE_GROUPS[g];
@@ -1963,6 +2115,12 @@
     st.homeAuto = obj.homeAuto !== false;
     st.nextId = Math.max(100, obj.nextId | 0);
     st.gridDirty = true;
+    /* Arm the path guard rather than clear it: the colonists that carry
+       the restrictions have not been restored yet, and the next slow
+       beat re-derives the truth from them. Guessing "restricted" costs a
+       bitwise and per query; guessing the other way would let a
+       restricted colonist wander for 500 ticks after every load. */
+    anyRestricted = true;
     return true;
   };
 

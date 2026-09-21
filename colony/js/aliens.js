@@ -1604,14 +1604,35 @@
     }
   }
 
-  /* Manhunter clocks tick down; the hive's must not. */
+  /* Two things have to be kept true about anything of the hive's that is
+     standing on the map, including the ones the storyteller sent by
+     picking the hive as the night's raiders: its manhunter clock must
+     not run down, and it must not be carrying a shotgun. events.js arms
+     whatever it spawns, which is correct for people and absurd for a
+     drone, so the kit is taken back off - it was conjured for the raid
+     and belongs to nobody. */
+  function disarmHive(map, pawn) {
+    var i, thing;
+    if (pawn.equipment) {
+      thing = pawn.dropEquipment ? pawn.dropEquipment() : null;
+      if (thing && thing.spawned) map.destroyThing(thing, 'never theirs');
+    }
+    for (i = (pawn.apparel || []).length - 1; i >= 0; i--) {
+      thing = pawn.removeApparel ? pawn.removeApparel(pawn.apparel[i]) : null;
+      if (thing && thing.spawned) map.destroyThing(thing, 'never theirs');
+      else if (!thing) pawn.apparel.splice(i, 1);
+    }
+  }
+
   function topUpHiveMinds(map) {
     var A = sys('Animals');
-    if (!A || !A.makeManhunter || !A.isManhunter) return;
     for (var i = 0; i < map.pawns.length; i++) {
       var p = map.pawns[i];
       if (p.dead || p.faction !== 'xenoHive') continue;
-      if (!A.isManhunter(p)) A.makeManhunter(p, { ticks: 400000 });
+      if (p.equipment || (p.apparel && p.apparel.length)) disarmHive(map, p);
+      if (A && A.makeManhunter && A.isManhunter && !A.isManhunter(p)) {
+        A.makeManhunter(p, { ticks: 400000 });
+      }
     }
   }
 
@@ -1782,6 +1803,8 @@
     game = game || G();
     var map = game && game.map;
     if (!map || !map.colonists().length) return false;
+    var fleet = factionOf('machine');
+    if (!fleet || !fleet.hostile) return false;
 
     var roster = waveRoster(points);
     if (!roster.kinds.length) return false;
@@ -2207,6 +2230,9 @@
         if (state.invasion && state.invasion.phase !== 'over') return 0;
         if (state.machine.active) return 0;
         if (now() < state.machine.nextWaveTick) return 0;
+        /* A fleet that has been told to go home does not come back. */
+        var f = factionOf('machine');
+        if (!f || !f.hostile) return 0;
         return 1.1 + state.tier * 0.35;
       },
       fire: function (g, points) { return Aliens.machineWave(g, points); }

@@ -1194,6 +1194,29 @@
     return true;
   }
 
+  /* "In the fight", for a pawn nobody has drafted: somebody can put a
+     round into them from where they are standing right now. A raid on
+     the far side of the map is not a reason to drop a fire hose or walk
+     away from a friend who is bleeding out - think.js puts self-defence
+     above its emergency level precisely because self-defence means
+     being shot at, and a cover level that fires on "a hostile exists
+     within thirty tiles" quietly rewrites that. Measured before this
+     gate went in: 18 of 33 cover jobs handed to undrafted colonists
+     during raids displaced an emergency job that was ready to run. */
+  function underFire(pawn, foes) {
+    if (Tactics.isSuppressed(pawn)) return true;
+    var map = pawn.map;
+    for (var i = 0; i < foes.length; i++) {
+      var f = foes[i];
+      var w = weaponOf(f);
+      var reach = (w && w.ranged) ? w.range : MELEE_RANGE + 1;
+      if (U.dist(pawn.x, pawn.y, f.x, f.y) > reach) continue;
+      if (aimingAt(f, pawn)) return true;
+      if (lineOfSight(map, f.x, f.y, pawn.x, pawn.y)) return true;
+    }
+    return false;
+  }
+
   /* Somewhere to withdraw to: off the map for a raider, a bed for a
      colonist who needs a doctor, and otherwise the best cover well away
      from whatever is shooting. */
@@ -1550,6 +1573,10 @@
       }
     } else if (order && order.kind === 'advance') {
       opts.anchorX = order.x; opts.anchorY = order.y; opts.anchorR = 8;
+    } else if (!underFire(pawn, foes)) {
+      /* Nobody the player told to be here, and nobody shooting at them.
+         Whatever they were doing is more useful than a sandbag. */
+      return null;
     }
 
     return coverJob(pawn, st, foe, opts);

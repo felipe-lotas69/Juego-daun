@@ -219,7 +219,7 @@
     if (map) states.delete(map);
     else {
       chronicle.length = 0;
-      seenLetters = Object.create(null);
+      seenLetterId = 0;
       artCount = 0;
       lastTick = 0;
     }
@@ -468,6 +468,12 @@
 
   Beauty.roomBeautyFor = function (map, room) {
     if (!map || !room || !room.cells || !room.cells.length) return 0;
+    /* Room 0 is every open outdoor cell on the map. Averaging a detailed
+       number over thousands of cells costs more than the whole rest of
+       the pass and nothing reads it: needs.js skips outdoor rooms, and
+       roomStats forces an outdoor score to zero. Regions' own cheap
+       estimate is the right answer to hand back. */
+    if (room.id === 0 || room.outdoor) return null;
     var st = stateOf(map);
     if (!st.built) return null;          /* nothing computed yet; use the rough value */
     var grid = st.grid, cells = room.cells, n = cells.length;
@@ -742,7 +748,15 @@
      ============================================================ */
 
   var chronicle = [];
-  var seenLetters = Object.create(null);
+  /* Letter ids come out of U.nextId(), so they only ever go up and
+     Game.letter pushes them in order. A high-water mark therefore
+     answers "have I already read this one" exactly as a set would,
+     in one integer instead of one key per letter the colony has ever
+     received - which was a table that grew for the life of the save
+     and was never pruned. It is also the field that has to survive a
+     load, or the next tick re-harvests the forty letters the save
+     still carries on top of the chronicle that already holds them. */
+  var seenLetterId = 0;
   var artCount = 0;
   var lastTick = 0;
 
@@ -754,6 +768,8 @@
     var G = sys('Game');
     return G && G.day ? G.day() : 0;
   }
+
+  var MINE = /^(A work of art:|Inspired:)/;
 
   function classify(title, text, kind) {
     var t = String(title || '').toLowerCase();
@@ -796,8 +812,14 @@
     var added = 0;
     for (var i = 0; i < letters.length; i++) {
       var L = letters[i];
-      if (!L || seenLetters[L.id]) continue;
-      seenLetters[L.id] = 1;
+      if (!L || !(L.id > seenLetterId)) continue;
+      seenLetterId = L.id;
+      /* This file's own letters are already in the chronicle - nameArt
+         and inspire note them as they fire. Reading them back would
+         enter each good sculpture twice, at full weight the second
+         time, and a prolific art colony would push its real history
+         out of a 96-entry list with announcements about itself. */
+      if (MINE.test(L.title)) continue;
       Beauty.note(classify(L.title, L.text, L.kind), L.title,
         { who: nameFrom(L.title), day: Math.floor((L.tick || 0) / 60000), tick: L.tick || 0 });
       added++;
@@ -1202,6 +1224,21 @@
     return U.clamp(adjusted * 0.60 * taste, -5, 8);
   }
 
+  /* needs.js stores mood in NEED units, where the whole scale is 0..1 and
+     the heaviest memory in the game is a colonist's death at -0.15. It
+     accepts the RimWorld-style hundreds too, but it can only tell the two
+     apart by size: anything past 1.5 is divided by a hundred and anything
+     under it is taken at face value. Everything in this file is written in
+     points, and the band between the threshold this file fires at (0.8)
+     and the one needs.js converts at (1.5) therefore used to arrive as a
+     mood swing of -0.98 to +1.42 - sixty to a hundred times its intent,
+     and enough on its own to pin a colonist at zero mood for good. So the
+     conversion is done here, where the unit is known, and needs.js is
+     handed a number it cannot misread. */
+  function needUnits(points) {
+    return points / 100;
+  }
+
   function degreeFor(mood, taste) {
     if (taste < 0) {
       if (mood >= 4) return 6;
@@ -1253,7 +1290,7 @@
 
     if (mood > 0.8 || mood < -0.8) {
       N.addThought(pawn, 'beautySurroundings',
-        { degree: degreeFor(mood, taste), mood: mood, noStack: true });
+        { degree: degreeFor(mood, taste), mood: needUnits(mood), noStack: true });
     } else {
       clearThought(pawn, 'beautySurroundings');
     }
@@ -1278,8 +1315,14 @@
     }
     if (!best || bestQ < 3) return;
     var degree = bestQ >= 5 ? 2 : (bestQ >= 4 ? 1 : 0);
-    var mood = (2 + degree * 2.4) * U.clamp(taste, 0, 2.2);
-    N.addThought(pawn, 'admiredArtwork', { degree: degree, mood: mood, noStack: true });
+    /* Capped under `rescued` (+10), which is the largest good memory the
+       base game hands out. Walking past a masterwork is a good day; it is
+       not a better day than being carried out of a firefight, and a
+       thought that beat that one would make a single statue worth more
+       than the rest of a colonist's life put together. */
+    var mood = U.clamp((2 + degree * 2.4) * U.clamp(taste, 0, 2.2), 0, 9);
+    N.addThought(pawn, 'admiredArtwork',
+      { degree: degree, mood: needUnits(mood), noStack: true });
     if (N.gainJoy) N.gainJoy(pawn, 0.004 * (1 + degree), 'art');
     pawn.lastAdmiredArtId = best.id;
   }
@@ -1416,7 +1459,7 @@
        rather than being carried over from the last one. */
     if (now < lastTick) {
       chronicle.length = 0;
-      seenLetters = Object.create(null);
+      seenLetterId = 0;
       artCount = 0;
     }
     var elapsed = U.clamp(now - lastTick, 0, 6000);
@@ -1482,6 +1525,7 @@
       v: 1,
       artCount: artCount,
       lastTick: lastTick,
+      seenLetterId: seenLetterId,
       chronicle: chronicle.map(function (e) {
         return { k: e.kind, t: e.title, w: e.who, d: e.day, x: e.tick };
       })
@@ -1490,12 +1534,13 @@
 
   Beauty.load = function (obj) {
     chronicle.length = 0;
-    seenLetters = Object.create(null);
+    seenLetterId = 0;
     artCount = 0;
     lastTick = 0;
     if (!obj || typeof obj !== 'object') return false;
     artCount = obj.artCount | 0;
     lastTick = obj.lastTick | 0;
+    seenLetterId = obj.seenLetterId | 0;
     var list = obj.chronicle || [];
     for (var i = 0; i < list.length; i++) {
       var e = list[i];
