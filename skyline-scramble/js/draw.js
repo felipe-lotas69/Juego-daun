@@ -345,9 +345,15 @@
   }
 
   /* -------------------------------------------------------- racers */
+  /* Cached per racer: the bake cache is keyed on the map OBJECT, so
+     handing it a freshly built one every frame would re-bake every
+     sprite every frame and never hit. */
   function racerMaps(r) {
+    var state = r.hurtFlash > 0 ? 'hurt' : 'ok';
+    if (r._maps && r._mapState === state) return r._maps;
     var d = r.def;
-    return {
+    r._mapState = state;
+    r._maps = {
       head: {
         k: d.hair, s: d.skin, t: mix(d.skin, '#000000', 0.2),
         n: mix(d.skin, '#000000', 0.12), m: mix(d.skin, '#000000', 0.4),
@@ -364,6 +370,7 @@
       trousers: d.trousers,
       trousersBack: mix(d.trousers, '#000000', 0.25)
     };
+    return r._maps;
   }
 
   function drawRacer(r, cam) {

@@ -183,56 +183,91 @@
       }
     },
 
-    /* A limb: blocks walked from joint to joint, so it stays on the
-       grid at any angle instead of stroking a smooth diagonal. */
-    limb: function (c, x0, y0, x1, y1, thick, col) {
-      var dx = x1 - x0, dy = y1 - y0;
-      var steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy))));
-      var off = (thick - 1) >> 1;
-      c.fillStyle = col;
-      for (var i = 0; i <= steps; i++) {
-        var t = i / steps;
-        c.fillRect(Math.round(x0 + dx * t) - off, Math.round(y0 + dy * t) - off,
-                   thick, thick);
-      }
+    /* --- sprites ---
+       A sprite is baked ONCE into a little offscreen bitmap, one canvas
+       pixel per art pixel, and then drawn rotated as a whole.
+
+       The first version rotated by walking every destination pixel and
+       asking which source pixel landed there. That re-picks each art
+       pixel independently every frame, so the pattern inside the sprite
+       reorganises as the angle drifts - the pixels crawl around within
+       the character instead of the character turning. A limb or a head is
+       a rigid part: it has to keep its own pixels and rotate as one
+       piece, the way a sprite does in any 2D engine. */
+    baked: {},
+    ids: (typeof WeakMap !== 'undefined') ? new WeakMap() : null,
+    idSeq: 1,
+
+    idOf: function (o) {
+      if (!this.ids) return 'x';
+      var id = this.ids.get(o);
+      if (!id) { id = this.idSeq++; this.ids.set(o, id); }
+      return id;
     },
 
-    /* --- sprites ---
-       A sprite is rows of characters looked up in a colour map; a
-       character the map has no colour for is transparent. Rotation maps
-       each DESTINATION pixel back through the angle, so nothing is
-       anti-aliased and no gap opens up at a diagonal. */
-    stamp: function (c, sprite, map, cx, cy, angle, flip) {
+    bake: function (sprite, map) {
+      var key = 's' + this.idOf(sprite) + ':' + this.idOf(map);
+      var hit = this.baked[key];
+      if (hit) return hit;
       var h = sprite.length, w = sprite[0].length;
-      cx = this.s(cx); cy = this.s(cy);
-      if (!angle) {
-        var x0 = cx - (w >> 1), y0 = cy - (h >> 1), last = null;
-        for (var r = 0; r < h; r++) {
-          var row = sprite[r];
-          for (var q = 0; q < w; q++) {
-            var ch = map[row.charAt(flip ? w - 1 - q : q)];
-            if (!ch) continue;
-            if (ch !== last) { c.fillStyle = ch; last = ch; }
-            c.fillRect(x0 + q, y0 + r, 1, 1);
-          }
+      var cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      var c = cv.getContext('2d');
+      for (var r = 0; r < h; r++) {
+        for (var q = 0; q < w; q++) {
+          var col = map[sprite[r].charAt(q)];
+          if (!col) continue;
+          c.fillStyle = col;
+          c.fillRect(q, r, 1, 1);
         }
+      }
+      this.baked[key] = cv;
+      return cv;
+    },
+
+    /* a limb segment: a bar of a given length, thickness and colour */
+    bakeBar: function (len, thick, col) {
+      var key = 'b' + len + ':' + thick + ':' + col;
+      var hit = this.baked[key];
+      if (hit) return hit;
+      var cv = document.createElement('canvas');
+      cv.width = len; cv.height = thick;
+      var c = cv.getContext('2d');
+      c.fillStyle = col;
+      c.fillRect(0, 0, len, thick);
+      this.baked[key] = cv;
+      return cv;
+    },
+
+    stamp: function (c, sprite, map, cx, cy, angle, flip) {
+      var img = this.bake(sprite, map);
+      var w = img.width, h = img.height;
+      if (!angle && !flip) {
+        c.imageSmoothingEnabled = false;
+        c.drawImage(img, this.s(cx) - (w >> 1), this.s(cy) - (h >> 1), w, h);
         return;
       }
-      var cos = Math.cos(angle), sin = Math.sin(angle);
-      var reach = Math.ceil(Math.sqrt(w * w + h * h) / 2) + 1;
-      var prev = null;
-      for (var dy = -reach; dy <= reach; dy++) {
-        for (var dx = -reach; dx <= reach; dx++) {
-          var lx = dx + 0.5, ly = dy + 0.5;
-          var sx = lx * cos + ly * sin, sy = -lx * sin + ly * cos;
-          var col = Math.floor(sx + w / 2), rw = Math.floor(sy + h / 2);
-          if (rw < 0 || rw >= h || col < 0 || col >= w) continue;
-          var cc = map[sprite[rw].charAt(flip ? w - 1 - col : col)];
-          if (!cc) continue;
-          if (cc !== prev) { c.fillStyle = cc; prev = cc; }
-          c.fillRect(cx + dx, cy + dy, 1, 1);
-        }
-      }
+      c.save();
+      c.translate(this.s(cx), this.s(cy));
+      if (angle) c.rotate(angle);
+      if (flip) c.scale(-1, 1);
+      c.imageSmoothingEnabled = false;
+      c.drawImage(img, -w / 2, -h / 2, w, h);
+      c.restore();
+    },
+
+    /* A limb, drawn the same way: one rigid bar turned to the joint
+       angle, rather than a run of blocks stamped along the line. */
+    limb: function (c, x0, y0, x1, y1, thick, col) {
+      var dx = x1 - x0, dy = y1 - y0;
+      var len = Math.max(1, Math.round(Math.sqrt(dx * dx + dy * dy)) + 1);
+      var img = this.bakeBar(len, thick, col);
+      c.save();
+      c.translate(this.s((x0 + x1) / 2), this.s((y0 + y1) / 2));
+      c.rotate(Math.atan2(dy, dx));
+      c.imageSmoothingEnabled = false;
+      c.drawImage(img, -len / 2, -thick / 2, len, thick);
+      c.restore();
     },
 
     /* --- text --- */
