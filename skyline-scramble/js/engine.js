@@ -104,9 +104,14 @@
      sit on a clean 7px grid and hold 19 colours, while its sky is on no
      grid at all and holds over two hundred. */
   var Pixel = {
-    W: 320,          /* world units across the view */
-    H: 180,
-    SCALE: 4,        /* screen pixels per world unit, and per art pixel */
+    /* Measured against the reference: its art grid works out at roughly
+       294x154 across the frame, where this was 320x180 - finer, so every
+       pixel read smaller than it should. 256x144 puts the grid a shade
+       coarser than the reference rather than a shade finer, and keeps
+       SCALE a whole number, which crisp blocks depend on. */
+    W: 213,          /* world units across the view */
+    H: 120,
+    SCALE: 6,        /* screen pixels per world unit, and per art pixel */
     ctx: null,
     cw: 1280,
     ch: 720,

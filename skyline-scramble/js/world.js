@@ -502,8 +502,11 @@
 
   World.prototype.follow = function (target, dt, snap) {
     var c = target.centre();
-    var tx = c.x - Pixel.W / 2 + U.clamp(target.vx * 0.22, -44, 44);
-    var ty = c.y - Pixel.H * 0.66 + U.clamp(target.vy * 0.10, -26, 34);
+    var tx = c.x - Pixel.W / 2 + U.clamp(target.vx * 0.22, -30, 30);
+    /* Sit the racer a little above centre. Two thirds down was tuned for
+       a taller frame and now leaves most of the screen empty sky with the
+       ground you are aiming at cut off the bottom. */
+    var ty = c.y - Pixel.H * 0.50 + U.clamp(target.vy * 0.07, -14, 20);
     tx = U.clamp(tx, 0, Math.max(0, this.level.width - Pixel.W));
     ty = U.clamp(ty, -20, Math.max(0, this.level.height - Pixel.H));
     if (snap) { this.cam.x = tx; this.cam.y = ty; return; }

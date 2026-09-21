@@ -22,16 +22,16 @@
       /* Keep the tallest block clear of the top edge. A skyline that runs
          off the frame reads as a wall; the reference keeps a good band of
          sky above it, and that sky is most of the daylight in the shot. */
-      var minH = 24 + layer * 14, maxH = 54 + layer * 28;
+      var minH = 12 + layer * 7, maxH = 26 + layer * 14;
       while (x < L.width + 140) {
-        var w = 16 + Math.floor(rnd() * 26);
+        var w = 14 + Math.floor(rnd() * 20);
         band.push({
           x: x, w: w,
           h: minH + Math.floor(rnd() * (maxH - minH)),
           lit: rnd(),
           cap: rnd() < 0.3
         });
-        x += w + 2 + Math.floor(rnd() * 8);
+        x += w + 4 + Math.floor(rnd() * 14);
       }
       layers.push(band);
     }
@@ -99,8 +99,14 @@
   /* ---------------------------------------------------------- sky */
   function drawSky(L, cam, time) {
     var sc = buildScenery(L);
-    drawSkyline(L, cam, sc);
-    if (L.theme !== 'indoor') drawPosts(L, cam, sc);
+    /* Each place gets its own horizon. A freight yard in the desert had
+       a city skyline behind it, which is the kind of thing that makes a
+       level look assembled rather than designed. */
+    if (L.theme === 'desert') drawScrub(L, cam, sc);
+    else {
+      drawSkyline(L, cam, sc);
+      if (L.theme !== 'indoor') drawPosts(L, cam, sc);
+    }
   }
 
   /* Lamp posts along the horizon. They sit between the skyline and the
@@ -114,6 +120,41 @@
       Pixel.rect(P, x, baseY - po.h, 1, po.h, '#7f8a86');
       Pixel.rect(P, x, baseY - po.h, 4, 1, '#7f8a86');
       Pixel.rect(P, x + 3, baseY - po.h + 1, 1, 1, '#e8efd0');
+    }
+  }
+
+  /* Open country: two soft dune bands and a scatter of scrub. Almost
+     nothing, which is the point - it leaves the freight cars to carry
+     the frame instead of competing with a skyline. */
+  function drawScrub(L, cam, sc) {
+    var baseY = Math.round(Pixel.H - 26 - cam.y * 0.10);
+    var bands = [
+      { p: 0.06, col: L.city[0], drop: 0 },
+      { p: 0.14, col: L.city[1], drop: 7 }
+    ];
+    for (var b = 0; b < bands.length; b++) {
+      var bn = bands[b], y0 = baseY + bn.drop;
+      Pixel.rect(P, 0, y0, Pixel.W, Pixel.H, bn.col);
+      /* a soft rolling edge rather than a ruled line */
+      for (var x = -2; x < Pixel.W + 2; x += 2) {
+        var wob = Math.sin((x + cam.x * bn.p) * 0.05 + b * 2.1) * 2;
+        Pixel.rect(P, x, y0 + Math.round(wob) - 1, 2, 2, bn.col);
+      }
+    }
+    /* scrub and cactus, thinned out so it reads as distance */
+    var scrubCol = mix(L.city[1], '#4f7a3e', 0.55);
+    for (var i = 0; i < sc.posts.length * 3; i++) {
+      var wx = (i * 37) % (L.width + 200);
+      var x2 = Math.round(wx - cam.x * 0.22);
+      if (x2 < -4 || x2 > Pixel.W + 4) continue;
+      var y2 = baseY + 3 + ((i * 13) % 9);
+      if (i % 3 === 0) {
+        Pixel.rect(P, x2, y2 - 3, 1, 4, scrubCol);
+        Pixel.rect(P, x2 - 1, y2 - 2, 1, 2, scrubCol);
+        Pixel.rect(P, x2 + 1, y2 - 2, 1, 2, scrubCol);
+      } else {
+        Pixel.rect(P, x2, y2, 2, 1, scrubCol);
+      }
     }
   }
 
@@ -140,12 +181,16 @@
         if (bd.cap) Pixel.rect(P, bx + (bd.w >> 1) - 1, by - 4, 2, 4, mix(face, '#000000', 0.12));
         /* Windows are LIGHTER than the wall and stand in neat columns -
            glass catching the sky, not holes punched in a facade. */
+        /* A regular grid of small panes. Scattering them at random and
+           making them large read as damage rather than as windows. */
         var lit = L.theme === 'indoor' ? winLit : mix(face, '#ffffff', 0.62);
-        for (var wy = by + 5; wy < by + bd.h - 4; wy += 6) {
-          for (var wx = bx + 3; wx < bx + bd.w - 4; wx += 5) {
-            var key = (wx * 7 + wy * 13) % 11;
-            if (key < 2) continue;
-            Pixel.rect(P, wx, wy, 3, 4, key > 8 ? winDark : lit);
+        var cols = Math.floor((bd.w - 2) / 4);
+        var inset = Math.max(1, (bd.w - cols * 4 + 2) >> 1);
+        for (var wy = by + 4; wy < by + bd.h - 3; wy += 5) {
+          for (var ci = 0; ci < cols; ci++) {
+            var wx = bx + inset + ci * 4;
+            var key = (ci * 5 + Math.round(wy) * 3) % 13;
+            Pixel.rect(P, wx, wy, 2, 3, key === 0 ? winDark : lit);
           }
         }
       }
@@ -174,9 +219,9 @@
      lip. The first cut had warm tan with staggered brick courses, which
      at this size is just noise competing with the racers. */
   var FACE = {
-    day:    { lip: '#5d5d5d', body: '#b3b3b3', low: '#9c9c9c' },
-    desert: { lip: '#6b6152', body: '#bdb5a4', low: '#a49c8c' },
-    indoor: { lip: '#1d1d28', body: '#3f3f52', low: '#33333f' }
+    day:    { lip: '#5d5d5d', body: '#b3b3b3', low: '#9c9c9c', edge: '#2b2b30' },
+    desert: { lip: '#6b6152', body: '#bdb5a4', low: '#a49c8c', edge: '#312c24' },
+    indoor: { lip: '#1d1d28', body: '#3f3f52', low: '#33333f', edge: '#12121a' }
   };
 
   function drawSolid(s, L, cam) {
@@ -197,6 +242,9 @@
     Pixel.rect(P, x, y, s.w, s.h, f.body);
     Pixel.rect(P, x, y, s.w, 2, f.lip);
     Pixel.rect(P, x, y + s.h - 2, s.w, 2, f.low);
+    Pixel.rect(P, x, y, s.w, 1, f.edge);
+    Pixel.rect(P, x, y, 1, s.h, f.edge);
+    Pixel.rect(P, x + s.w - 1, y, 1, s.h, f.edge);
   }
 
   /* --------------------------------------------------------- decor */
@@ -225,6 +273,10 @@
       drawFreightCar(d, x, y);
     } else if (d.kind === 'crate') {
       for (var cx = 0; cx < d.w; cx += 12) Pixel.stamp(P, ART.CRATE, ART.CRATE_MAP, x + cx + 6, y + 5, 0, false);
+    } else if (d.kind === 'rail') {
+      Pixel.rect(P, x, y, d.w, 3, '#1b1b22');
+      Pixel.rect(P, x, y + 3, d.w, 1, '#3a3630');
+      for (var sl = 0; sl < d.w; sl += 9) Pixel.rect(P, x + sl, y + 3, 5, 2, '#5b5044');
     } else if (d.kind === 'ground') {
       Pixel.rect(P, x, y, d.w, 3, '#d8cfa2');
       Pixel.rect(P, x, y + 3, d.w, 30, '#c0b68c');
@@ -302,8 +354,8 @@
         e: '#20232f', o: '#20232f'
       },
       torso: {
-        j: d.jacket, d: mix(d.jacket, '#000000', 0.26), l: mix(d.jacket, '#ffffff', 0.2),
-        w: d.shirt, a: d.accent, b: mix(d.jacket, '#000000', 0.5), g: '#e0c169'
+        u: d.jacket, d: mix(d.jacket, '#000000', 0.26), l: mix(d.jacket, '#ffffff', 0.18),
+        w: d.shirt, a: d.accent, k: mix(d.jacket, '#000000', 0.5)
       },
       shoe: { n: '#20232f', v: '#4a4f60' },
       hand: { s: d.skin, t: mix(d.skin, '#000000', 0.2) },

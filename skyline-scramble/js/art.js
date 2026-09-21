@@ -12,69 +12,72 @@
 
   /* k hair/hood   s skin   t skin in shadow   e eye   m mouth line
      o outline     w highlight                                     */
+  /* At nine pixels across, a head has room for hair and ONE eye. The
+     first cut also had a nose, a mouth, an ear and a shadow under the
+     brim, and the result was mud - five tones fighting over a face the
+     size of a fingernail. Flat skin, a hard hairline, one dark pixel. */
   var HEADS = {
     crop: [
-      '.kkkkkk..',
-      'kkkkkkkk.',
-      'kssssssk.',
+      '.kkkkkkk.',
+      'kkkkkkkkk',
       'ksssssss.',
-      'ksssesss.',
-      'kssssssn.',
-      '.sssmss..',
-      '.tsssss..',
-      '..ttss...'
+      'ksssssss.',
+      'kssssess.',
+      'ksssssss.',
+      'ksssssss.',
+      '.sssssss.',
+      '..sssss..'
     ],
     mop: [
-      '.kkkkk...',
-      'kkkkkkkk.',
+      '.kkkkkkk.',
       'kkkkkkkkk',
-      'kkssssskk',
-      'ksssesss.',
-      'kssssssn.',
-      '.sssmss..',
-      '.tsssss..',
-      '..ttss...'
+      'kkkkkkkkk',
+      'kkssssss.',
+      'kksssess.',
+      'kkssssss.',
+      'kkssssss.',
+      '.sssssss.',
+      '..sssss..'
     ],
     hood: [
       '..kkkkk..',
       '.kkkkkkk.',
       'kkkkkkkkk',
       'kkssssskk',
-      'kksssessk',
-      'kkssssskn',
-      'kk.sssskk',
-      '.k.tsss.k',
-      '..kkttkk.'
+      'kksssesk.',
+      'kkssssss.',
+      'kkssssss.',
+      '.kssssss.',
+      '..kkkkk..'
     ],
     cap: [
       '..kkkkk..',
       '.kkkkkkkk',
       'ooooooooo',
-      '.ssssssk.',
-      '.sssesss.',
-      '.ssssssn.',
-      '.sssmss..',
-      '.tsssss..',
-      '..ttss...'
+      '.sssssss.',
+      '.ssssess.',
+      '.sssssss.',
+      '.sssssss.',
+      '.ssssss..',
+      '..ssss...'
     ]
   };
 
-  /* j jacket   d jacket in shadow   l jacket highlight
-     w shirt    a accent (tie, zip, badge)   b belt   g buckle      */
+  /* Same idea for the body: a collar, a stripe and a belt. The pocket,
+     the buckle and the lapels went - at this size they were noise. */
   var TORSO = [
-    'ddjjjjjl',
-    'ddjwwwjl',
-    'ddjwawjl',
-    'ddjjajjl',
-    'ddjjajjl',
-    'ddjjjjal',
-    'ddjjjjjl',
-    'ddbbbbbl',
-    'ddbggbbl',
-    'ddjjjjjl'
+    'duuuuuul',
+    'duwwwwul',
+    'duwaawul',
+    'duuaauul',
+    'duuaauul',
+    'duuuuuul',
+    'duuuuuul',
+    'dkkkkkkl',
+    'duuuuuul',
+    'duuuuuul'
   ];
 
-  /* n shoe   v sole */
   var SHOE = [
     '.nnnn',
     'nnnnn',
@@ -83,7 +86,7 @@
 
   var HAND = [
     'ss',
-    'st'
+    'ss'
   ];
 
   /* ---------------------------------------------------------- items

@@ -64,9 +64,9 @@
       name: 'FREIGHT LINE',
       theme: 'desert',
       width: 2520, height: 230,
-      sky: ['#49c3ea', '#95dcee', '#cfe9d2'],
-      city: ['#e8ecca', '#dce2bb', '#d0d7ac'],
-      cityWarm: '#eff1cc', cityCool: '#c2e0d8',
+      sky: ['#49c3ea', '#95dcee', '#cfe6cf'],
+      city: ['#d9e0ae', '#cdd69e', '#c0ca8e'],
+      cityWarm: '#e6ebc2', cityCool: '#c2e0d8',
       spawn: { x: 22, y: 112 },
       goal: { x: 2390, y: 116, w: 26, h: 26 },
       solids: [], items: [], checkpoints: [], decor: []
@@ -93,6 +93,9 @@
     /* the desert floor under it all - falling costs you a checkpoint */
     L.solids.push(block(0, L.width, 214, 240, 'sand'));
     L.decor.push({ kind: 'ground', x: 0, w: L.width, y: 214 });
+    /* the rail the whole train sits on, which is what stops the cars
+       looking like they are floating over the sand */
+    L.decor.push({ kind: 'rail', x: 0, w: L.width, y: 186 });
 
     L.items.push({ x: 250, y: 124 }, { x: 560, y: 110 }, { x: 900, y: 124 },
                   { x: 1220, y: 124 }, { x: 1545, y: 108 }, { x: 1880, y: 124 },

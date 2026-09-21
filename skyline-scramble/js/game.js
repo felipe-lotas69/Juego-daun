@@ -178,9 +178,9 @@
         if (this.state === 'roundover' || this.state === 'matchover') {
           Pixel.rect(c, 0, 0, Pixel.W, Pixel.H, 'rgba(12,14,22,0.6)');
           Pixel.outlineText(c, this.banner, Pixel.W / 2, 62, 2, '#ffc23c', '#101018', 'center');
-          this.drawScoreboard(c, 88);
+          this.drawScoreboard(c, 62);
           Pixel.text(c, this.state === 'matchover' ? 'ENTER FOR THE MENU' : 'ENTER FOR THE NEXT MAP',
-                     Pixel.W / 2, 156, 1, '#ffffff', 'center');
+                     Pixel.W / 2, 128, 1, '#ffffff', 'center');
         }
       }
     },
@@ -197,7 +197,7 @@
         var r = w.racers[i];
         var left = i < 2;
         var slot = left ? i : (i - 2);
-        var x = left ? 18 + slot * 32 : Pixel.W - 68 + slot * 32;
+        var x = left ? 15 + slot * 27 : Pixel.W - 58 + slot * 27;
         this.drawPortrait(c, r, x, 3);
         Pixel.rect(c, x + 13, 3, 9, 13, '#101018');
         Pixel.rect(c, x + 14, 4, 7, 11, r.def.mark);
@@ -205,7 +205,7 @@
       }
 
       /* the race bar: everyone's furthest point, on one line */
-      var bx = 112, bw = 96, by = 8;
+      var bx = 74, bw = 66, by = 8;
       Pixel.rect(c, bx, by, bw, 1, '#ffffff');
       Pixel.rect(c, bx, by - 3, 1, 7, '#ffffff');
       Pixel.rect(c, bx + bw - 1, by - 3, 1, 7, '#ffffff');
@@ -251,11 +251,11 @@
       for (var i = 0; i < this.world.racers.length; i++) {
         var r = this.world.racers[i];
         var rowY = y + i * 15;
-        Pixel.rect(c, 96, rowY, 128, 13, 'rgba(16,20,30,0.7)');
-        Pixel.rect(c, 96, rowY, 2, 13, r.def.mark);
-        this.drawPortrait(c, r, 101, rowY, true);
-        Pixel.text(c, r.name + (r.isBot ? '' : ' (YOU)'), 116, rowY + 3, 1, '#ffffff');
-        Pixel.text(c, String(this.scores[i]), 216, rowY + 3, 1, '#ffc23c', 'right');
+        Pixel.rect(c, 44, rowY, 126, 13, 'rgba(16,20,30,0.7)');
+        Pixel.rect(c, 44, rowY, 2, 13, r.def.mark);
+        this.drawPortrait(c, r, 49, rowY, true);
+        Pixel.text(c, r.name + (r.isBot ? '' : ' (YOU)'), 64, rowY + 3, 1, '#ffffff');
+        Pixel.text(c, String(this.scores[i]), 162, rowY + 3, 1, '#ffc23c', 'right');
       }
     },
 
@@ -265,18 +265,18 @@
       Draw.world(c, menuWorld(), this.time);
       Pixel.rect(c, 0, 0, Pixel.W, Pixel.H, 'rgba(10,16,30,0.28)');
 
-      Pixel.outlineText(c, 'SKYLINE', Pixel.W / 2, 16, 4, '#ffffff', '#101018', 'center');
-      Pixel.outlineText(c, 'SCRAMBLE', Pixel.W / 2, 46, 4, '#ffc23c', '#101018', 'center');
+      Pixel.outlineText(c, 'SKYLINE', Pixel.W / 2, 10, 3, '#ffffff', '#101018', 'center');
+      Pixel.outlineText(c, 'SCRAMBLE', Pixel.W / 2, 34, 3, '#ffc23c', '#101018', 'center');
       Pixel.outlineText(c, 'YOU CANNOT WALK. LEAN, LET GO, PRAY.',
-                        Pixel.W / 2, 80, 1, '#dbe6f2', '#101018', 'center');
+                        Pixel.W / 2, 58, 1, '#dbe6f2', '#101018', 'center');
 
       for (var i = 0; i < this.menuItems.length; i++) {
-        var y = 98 + i * 20;
+        var y = 72 + i * 16;
         var on = i === this.menuIndex;
-        var w = 92, x = Pixel.W / 2 - w / 2;
-        Pixel.rect(c, x, y, w, 15, on ? '#ffc23c' : 'rgba(16,20,30,0.72)');
-        Pixel.frame(c, x, y, w, 15, on ? '#ffffff' : '#5a6478');
-        Pixel.text(c, this.menuItems[i], Pixel.W / 2, y + 4, 1,
+        var w = 84, x = Pixel.W / 2 - w / 2;
+        Pixel.rect(c, x, y, w, 13, on ? '#ffc23c' : 'rgba(16,20,30,0.72)');
+        Pixel.frame(c, x, y, w, 13, on ? '#ffffff' : '#5a6478');
+        Pixel.text(c, this.menuItems[i], Pixel.W / 2, y + 3, 1,
                    on ? '#101018' : '#dbe6f2', 'center');
       }
       Pixel.text(c, 'ARROWS OR W/S  -  ENTER', Pixel.W / 2, Pixel.H - 14, 1, '#9fb0c4', 'center');
@@ -286,7 +286,7 @@
     drawControls: function (c) {
       Draw.world(c, menuWorld(), this.time);
       Pixel.rect(c, 0, 0, Pixel.W, Pixel.H, 'rgba(10,16,30,0.72)');
-      Pixel.outlineText(c, 'CONTROLS', Pixel.W / 2, 14, 3, '#57c96a', '#101018', 'center');
+      Pixel.outlineText(c, 'CONTROLS', Pixel.W / 2, 8, 2, '#57c96a', '#101018', 'center');
 
       var rows = [
         ['HOLD', 'LEAN THAT WAY AND WIND UP'],
@@ -296,12 +296,12 @@
         ['IN THE AIR', 'THE SAME KEYS SPIN YOU']
       ];
       for (var i = 0; i < rows.length; i++) {
-        var y = 48 + i * 14;
-        Pixel.text(c, rows[i][0], 40, y, 1, '#ffc23c');
-        Pixel.text(c, rows[i][1], 116, y, 1, '#ffffff');
+        var y = 32 + i * 12;
+        Pixel.text(c, rows[i][0], 16, y, 1, '#ffc23c');
+        Pixel.text(c, rows[i][1], 78, y, 1, '#ffffff');
       }
-      Pixel.text(c, 'PLAYER 1     W    E    R', Pixel.W / 2, 128, 1, '#8fd4f2', 'center');
-      Pixel.text(c, 'PLAYER 2     LEFT  RIGHT  UP', Pixel.W / 2, 140, 1, '#c0a0f2', 'center');
+      Pixel.text(c, 'PLAYER 1   W  E  R', Pixel.W / 2, 96, 1, '#8fd4f2', 'center');
+      Pixel.text(c, 'PLAYER 2   LEFT RIGHT UP', Pixel.W / 2, 106, 1, '#c0a0f2', 'center');
       Pixel.text(c, 'PRESS ANY KEY', Pixel.W / 2, Pixel.H - 14, 1, '#9fb0c4', 'center');
     }
   };
