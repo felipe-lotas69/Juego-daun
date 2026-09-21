@@ -517,7 +517,8 @@
       ops: { surgery: true, prosthetics: true, harvestOrgans: false, euthanasia: false },
       autoAssigned: false,
       lastDose: {},             /* drugId -> tick, for scheduled doses */
-      blockedFoodUntil: 0
+      blockedFoodUntil: 0,
+      wearScanTick: 0
     };
     pawn.policy = rec;
     return rec;
@@ -702,10 +703,20 @@
     return true;
   };
 
+  /* Called with a def id, a def, or a Thing - all three turn up at the
+     call sites, and a policy that only understood one of them would
+     silently allow everything the other two named. */
+  function defIdOf(x) {
+    if (!x) return null;
+    if (typeof x === 'string') return x;
+    if (x.defCategory === 'thing') return x.id;
+    if (x.defId) return x.defId;
+    return x.def ? x.def.id : null;
+  }
+  Policies.defIdOf = defIdOf;
+
   Policies.outfitAllows = function (pawn, defOrId) {
-    var defId = typeof defOrId === 'string' ? defOrId
-      : (defOrId && (defOrId.defId || (defOrId.id && defOrId.defCategory === 'thing' && defOrId.id)));
-    if (!defId && defOrId && defOrId.def) defId = defOrId.def.id;
+    var defId = defIdOf(defOrId);
     if (!defId) return true;
     var o = Policies.outfitOf(pawn);
     if (!o) return true;
@@ -744,10 +755,18 @@
      pawn has nothing in. Deliberately not "an upgrade": swapping a
      shirt for a marginally better shirt is a colonist who spends the
      day undressing. */
+  var WEAR_RESCAN = 250;
+
   Policies.wantsToWear = function (pawn) {
     if (!pawn || !pawn.map || pawn.isHuman !== true) return null;
     var o = Policies.outfitOf(pawn);
     if (!o) return null;
+    /* Work givers are walked every time any colonist finishes anything.
+       A naked pawn on a map with no clothes on it would otherwise pay
+       for a reachability sweep dozens of times a second. */
+    var rec = record(pawn), t = now();
+    if (rec.wearScanTick && t - rec.wearScanTick < WEAR_RESCAN) return null;
+    rec.wearScanTick = t;
     var map = pawn.map, taken = slotsTaken(pawn);
     var Res = sys('Res'), T = sys('T'), Path = sys('Path');
     var apparel = Policies.apparelDefs(), cands = [];
@@ -770,8 +789,12 @@
       }
     }
     if (!cands.length) return null;
-    if (!Path || !Path.closestReachable) return cands[0];
-    return Path.closestReachable(map, pawn, cands, function (t, dist) { return -dist; });
+    var found = (!Path || !Path.closestReachable) ? cands[0]
+      : Path.closestReachable(map, pawn, cands, function (t, dist) { return -dist; });
+    /* A hit is worth re-asking about immediately: the pawn is about to
+       walk to it and the next scan decides whether it is still there. */
+    if (found) rec.wearScanTick = 0;
+    return found;
   };
 
   function hostilesNear(map) {
@@ -834,13 +857,11 @@
   Policies.foodAllowed = function (pawn, defOrThing) {
     if (!pawn) return true;
     if (pawn.needs && pawn.needs.food < 0.10) return true;
-    var def = defOrThing;
-    if (typeof def === 'string') def = Defs.maybe('thing', def);
-    else if (def && def.defCategory !== 'thing') def = def.def || null;
-    if (!def) return true;
+    var defId = defIdOf(defOrThing);
+    if (!defId) return true;
     var f = Policies.foodOf(pawn);
     if (!f) return true;
-    return filterAllows(f, def.id);
+    return filterAllows(f, defId);
   };
 
   /* Is there anything this pawn IS allowed to eat within reach? Asked
@@ -1359,9 +1380,14 @@
        out of hit points last and the one everybody else needs alive. */
     rec.care = skill(pawn, 'medicine') >= 8 ? 3 : -1;
 
-    Policies.applySchedulePreset(pawn, hasTrait(pawn, 'nightOwl') ? 'nightOwl'
-      : (hasTrait(pawn, 'industrious') ? 'hardWorker'
-        : (hasTrait(pawn, 'lazy') || hasTrait(pawn, 'slothful') ? 'relaxed' : 'default')));
+    /* Only ever the first day they are here: a preset that overwrote a
+       strip the player had already painted would be a bug wearing a
+       feature's clothes. */
+    if (opts.force || !Array.isArray(pawn.schedule) || pawn.schedule.length !== 24) {
+      Policies.applySchedulePreset(pawn, hasTrait(pawn, 'nightOwl') ? 'nightOwl'
+        : (hasTrait(pawn, 'industrious') ? 'hardWorker'
+          : (hasTrait(pawn, 'lazy') || hasTrait(pawn, 'slothful') ? 'relaxed' : 'default')));
+    }
 
     Policies.syncDrugs(pawn);
     return true;

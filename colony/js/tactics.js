@@ -766,6 +766,19 @@
     return best;
   };
 
+  /* Whether to move at all. Both paths ask this and nothing else does,
+     so the move budget, the floor between moves and the margin a new
+     cell has to clear cannot end up meaning two different things in
+     two places. Returns the cell to commit to, or null for "stay". */
+  function chooseMove(pawn, st, foe, opts) {
+    if (st.relocations >= MAX_RELOCATIONS) return null;
+    if (gameTick() - st.lastRelocTick < MIN_RELOCATE_TICKS) return null;
+    var best = Tactics.bestFiringPosition(pawn, foe, opts);
+    if (!best || best.travel === 0 || !best.los) return null;
+    if (best.current && best.score < best.current.score + RELOCATE_MARGIN) return null;
+    return best;
+  }
+
   /* ------------------------------------------------------------------
      Suppression and dodging
 
@@ -938,10 +951,18 @@
   Tactics.focusOf = function (pawn) {
     var f = _focus[pawn.faction];
     if (!f) return 0;
-    if (gameTick() - f.tick > ORDER_TICKS) { delete _focus[pawn.faction]; return 0; }
+    /* A negative age means the clock has been reset under it - a new
+       colony, or a load - and pawn ids start again from one with it, so
+       a stale focus could otherwise point at a friend. The hostility
+       test below is the second half of that guard. */
+    var age = gameTick() - f.tick;
+    if (age < 0 || age > ORDER_TICKS) { delete _focus[pawn.faction]; return 0; }
     var map = pawn.map;
     var live = (T && map) ? T.resolve({ k: 'p', id: f.id, x: 0, y: 0 }, map) : null;
-    if (!live || live.dead || live.downed) { delete _focus[pawn.faction]; return 0; }
+    if (!live || live.dead || live.downed || !hostile(pawn, live)) {
+      delete _focus[pawn.faction];
+      return 0;
+    }
     return f.id;
   };
 
@@ -1030,7 +1051,8 @@
     var st = pawn && pawn.tactics;
     var o = st && st.order;
     if (!o) return null;
-    if (gameTick() - o.tick > ORDER_TICKS) { st.order = null; return null; }
+    var age = gameTick() - o.tick;
+    if (age < 0 || age > ORDER_TICKS) { st.order = null; return null; }
     return o;
   };
 
@@ -1358,17 +1380,11 @@
     return makeJob('combatRetreat', T.cell(cell.x, cell.y), null, {});
   }
 
-  function coverJob(pawn, foe, opts) {
-    var best = Tactics.bestFiringPosition(pawn, foe, opts);
+  function coverJob(pawn, st, foe, opts) {
+    var best = chooseMove(pawn, st, foe, opts);
     if (!best) return null;
-    var cur = best.current;
-    /* Already in the best cell there is: say nothing and let the tree
-       below do the shooting it was always going to do. */
-    if (best.travel === 0) return null;
-    if (cur && best.score < cur.score + RELOCATE_MARGIN) return null;
-    if (!best.los) return null;
     var job = makeJob('takeCover', T.pawn(foe), T.cell(best.x, best.y), {});
-    if (job) stateOf(pawn).targetId = foe.id;
+    if (job) st.targetId = foe.id;
     return job;
   }
 
@@ -1467,12 +1483,7 @@
       opts.anchorX = order.x; opts.anchorY = order.y; opts.anchorR = 8;
     }
 
-    /* The move budget and the floor between moves are checked here, in
-       front of the one call that can produce a move. */
-    if (st.relocations >= MAX_RELOCATIONS) return null;
-    if (tick - st.lastRelocTick < MIN_RELOCATE_TICKS) return null;
-
-    return coverJob(pawn, foe, opts);
+    return coverJob(pawn, st, foe, opts);
   };
 
   /* ------------------------------------------------------------------
@@ -1557,9 +1568,7 @@
     if (!job || !STEERABLE[job.defId]) return;
     if (pawn.moving && pawn.moving()) return;
     if (st.relocations >= MAX_RELOCATIONS) return;
-
-    var tick = gameTick();
-    if (tick - st.lastRelocTick < MIN_RELOCATE_TICKS) return;
+    if (gameTick() - st.lastRelocTick < MIN_RELOCATE_TICKS) return;
 
     var C = sys('Combat');
     if (!C) return;
@@ -1591,11 +1600,8 @@
       opts.anchorX = pawn.x; opts.anchorY = pawn.y; opts.anchorR = 3;
     }
 
-    var best = Tactics.bestFiringPosition(pawn, foe, opts);
-    if (!best || best.travel === 0 || !best.los) return;
-    var cur = best.current;
-    if (cur && best.score < cur.score + RELOCATE_MARGIN) return;
-
+    var best = chooseMove(pawn, st, foe, opts);
+    if (!best) return;
     if (!pawn.startPath || pawn.startPath(best.x, best.y, PE.ON_CELL) === false) return;
     claimCell(pawn, best.x, best.y);
     noteMove(pawn, st, best.x, best.y);

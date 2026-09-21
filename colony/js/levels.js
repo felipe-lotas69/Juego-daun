@@ -1369,11 +1369,15 @@
     return n;
   };
 
-  function landingCell(map, x, y) {
+  /* Where a pawn arriving at x,y on this map can actually stand. The
+     radius is deliberately short: a colonist who falls through a floor
+     should land under the hole or not move at all, never teleport
+     across the map to the nearest open cell. */
+  function landingCell(map, x, y, radius) {
     if (map.inBounds(x, y) && map.passable(x, y)) return { x: x, y: y };
     var free = map.freeNeighbour ? map.freeNeighbour(x, y) : null;
     if (free) return free;
-    var ring = U.cellsInRadius(x, y, 6);
+    var ring = U.cellsInRadius(x, y, radius > 0 ? radius : 8);
     for (var i = 0; i < ring.length; i++) {
       if (map.inBounds(ring[i][0], ring[i][1]) && map.passable(ring[i][0], ring[i][1])) {
         return { x: ring[i][0], y: ring[i][1] };
@@ -1395,7 +1399,7 @@
       if (!c || !c.usable()) return false;
     }
 
-    var dest = landingCell(target.map, pawn.x, pawn.y);
+    var dest = landingCell(target.map, pawn.x, pawn.y, opts.landingRadius);
     if (!dest) return false;
 
     rememberClaims(pawn, fromZ);

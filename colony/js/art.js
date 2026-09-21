@@ -1070,6 +1070,39 @@
 
   /* Natural rock. Strata first, then the blocky fracture on top of it,
      then ore if this is a compacted seam. */
+  /* A cliff does not end on a ruled line any more than a shoreline does.
+     Where the mass is open to the map, the outline is bitten back a few
+     pixels in a ragged arc so a mountain crumbles into the ground it
+     sits in. Sides that touch more rock are left alone, so a run of wall
+     can never grow a gap down the middle of it. */
+  var biteTmp = null;
+
+  function rockBite(g, rnd, mask, w, h) {
+    if (!biteTmp || biteTmp.width < w || biteTmp.height < h) biteTmp = makeCanvas(w, h);
+    var m = ctxOf(biteTmp);
+    m.setTransform(1, 0, 0, 1, 0, 0);
+    m.clearRect(0, 0, biteTmp.width, biteTmp.height);
+    fill(m, 0, 0, w, h, LIT);
+    m.globalCompositeOperation = 'destination-out';
+    for (var s = 0; s < 4; s++) {
+      if (mask & (1 << s)) continue;
+      for (var i = 0; i < 6; i++) {
+        var t = ((i + 0.5) / 6) * (((s & 1) === 0) ? w : h) + rs(rnd, 5);
+        var r = rr(rnd, 6, 12), out = rr(rnd, r * 0.45, r * 0.8);
+        var cx, cy;
+        if (s === 0) { cx = t; cy = -out; }
+        else if (s === 1) { cx = w + out; cy = t; }
+        else if (s === 2) { cx = t; cy = h + out; }
+        else { cx = -out; cy = t; }
+        blob(m, cx, cy, r, LIT, 1, 0.45);
+      }
+    }
+    m.globalCompositeOperation = 'source-over';
+    g.globalCompositeOperation = 'destination-in';
+    g.drawImage(biteTmp, 0, 0);
+    g.globalCompositeOperation = 'source-over';
+  }
+
   function paintRockWall(g, rnd, mask, base, ore, w, h) {
     fill(g, 0, 0, w, h, base);
     var tilt = rs(rnd, 0.28);
@@ -1083,26 +1116,26 @@
          1, rgba(shade(base, -0.3), 0)]));
       g.restore();
     }
-    for (var i = 0; i < 11; i++) {
-      var cx = rnd() * w, cy = rnd() * h, n = ri(rnd, 5, 7), pts = [], r0 = rr(rnd, 7, 17);
+    for (var i = 0; i < 5; i++) {
+      var cx = rnd() * w, cy = rnd() * h, n = ri(rnd, 5, 7), pts = [], r0 = rr(rnd, 12, 24);
       for (var k = 0; k < n; k++) {
         var a = (k / n) * TAU + rs(rnd, 0.35), rk = r0 * rr(rnd, 0.55, 1.2);
         pts.push(cx + Math.cos(a) * rk, cy + Math.sin(a) * rk);
       }
-      g.globalAlpha = rr(rnd, 0.22, 0.5);
-      poly(g, pts, shade(base, rr(rnd, -0.22, 0.2)));
+      g.globalAlpha = rr(rnd, 0.14, 0.28);
+      poly(g, pts, shade(base, rr(rnd, -0.12, 0.1)));
       g.globalAlpha = 1;
     }
-    for (var c = 0; c < 5; c++) {
+    for (var c = 0; c < 3; c++) {
       var x0 = rr(rnd, -4, w + 4), y0 = rr(rnd, -4, h + 4);
-      var x1 = x0 + rs(rnd, 30), y1 = y0 + rs(rnd, 30);
+      var x1 = x0 + rs(rnd, 34), y1 = y0 + rs(rnd, 34);
       whip(g, x0, y0, (x0 + x1) / 2 + rs(rnd, 9), (y0 + y1) / 2 + rs(rnd, 9), x1, y1,
-        rgba(shade(base, -0.5), 0.55), rr(rnd, 1.1, 2.1));
-      whip(g, x0 - 1, y0 - 1.2, (x0 + x1) / 2 + rs(rnd, 9), (y0 + y1) / 2 - 1.2, x1 - 1, y1 - 1.2,
-        rgba(shade(base, 0.3), 0.25), 1);
+        rgba(shade(base, -0.38), 0.4), rr(rnd, 1.6, 2.6));
+      whip(g, x0 - 1.4, y0 - 1.6, (x0 + x1) / 2 + rs(rnd, 9), (y0 + y1) / 2 - 1.6, x1 - 1.4, y1 - 1.6,
+        rgba(shade(base, 0.24), 0.18), 1.2);
     }
-    flecks(g, rnd, 40, 0, 0, w, h,
-      [shade(base, 0.24), shade(base, -0.28)], 0.7, 2.4, 0.5);
+    flecks(g, rnd, 10, 0, 0, w, h,
+      [shade(base, 0.14), shade(base, -0.16)], 1.4, 3, 0.35);
     if (ore) {
       /* Ore sits in the rock as short bright seams with a specular
          crumb on each, so a steel vein is obvious from a screen away. */
@@ -1118,8 +1151,9 @@
         }
       }
     }
-    grain(g, rnd, 0, 0, w, h, 0.3, 'overlay');
+    grain(g, rnd, 0, 0, w, h, 0.16, 'overlay');
     wallEdges(g, mask, w, h, 0.26, 0.36);
+    if ((~mask & 15) !== 0) rockBite(g, rnd, mask, w, h);
   }
 
   /* Built walls take their look from what they are built out of, which
@@ -4097,23 +4131,19 @@
      few pixels, so the extra sixteen-fold of memory would buy nothing,
      and there are a few hundred of them. */
 
-  var EDGE_PX = 32;
-  /* How deep each reach cuts, as a fraction of a tile: a minimum plus a
-     span the tearing wanders through. The shallow one is deeper than it
-     first looks it needs to be, and on purpose - it is only ever asked
-     for between two grounds that already look alike, where a wide blend
-     costs nothing and a narrow one leaves the rectangle showing. Two
-     shades of the same earth meeting along a ruled line is exactly what
-     a field of soil and rich soil looked like before. */
-  var EDGE_LO = [0.10, 0.30], EDGE_SPAN = [0.20, 0.36];
-  var edgeKeys = [];
-  var EDGE_CACHE_MAX = 512;
+  /* Stencils are authored at PX like every other tile sprite, because
+     render.js scales what art.js hands it by CACHE_PX / ART_PX and
+     honours its ox/oy. A mask at any other size arrives a quarter the
+     area it should be, in the corner of the cell. */
+  var EDGE_LO = [0.11, 0.24], EDGE_SPAN = [0.17, 0.32];
+  var edgeKeys = [], EDGE_CACHE_MAX = 192;
+  var blendKeys = [], BLEND_CACHE_MAX = 320;
 
   /* One side of the tile: an opaque band against the seam whose inner
      boundary wanders, then a hand of grains thrown past it. Drawn as the
      north edge and rotated, so all four sides tear the same way. */
   function edgeBand(g, rnd, dir, reach) {
-    var E = EDGE_PX, n = 4, dep = [], i, deep = 0;
+    var E = PX, n = 4, dep = [], i, deep = 0;
     var lo = E * EDGE_LO[reach], span = E * EDGE_SPAN[reach];
     g.save();
     g.translate(E * 0.5, E * 0.5);
@@ -4123,42 +4153,44 @@
       dep.push(lo + rnd() * span);
       if (dep[i] > deep) deep = dep[i];
     }
-    /* Opaque where the two grounds actually touch, gone a few pixels
+    /* Opaque where the two grounds actually touch and gone a few pixels
        later. A translucent wash over the whole band would read as a
-       second line drawn in tracing paper. */
-    g.fillStyle = linGrad(g, 0, -1, 0, deep + E * 0.07,
-      [0, rgba(LIT, 1), 0.6, rgba(LIT, 0.94), 1, rgba(LIT, 0)]);
+       second line drawn in tracing paper, which is worse than the ruled
+       edge it replaced. */
+    g.fillStyle = linGrad(g, 0, -1, 0, deep + E * 0.08,
+      [0, rgba(LIT, 1), 0.58, rgba(LIT, 0.93), 1, rgba(LIT, 0)]);
     g.beginPath();
     g.moveTo(-2, -2);
     g.lineTo(E + 2, -2);
     g.lineTo(E + 2, dep[n]);
     for (i = n - 1; i >= 0; i--) {
       g.quadraticCurveTo(((i + 0.5) / n) * E,
-        (dep[i] + dep[i + 1]) * 0.5 + rs(rnd, span * 0.45),
+        (dep[i] + dep[i + 1]) * 0.5 + rs(rnd, span * 0.5),
         (i / n) * E, dep[i]);
     }
     g.lineTo(-2, dep[0]);
     g.closePath();
     g.fill();
-    for (i = 0; i < 3; i++) {
-      var r = E * rr(rnd, 0.025, 0.06);
-      blob(g, rnd() * E, deep + r + rnd() * span, r * 1.5, LIT, 0.45 - i * 0.1, 0.4);
+    /* A few grains carried past the fringe. Small and few: this is grit
+       on a beach, not a second coat of paint. */
+    for (i = 0; i < 4; i++) {
+      var r = E * rr(rnd, 0.022, 0.055);
+      blob(g, rnd() * E, deep + r + rnd() * span * 0.9, r * 1.5, LIT, 0.42 - i * 0.07, 0.35);
     }
     g.restore();
   }
 
   /* A corner neighbour with no shared edge: a soft bite out of the
-     corner, which is what stops a diagonal coast reading as stairs. */
+     corner, which is what stops a diagonal coast reading as stairs. It
+     has to fall away the whole way from the corner - a plateau here
+     floods the cell and the neighbour arrives as a blot. */
   function edgeCorner(g, rnd, dir, reach) {
-    var E = EDGE_PX;
+    var E = PX;
     var cx = ((dir === 4 || dir === 5) ? 1 : 0) * E;
     var cy = ((dir === 5 || dir === 6) ? 1 : 0) * E;
     var r = E * (EDGE_LO[reach] + EDGE_SPAN[reach] * rr(rnd, 0.7, 1.2)) * 1.5;
-    /* It has to fall away the whole way from the corner. A plateau here
-       floods the cell and the neighbour arrives as a blot rather than as
-       a bite taken out of the corner. */
     g.fillStyle = radGrad(g, cx, cy, 0, r,
-      [0, rgba(LIT, 0.95), 0.45, rgba(LIT, 0.62), 1, rgba(LIT, 0)]);
+      [0, rgba(LIT, 0.95), 0.45, rgba(LIT, 0.6), 1, rgba(LIT, 0)]);
     g.beginPath();
     g.ellipse(cx, cy, r * rr(rnd, 0.85, 1.15), r * rr(rnd, 0.85, 1.15), 0, 0, TAU);
     g.fill();
@@ -4170,34 +4202,35 @@
     var key = 'te|' + bits + '|' + variant + '|' + reach;
     var hit = cache.get(key);
     if (hit) return hit;
-    var made = cached(key, EDGE_PX, EDGE_PX, function (g, rnd) {
+    var made = cached(key, PX, PX, function (g, rnd) {
       var d;
       for (d = 0; d < 4; d++) if (bits & (1 << d)) edgeBand(g, rnd, d, reach);
       for (d = 4; d < 8; d++) if (bits & (1 << d)) edgeCorner(g, rnd, d, reach);
     });
-    /* Two hundred and fifty-six masks times four variants times two
-       reaches is more than any one map asks for, but it is not bounded
-       by anything else, so the oldest fall out and the table settles. */
     edgeKeys.push(key);
     while (edgeKeys.length > EDGE_CACHE_MAX) cache.delete(edgeKeys.shift());
     return made;
   };
 
-  /* The same mask already filled with `def`'s ground: one drawImage over
-     the cell and the seam is done. */
-  var blendKeys = [];
-  var BLEND_CACHE_MAX = 384;
+  /* How deep a surface creeps when it wins a seam. A shoreline, a bank
+     or a change of earth gets the full bank; a floor somebody laid keeps
+     its manufactured rectangle and only frays at the threshold. A caller
+     that wants to decide for itself sets bit 2 of `variant`. */
+  function reachOf(def, packed) {
+    if (packed > 3) return (packed >> 2) & 1;
+    return def.buildCategory === 'floor' ? 0 : 1;
+  }
 
-  Art.terrainBlend = function (def, bits, packed) {
+  Art.terrainBlend = function (def, bits, variant) {
     bits = (bits | 0) & 255;
     if (!def || !bits) return null;
-    var variant = (packed | 0) & 3, reach = ((packed | 0) >> 2) & 1;
-    var key = 'tb|' + def.id + '|' + bits + '|' + variant + '|' + reach;
+    var v = (variant | 0) & 3, reach = reachOf(def, variant | 0);
+    var key = 'tb|' + def.id + '|' + bits + '|' + v + '|' + reach;
     var hit = cache.get(key);
     if (hit) return hit;
-    var src = Art.terrain(def, variant), mask = Art.terrainEdge(bits, packed);
-    var made = cached(key, EDGE_PX, EDGE_PX, function (g) {
-      g.drawImage(src, 0, 0, EDGE_PX, EDGE_PX);
+    var src = Art.terrain(def, v), mask = Art.terrainEdge(bits, v | (reach << 2));
+    var made = cached(key, PX, PX, function (g) {
+      g.drawImage(src, 0, 0);
       g.globalCompositeOperation = 'destination-in';
       g.drawImage(mask, 0, 0);
       g.globalCompositeOperation = 'source-over';
@@ -4205,6 +4238,22 @@
     blendKeys.push(key);
     while (blendKeys.length > BLEND_CACHE_MAX) cache.delete(blendKeys.shift());
     return made;
+  };
+
+  /* Which ground wins a seam: higher creeps over lower. Water rises over
+     its shore, loose material creeps over firm, and a floor somebody
+     built frays onto the dirt rather than the dirt onto the floor. */
+  var TERRAIN_RANK = {
+    deepWater: 9, shallowWater: 8, marsh: 7, mud: 6, sand: 5,
+    gravel: 4, richSoil: 3, soil: 2, rockFloor: 1
+  };
+
+  Art.terrainRank = function (def) {
+    if (!def) return -1;
+    if (def.buildCategory === 'floor') return 12;
+    var r = TERRAIN_RANK[def.id];
+    if (r !== undefined) return r;
+    return def.terrainCategory === 'water' ? 8 : 2;
   };
 
   function isWallLike(map, x, y) {

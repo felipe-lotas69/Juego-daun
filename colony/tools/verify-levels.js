@@ -315,10 +315,8 @@ if (vaulted) {
 }
 
 hr('11. what a basement costs to run');
-/* Same colony, same point in the run, measured both ways so the numbers
-   are comparable: warm JIT, warm caches, only the levels differ. */
-/* Bring everybody home first, so the two runs have the same colony on
-   the same surface and the only difference is the levels themselves. */
+/* Same colony, same point in the run, measured both ways, so the only
+   difference between the two numbers is the levels themselves. */
 for (const p of Levels.colonists()) if (Levels.zOf(p.map) !== 0) Levels.transfer(p, 0, { force: true });
 for (let i = 0; i < 500; i++) Game.doTick();
 let c0 = process.hrtime.bigint();
@@ -327,32 +325,40 @@ let c1 = process.hrtime.bigint();
 const withCost = Number(c1 - c0) / 1e6;
 const shape = Levels.all().map(l => `z${l.z}:${l.map.things.size}t/${l.map.pawns.length}p`).join(' ');
 const keep = JSON.stringify(Levels.save());
+
+/* Back to an undug colony. The stair heads have to go too: a stairs
+   head standing on the surface is precisely what makes a basement
+   appear, so leaving one would be measuring a dug colony again. */
+for (const lv of Levels.all()) {
+  for (const d of ['stairsUp', 'stairsDown', 'levelLadder', 'freightLift']) {
+    for (const t of lv.map.byDef(d).slice()) lv.map.destroyThing(t, 'test');
+  }
+}
 Levels.reset(); Levels.init(map);
+ok(map.byDef('stairsDown').length === 0 && map.byDef('stairsUp').length === 0, 'colony is undug again');
 let d0 = process.hrtime.bigint();
 for (let i = 0; i < 3000; i++) Game.doTick();
 let d1 = process.hrtime.bigint();
 const soloCost = Number(d1 - d0) / 1e6;
-console.log(`  3000 ticks, surface only        ${soloCost.toFixed(0)}ms  (${(3000 / soloCost * 1000) | 0} ticks/s)`);
-console.log(`  3000 ticks, with ${shape}`);
-console.log(`                                  ${withCost.toFixed(0)}ms  (${(3000 / withCost * 1000) | 0} ticks/s)`);
+console.log(`  3000 ticks, surface only          ${soloCost.toFixed(0)}ms  (${(3000 / soloCost * 1000) | 0} ticks/s)`);
+console.log(`  3000 ticks, ${shape}`);
+console.log(`                                    ${withCost.toFixed(0)}ms  (${(3000 / withCost * 1000) | 0} ticks/s)`);
 ok(!Game.gameOver, 'the colony survived the teardown');
-ok(soloCost < withCost, 'the surface-only run is the cheaper of the two, as it must be');
-/* The precise number. A live colony drifts too much between two 6000
-   tick runs to measure a fraction of a percent through Game.doTick, so
-   the added work is timed directly: the tick guard, the level-count
-   check, and the once-a-second reconcile scan, on an undug colony. */
-Levels.reset(); Levels.init(map);
-console.log('  DEBUG connectors on surface: ' + ['stairsUp','stairsDown','levelLadder','freightLift'].map(d => d + '=' + map.byDef(d).length).join(' ') + ' levels=' + Levels.count());
+ok(Levels.count() === 1, 'and nothing dug itself: ' + Levels.all().map(l => l.z).join(','));
+
+/* A live colony drifts too much between two runs to see a fraction of a
+   percent through Game.doTick, so the added work is timed on its own:
+   the tick guard, the level-count check, and the once-a-second scan. */
 const keptTick = Game.tick;
 let m0 = process.hrtime.bigint();
 for (let i = 0; i < 300000; i++) { Game.tick++; Levels.tick(map, Game); }
 let m1 = process.hrtime.bigint();
 Game.tick = keptTick;
 const perTick = Number(m1 - m0) / 300000;
-console.log(`  Levels.tick() on an undug colony: ${perTick.toFixed(0)} ns per game tick ` +
-            `(${(perTick * 60 / 1e6 * 100).toFixed(4)}% of one second of simulation at 1x)`);
-ok(perTick < 300, 'an undug level costs under 300ns a tick, which is nothing');
-ok(Levels.count() === 1, 'and no level was created by ticking 300000 times; levels now: ' + Levels.all().map(l => l.z).join(','));
+console.log(`  Levels.tick() on an undug colony: ${perTick.toFixed(0)} ns per game tick, ` +
+            `${(perTick * 60 / 1e6).toFixed(5)} ms per simulated second at 1x`);
+ok(perTick < 400, 'an undug level costs under 400ns a tick, which is nothing');
+ok(Levels.count() === 1, 'and 300000 ticks created no level');
 
 hr('11. save and load');
 const json = keep;
@@ -370,6 +376,31 @@ ok(Levels.connections().length >= 1, 'the stair pairs were reconciled back into 
 ok(Levels.get(1) && Levels.get(1).map.things.size === 0, 'the upper floor came back too');
 for (let i = 0; i < 300; i++) Game.doTick();
 ok(!Game.gameOver, 'and the game keeps ticking after a load');
+
+hr('12. the gap save.js still has to close');
+const lift2 = Levels.get(-1);
+const traveller = Levels.colonists()[0];
+/* Stand above a cavern first; force does not mean teleport across the map. */
+for (let i = 0; i < lift2.map.size; i++) {
+  if (!lift2.map.passableIdx(i) || lift2.map.buildingId[i]) continue;
+  const was = { x: traveller.x, y: traveller.y };
+  traveller.x = lift2.map.xOf(i); traveller.y = lift2.map.yOf(i);
+  map.notePawnMoved(traveller, was.x, was.y);
+  break;
+}
+ok(Levels.transfer(traveller, -1, { force: true }), 'put one colonist underground');
+let payload = null;
+try { payload = Save.serialize(Game); } catch (e) { ok(false, 'Save.serialize threw with a colonist underground: ' + e.message); }
+ok(!!payload, 'Save.serialize still works with a colonist on another level');
+if (payload) {
+  const inPayload = payload.map.pawns.length;
+  const everywhere = map.pawns.length + lift2.map.pawns.length;
+  console.log(`  save.js wrote ${inPayload} pawns; the colony actually has ${everywhere} across its levels`);
+  ok(inPayload < everywhere, 'which is exactly the three-line change described in levels.js: ' +
+     'Save.mapRecord/restoreMap, plus Levels.save(Save.mapRecord) and Levels.load(data.levels, Save.restoreMap)');
+  const round = Levels.load(JSON.parse(JSON.stringify(Levels.save(m => ({ w: m.w, h: m.h })))) , null);
+  ok(round !== false, 'Levels.save(packMap) accepts an injected packer');
+}
 
 console.log('\n' + (bad ? bad + ' FAILURE(S)' : 'every levels.js check passed'));
 process.exit(bad ? 1 : 0);

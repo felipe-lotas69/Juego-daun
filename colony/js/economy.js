@@ -1238,19 +1238,39 @@
     }
   }
 
-  /* Silver moving in or out of the colony is money, and money always
-     has a reason. Anything we did not book ourselves this tick is a
-     trade: nothing else moves silver in bulk. */
-  function reconcileSilver(map) {
+  /* Silver moving in or out of the colony is money, and money always has
+     a reason. Contracts declare theirs; everything else is inferred from
+     whether there was anybody to trade with. Silver that appears with no
+     counter in sight was dug out of a seam or taken off a raider. */
+  function counterPresent(g) {
+    var T = sys('Trade');
+    if (T && T.visitors) {
+      for (var i = 0; i < T.visitors.length; i++) {
+        if (!T.visitors[i].angered) return true;
+      }
+    }
+    var C = sys('Caravans');
+    var W = sys('World');
+    if (C && C.all && W && W.settlementAt) {
+      for (var c = 0; c < C.all.length; c++) {
+        var car = C.all[c];
+        if (car && !car.gone && W.settlementAt(car.tile)) return true;
+      }
+    }
+    return false;
+  }
+
+  function reconcileSilver(g) {
     var st = Economy.state;
-    var now = Economy.silver(map);
+    var now = Economy.silver(g.map);
     var prev = st.silverSeen;
     st.silverSeen = now;
     if (prev === undefined) return;
     var delta = now - prev - (st.silverBooked || 0);
     st.silverBooked = 0;
     if (!delta) return;
-    Economy.book('trade', delta);
+    if (counterPresent(g)) Economy.book('trade', delta);
+    else Economy.book(delta > 0 ? 'gathering' : 'other', delta);
   }
 
   /* Anything inside this file that moves silver on purpose says so, so
@@ -1962,7 +1982,7 @@
 
     watchCounters(g);
     reconcileStocks(g.map);
-    reconcileSilver(g.map);
+    reconcileSilver(g);
     driftMarkets(elapsed / TICKS_PER_DAY);
     Economy.fillOrders(g);
 

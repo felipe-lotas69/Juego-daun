@@ -36,7 +36,8 @@
   var CHUNK = 16;              /* tiles per cached terrain chunk (16 x 32px = 512px canvas) */
   var EDGE_PX = CACHE_PX;      /* edge masks are cut at the resolution they are used at */
   var PATCH = 3;               /* tiles across a terrain-variant patch, so variety is not per-cell */
-  var DETAIL_CHUNKS = 3;       /* chunks per frame allowed to paint their seams */
+  var BASE_CHUNKS = 3;         /* chunks per frame allowed a full base coat */
+  var DETAIL_CHUNKS = 2;       /* chunks per frame allowed to paint their seams */
   var ZOOM_MIN = 1, ZOOM_MAX = 3;
   var OVERSCROLL = 6;          /* tiles of void the camera may pull past an edge */
   var DARK_STEPS = 16;         /* quantisation of the night tint, to merge fill runs */
@@ -839,7 +840,6 @@
      hang back inside it, which is the difference between a chunk boundary
      you cannot find and a faint grid every sixteen tiles. */
   function repaintChunk(map, c, cx, cy) {
-    var __t = performance.now();
     var g = c.ctx, side = CHUNK * CACHE_PX;
     g.globalAlpha = 1;
     g.globalCompositeOperation = 'source-over';
@@ -857,7 +857,6 @@
       }
     }
     snapshotChunk(map, c, cx, cy);
-    Render.__t.base.push(performance.now() - __t);
     c.painted = true;
     c.detailed = false;
   }
@@ -866,7 +865,6 @@
      Seams run after every base coat is down so a blend always lands on
      finished ground rather than under the cell painted next. */
   function detailChunk(map, c, cx, cy) {
-    var __t = performance.now();
     var g = c.ctx;
     var x0 = cx * CHUNK, y0 = cy * CHUNK;
     var x1 = Math.min(x0 + CHUNK, map.w), y1 = Math.min(y0 + CHUNK, map.h);
@@ -875,7 +873,6 @@
       for (var x = x0; x < x1; x++) paintSeams(g, map, x, y, (x - x0) * CACHE_PX, dy);
     }
     paintMacroShade(g, x0, y0);
-    Render.__t.detail.push(performance.now() - __t);
     c.detailed = true;
   }
 
@@ -916,6 +913,29 @@
     }
   }
 
+  /* A chunk that has run out of budget before it was ever painted still
+     has to show ground rather than void. One flat fill per cell costs a
+     fraction of a millisecond, looks like the map with the art file
+     missing for a frame, and leaves the chunk asking for its real coat
+     next time round. */
+  function paintChunkFlat(map, c, cx, cy) {
+    var g = c.ctx, side = CHUNK * CACHE_PX;
+    g.globalAlpha = 1;
+    g.globalCompositeOperation = 'source-over';
+    g.clearRect(0, 0, side, side);
+    var terrain = map.terrain, w = map.w;
+    var x0 = cx * CHUNK, y0 = cy * CHUNK;
+    var x1 = Math.min(x0 + CHUNK, map.w), y1 = Math.min(y0 + CHUNK, map.h);
+    for (var y = y0; y < y1; y++) {
+      var base = y * w, dy = (y - y0) * CACHE_PX;
+      for (var x = x0; x < x1; x++) {
+        var def = Defs.fromIndex('terrain', terrain[base + x]);
+        g.fillStyle = (def && def.color) || '#4a4a52';
+        g.fillRect((x - x0) * CACHE_PX, dy, CACHE_PX, CACHE_PX);
+      }
+    }
+  }
+
   function pruneChunks() {
     if (!chunks || (frameCount & 511) !== 0) return;
     for (var i = 0; i < chunks.length; i++) {
@@ -926,15 +946,22 @@
 
   function drawTerrain(map) {
     ensureChunks(map);
-    var side = CHUNK * TS, budget = DETAIL_CHUNKS;
+    /* Faulting in a screenful of chunks is two dozen repaints, and doing
+       them all in the frame the camera jumped is a visible stall. Both
+       halves are budgeted, so a jump fills in over a handful of frames
+       instead of dropping one long one. */
+    var side = CHUNK * TS, coats = BASE_CHUNKS, details = DETAIL_CHUNKS;
     var c0x = Math.max(0, Math.floor(b0x / CHUNK)), c1x = Math.min(chunksX - 1, Math.floor(b1x / CHUNK));
     var c0y = Math.max(0, Math.floor(b0y / CHUNK)), c1y = Math.min(chunksY - 1, Math.floor(b1y / CHUNK));
     for (var cy = c0y; cy <= c1y; cy++) {
       var dy = originY + cy * side;
       for (var cx = c0x; cx <= c1x; cx++) {
         var c = chunkAt(cx, cy);
-        if (chunkStale(map, c, cx, cy)) repaintChunk(map, c, cx, cy);
-        if (!c.detailed && budget > 0) { detailChunk(map, c, cx, cy); budget--; }
+        if (chunkStale(map, c, cx, cy)) {
+          if (coats > 0) { repaintChunk(map, c, cx, cy); coats--; }
+          else if (!c.painted) paintChunkFlat(map, c, cx, cy);
+        }
+        if (c.painted && !c.detailed && details > 0) { detailChunk(map, c, cx, cy); details--; }
         ctx.drawImage(c.canvas, originX + cx * side, dy, side, side);
       }
     }
@@ -2208,8 +2235,6 @@
       if (frameErrors <= 3 && typeof console !== 'undefined') console.error('render frame:', err);
     }
   };
-
-  Render.__t = { base: [], detail: [] };
 
   root.Render = Render;
 })(this);
