@@ -1,0 +1,42 @@
+name: Chromewood
+
+on:
+  push:
+    paths:
+      - 'chromewood/**'
+      - '.github/workflows/chromewood.yml'
+  pull_request:
+    paths:
+      - 'chromewood/**'
+      - '.github/workflows/chromewood.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Every module parses
+        run: |
+          cd chromewood
+          node --check server/server.js
+          for f in $(find src tools -name '*.js'); do
+            node --input-type=module -e "
+              import('./$f').catch(e => {
+                // main.js touches the DOM, which does not exist here
+                if (/document is not defined|window is not defined/.test(e.message)) process.exit(0);
+                console.error('$f: ' + e.message);
+                process.exit(1);
+              })
+            " || exit 1
+          done
+
+      - name: Content, worlds, a simulated run and the wire format
+        run: node chromewood/tools/verify.js --seeds 6 --minutes 30

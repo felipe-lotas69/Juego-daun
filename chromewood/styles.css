@@ -1,0 +1,225 @@
+/* ============================================================
+   styles.css - the frame around the game
+
+   The 3D canvas does the art; this is the console around it.
+   Dark, high contrast, monospace, hard corners - it should read
+   as machinery that happens to be enchanted.
+   ============================================================ */
+
+:root {
+  --bg: #0a0710;
+  --panel: rgba(12, 10, 22, 0.92);
+  --line: rgba(150, 190, 255, 0.22);
+  --line-hot: rgba(176, 123, 255, 0.75);
+  --text: #d7e4f5;
+  --dim: #8794ab;
+  --arcane: #b07bff;
+  --chrome: #3fe0ff;
+  --wild: #63ff9d;
+  --amber: #ffb03a;
+  --danger: #ff5a5a;
+  --font: "Courier New", ui-monospace, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#stage { position: fixed; inset: 0; }
+
+#view, #hud {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+/* The 3D canvas is upscaled from a low-resolution buffer, so it
+   must never be smoothed on the way to the screen. */
+#view { image-rendering: pixelated; image-rendering: crisp-edges; }
+#hud { pointer-events: none; }
+
+#ui { position: absolute; inset: 0; pointer-events: none; }
+#ui > * { pointer-events: auto; }
+
+.noscript { color: #fff; padding: 2rem; font-family: var(--font); }
+
+/* ---------------------------------------------------------- screens */
+.screen {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 40%, rgba(40, 20, 70, 0.55), rgba(5, 4, 10, 0.94) 70%);
+  backdrop-filter: blur(2px);
+  z-index: 10;
+}
+.screen.open { display: flex; }
+.screen.pane { align-items: stretch; justify-content: stretch; padding: clamp(10px, 3vh, 34px); }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: clamp(16px, 3vw, 34px);
+  width: min(560px, 92vw);
+  max-height: 92vh;
+  overflow: auto;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.6), 0 20px 60px rgba(0,0,0,0.6);
+}
+.card.wide { width: min(1000px, 96vw); }
+.card.full { width: 100%; height: 100%; }
+
+h1.title {
+  margin: 0 0 2px;
+  font-size: clamp(30px, 6.4vw, 60px);
+  letter-spacing: 0.16em;
+  color: #fff;
+  text-shadow: 0 0 18px rgba(176, 123, 255, 0.6), 3px 3px 0 #2a1b46;
+}
+.subtitle {
+  margin: 0 0 22px;
+  color: var(--arcane);
+  letter-spacing: 0.26em;
+  font-size: clamp(10px, 1.8vw, 13px);
+}
+h2 { margin: 0 0 12px; font-size: 17px; letter-spacing: 0.14em; color: #fff; }
+h3 { margin: 18px 0 8px; font-size: 12px; letter-spacing: 0.2em; color: var(--dim); font-weight: bold; }
+p  { margin: 0 0 12px; line-height: 1.55; color: var(--dim); font-size: 13px; }
+
+/* ---------------------------------------------------------- controls */
+button, .btn {
+  display: block;
+  width: 100%;
+  margin: 0 0 9px;
+  padding: 13px 16px;
+  background: rgba(30, 24, 48, 0.9);
+  color: var(--text);
+  border: 1px solid var(--line);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: bold;
+  letter-spacing: 0.14em;
+  text-align: left;
+  cursor: pointer;
+  transition: background 90ms linear, border-color 90ms linear, transform 90ms ease-out;
+}
+button:hover:not(:disabled), .btn:hover {
+  background: rgba(60, 44, 96, 0.95);
+  border-color: var(--line-hot);
+  transform: translateX(3px);
+}
+button:active:not(:disabled) { transform: translateX(1px) scale(0.995); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button.primary { background: rgba(90, 56, 150, 0.9); border-color: var(--line-hot); color: #fff; }
+button.ghost { background: transparent; }
+button.row { display: inline-block; width: auto; margin-right: 8px; }
+button .hint { float: right; color: var(--dim); font-weight: normal; }
+
+label.field { display: block; margin: 0 0 12px; }
+label.field > span { display: block; font-size: 11px; letter-spacing: 0.18em; color: var(--dim); margin-bottom: 5px; }
+input[type="text"], select {
+  width: 100%;
+  padding: 11px 13px;
+  background: rgba(6, 5, 12, 0.9);
+  color: #fff;
+  border: 1px solid var(--line);
+  font-family: var(--font);
+  font-size: 15px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+input[type="range"] { width: 100%; accent-color: var(--arcane); }
+input:focus, select:focus, button:focus-visible { outline: 2px solid var(--arcane); outline-offset: 1px; }
+
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.spread { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.muted { color: var(--dim); font-size: 12px; }
+.err { color: var(--danger); font-size: 12px; min-height: 16px; margin: 4px 0 10px; }
+
+/* ------------------------------------------------------- skill tree */
+.tree { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 8px; }
+.branch { border: 1px solid var(--line); padding: 10px; background: rgba(8, 6, 16, 0.6); }
+.branch h4 { margin: 0 0 3px; font-size: 13px; letter-spacing: 0.2em; }
+.branch .blurb { font-size: 11px; color: var(--dim); margin-bottom: 10px; line-height: 1.4; }
+
+.node {
+  border: 1px solid rgba(120, 140, 175, 0.3);
+  background: rgba(20, 16, 34, 0.85);
+  padding: 8px 10px;
+  margin-bottom: 7px;
+  cursor: pointer;
+  transition: border-color 90ms linear, background 90ms linear;
+}
+.node .n-name { font-size: 12px; font-weight: bold; letter-spacing: 0.06em; color: var(--text); }
+.node .n-desc { font-size: 11px; color: var(--dim); margin-top: 3px; line-height: 1.35; }
+.node .n-cost { float: right; font-size: 11px; color: var(--amber); }
+.node.available { border-color: var(--line-hot); background: rgba(44, 30, 78, 0.9); }
+.node.available:hover { background: rgba(70, 48, 122, 0.95); }
+.node.owned { border-color: rgba(99, 255, 157, 0.65); background: rgba(18, 44, 32, 0.85); }
+.node.owned .n-cost { color: var(--wild); }
+.node.locked { opacity: 0.42; cursor: not-allowed; }
+
+/* ---------------------------------------------------------- upgrades */
+.upg { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center;
+       border: 1px solid var(--line); padding: 10px 12px; margin-bottom: 8px;
+       background: rgba(14, 11, 26, 0.8); }
+.upg .u-name { font-size: 13px; font-weight: bold; letter-spacing: 0.08em; }
+.upg .u-desc { font-size: 11px; color: var(--dim); margin-top: 3px; }
+.upg .u-pips { margin-top: 6px; display: flex; gap: 4px; }
+.pip { width: 16px; height: 7px; border: 1px solid var(--line); display: inline-block; }
+.pip.on { background: var(--chrome); border-color: var(--chrome); box-shadow: 0 0 6px rgba(63,224,255,0.5); }
+.upg button { width: auto; margin: 0; padding: 9px 14px; font-size: 12px; }
+
+.stock { display: flex; gap: 16px; margin: 4px 0 16px; font-size: 13px; }
+.stock b { font-weight: bold; }
+
+/* ------------------------------------------------------------- chat */
+#chat {
+  position: absolute; left: 14px; bottom: 150px; width: min(330px, 46vw);
+  font-size: 12px; pointer-events: none; z-index: 5;
+}
+#chat .line { margin-bottom: 3px; text-shadow: 1px 1px 0 rgba(0,0,0,0.85); }
+#chat input {
+  pointer-events: auto; margin-top: 6px; display: none;
+  text-transform: none; letter-spacing: 0.06em; font-size: 13px; padding: 7px 9px;
+}
+#chat.typing input { display: block; }
+
+/* ------------------------------------------------------- connection */
+#netstat {
+  position: absolute; right: 14px; bottom: 12px;
+  font-size: 11px; color: var(--dim); text-align: right;
+  text-shadow: 1px 1px 0 rgba(0,0,0,0.8); z-index: 5;
+}
+#netstat .good { color: var(--wild); }
+#netstat .warn { color: var(--amber); }
+#netstat .bad  { color: var(--danger); }
+
+.keycap {
+  display: inline-block; min-width: 20px; padding: 1px 5px; margin: 0 2px;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.05);
+  font-size: 11px; text-align: center; color: var(--text);
+}
+table.keys { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.keys td { padding: 4px 0; color: var(--dim); }
+table.keys td:first-child { width: 42%; color: var(--text); }
+
+.tag { display: inline-block; padding: 2px 7px; border: 1px solid var(--line);
+       font-size: 10px; letter-spacing: 0.16em; color: var(--dim); }
+
+@media (max-width: 720px) {
+  .tree { grid-template-columns: 1fr; }
+  .row2, .row3 { grid-template-columns: 1fr; }
+  #chat { bottom: 200px; width: 62vw; }
+}

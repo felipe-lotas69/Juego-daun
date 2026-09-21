@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0a0710">
+<title>CHROMEWOOD — arcane machine survival</title>
+<meta name="description" content="An isometric pixel-art survival RPG in a world where magic and machinery grew into each other. Solo or up to four players.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230a0710'/><rect x='6' y='3' width='4' height='7' fill='%23b07bff'/><rect x='5' y='9' width='6' height='4' fill='%233fe0ff'/></svg>">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <canvas id="hud"></canvas>
+    <div id="ui"></div>
+  </div>
+  <noscript><p class="noscript">Chromewood needs JavaScript and WebGL2.</p></noscript>
+  <script type="module">
+    window.__errors = [];
+    window.addEventListener('error', (e) => window.__errors.push(String(e.message)));
+    window.addEventListener('unhandledrejection', (e) => window.__errors.push('rejection: ' + e.reason));
+  </script>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
