@@ -50,34 +50,55 @@
     return L._scenery;
   }
 
+  /* ------------------------------------------------------ backdrop
+     Drawn in SCREEN space, at the canvas's own resolution, because this
+     is the part that should not look like blocks. A gradient sky and
+     soft cloud banks are what a pixel grid cannot give you - squashed
+     onto a 320-wide buffer the sky comes out as six flat stripes, which
+     is the single biggest tell that a game is a grid rather than a set
+     of pixel assets. */
+  function backdrop(sc, L, cam, time) {
+    var sceneryData = buildScenery(L);
+    var W = Pixel.cw, H = Pixel.ch;
+
+    var g = sc.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, L.sky[0]);
+    g.addColorStop(0.52, L.sky[1]);
+    g.addColorStop(1, L.sky[2]);
+    sc.fillStyle = g;
+    sc.fillRect(0, 0, W, H);
+
+    if (L.theme === 'indoor') return;
+
+    var S = Pixel.SCALE;
+    /* a soft sun, and cloud banks built from overlapping blurred discs */
+    var sunG = sc.createRadialGradient(W * 0.78, H * 0.17, 0, W * 0.78, H * 0.17, 90 * S / 4);
+    sunG.addColorStop(0, 'rgba(255,255,255,0.45)');
+    sunG.addColorStop(1, 'rgba(255,255,255,0)');
+    sc.fillStyle = sunG;
+    sc.fillRect(0, 0, W, H);
+
+    for (var i = 0; i < sceneryData.clouds.length; i++) {
+      var c = sceneryData.clouds[i];
+      var cx = (((c.x + time * c.sp) % (L.width + 300)) - cam.x * 0.14 - 60) * S;
+      if (cx < -c.w * S * 2 || cx > W + c.w * S) continue;
+      var cy = (c.y - cam.y * 0.05) * S;
+      var cw = c.w * S, ch = cw * 0.34;
+      var cg = sc.createLinearGradient(0, cy - ch, 0, cy + ch);
+      cg.addColorStop(0, 'rgba(255,255,255,0.92)');
+      cg.addColorStop(1, 'rgba(255,255,255,0.55)');
+      sc.fillStyle = cg;
+      sc.beginPath();
+      sc.ellipse(cx, cy, cw * 0.5, ch * 0.62, 0, 0, 6.2832);
+      sc.ellipse(cx + cw * 0.26, cy + ch * 0.14, cw * 0.34, ch * 0.44, 0, 0, 6.2832);
+      sc.ellipse(cx - cw * 0.3, cy + ch * 0.2, cw * 0.3, ch * 0.38, 0, 0, 6.2832);
+      sc.fill();
+    }
+  }
+
   /* ---------------------------------------------------------- sky */
   function drawSky(L, cam, time) {
     var sc = buildScenery(L);
-    var H = Pixel.H, W = Pixel.W;
-
-    /* banded gradient: six steps between the three named colours */
-    var bands = 6;
-    for (var b = 0; b < bands; b++) {
-      var t = b / (bands - 1);
-      var col = t < 0.5 ? mix(L.sky[0], L.sky[1], t * 2) : mix(L.sky[1], L.sky[2], (t - 0.5) * 2);
-      Pixel.rect(P, 0, Math.floor(H * b / bands), W, Math.ceil(H / bands) + 1, col);
-    }
-
-    if (L.theme !== 'indoor') {
-      /* sun, and clouds that drift on their own clock */
-      Pixel.disc(P, W * 0.78 - cam.x * 0.01, 30 - cam.y * 0.02, 11, 'rgba(255,255,255,0.28)');
-      for (var i = 0; i < sc.clouds.length; i++) {
-        var c = sc.clouds[i];
-        var cx = Math.round(((c.x + time * c.sp) % (L.width + 300)) - cam.x * 0.14 - 60);
-        if (cx < -60 || cx > W + 40) continue;
-        var cy = Math.round(c.y - cam.y * 0.05);
-        Pixel.rect(P, cx, cy, c.w, 3, 'rgba(255,255,255,0.86)');
-        Pixel.rect(P, cx + 3, cy - 2, c.w - 8, 2, 'rgba(255,255,255,0.86)');
-        Pixel.rect(P, cx + 7, cy - 4, c.w - 16, 2, 'rgba(255,255,255,0.7)');
-        Pixel.rect(P, cx + 2, cy + 3, c.w - 4, 1, 'rgba(255,255,255,0.55)');
-      }
-    }
-
     drawSkyline(L, cam, sc);
     if (L.theme !== 'indoor') drawPosts(L, cam, sc);
   }
@@ -393,5 +414,5 @@
     if (Math.floor(time * 5) % 2) Pixel.rect(P, x + 25, y + 9, 2, 2, '#ffc23c');
   }
 
-  root.Draw = { world: world, buildScenery: buildScenery, mix: mix, drawVan: drawVan };
+  root.Draw = { world: world, backdrop: backdrop, buildScenery: buildScenery, mix: mix, drawVan: drawVan };
 })(typeof window !== 'undefined' ? window : globalThis);

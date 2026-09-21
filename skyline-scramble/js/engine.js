@@ -1,13 +1,12 @@
 /* ============================================================
-   engine.js - the low-level layer: maths, the pixel buffer,
-   the font, sprite stamping, and the keyboard.
+   engine.js - the low-level layer: maths, the canvas, the font,
+   sprite stamping, and the keyboard.
 
-   Everything is drawn into a 320x180 buffer and blown up whole.
-   That is a real pixel grid, and it is meant to be: the look this
-   game is after comes from packing DETAIL into a small frame -
-   window grids, panel lines, lamp posts - rather than from making
-   the pixels enormous. A character is 22 pixels tall in a frame
-   180 tall, and the frame is dense around it.
+   The canvas runs at its own resolution and the ASSETS are pixel
+   art drawn onto it - not the whole picture squashed onto one
+   coarse grid. So a character is a 22-pixel sprite in blocks you
+   can count, while the sky behind it is a gradient with as many
+   steps as it wants.
    ============================================================ */
 (function (root) {
   'use strict';
@@ -92,55 +91,85 @@
   };
   var GLYPH_W = 5, GLYPH_H = 7;
 
-  /* ---------------------------------------------------------- buffer */
-  var Pixel = {
-    W: 320,
-    H: 180,
-    buf: null,
-    ctx: null,
+  /* ---------------------------------------------------------- canvas
+     The canvas is its real size and is drawn on directly. There is no
+     small buffer being blown up, because that put EVERYTHING on one
+     coarse grid - the sky, the clouds, the lettering - and a sky in six
+     flat bands is the one thing that gives it away.
 
-    init: function () {
-      if (typeof document === 'undefined') return null;   /* headless tools */
-      this.buf = document.createElement('canvas');
-      this.buf.width = this.W;
-      this.buf.height = this.H;
-      this.ctx = this.buf.getContext('2d');
-      this.ctx.imageSmoothingEnabled = false;
+     Instead: assets are pixel art at SCALE screen pixels per art pixel,
+     and the backdrop behind them is drawn at the canvas's own resolution,
+     where a gradient can have as many steps as it likes. Measuring the
+     reference art says that is exactly how it is built - its buildings
+     sit on a clean 7px grid and hold 19 colours, while its sky is on no
+     grid at all and holds over two hundred. */
+  var Pixel = {
+    W: 320,          /* world units across the view */
+    H: 180,
+    SCALE: 4,        /* screen pixels per world unit, and per art pixel */
+    ctx: null,
+    cw: 1280,
+    ch: 720,
+    world: true,
+
+    init: function (canvas) {
+      if (!canvas) return null;
+      this.ctx = canvas.getContext('2d');
+      this.cw = canvas.width;
+      this.ch = canvas.height;
+      this.SCALE = this.cw / this.W;
       return this.ctx;
     },
 
+    /* world space: one unit is SCALE screen pixels, so a sprite pixel
+       comes out as a crisp SCALE-wide block */
     begin: function () {
       var c = this.ctx;
-      c.setTransform(1, 0, 0, 1, 0, 0);
-      c.clearRect(0, 0, this.W, this.H);
+      c.setTransform(this.SCALE, 0, 0, this.SCALE, 0, 0);
+      c.imageSmoothingEnabled = false;
+      this.world = true;
       return c;
     },
 
-    blit: function (dst, w, h) {
-      dst.imageSmoothingEnabled = false;
-      dst.clearRect(0, 0, w, h);
-      dst.drawImage(this.buf, 0, 0, this.W, this.H, 0, 0, w, h);
+    /* screen space: full canvas resolution, for anything that should be
+       smooth rather than blocky */
+    screen: function (clear) {
+      var c = this.ctx;
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      if (clear) c.clearRect(0, 0, this.cw, this.ch);
+      this.world = false;
+      return c;
+    },
+
+    /* Snap to the SCREEN pixel grid, whichever space we are in. In world
+       space that is a quarter of a unit, so terrain edges and lamp posts
+       can be finer than the art grid without ever blurring. */
+    s: function (v) {
+      return this.world ? Math.round(v * this.SCALE) / this.SCALE : Math.round(v);
     },
 
     /* --- shapes. Whole pixels only; a fractional edge would blend. --- */
     rect: function (c, x, y, w, h, col) {
-      x = Math.round(x); y = Math.round(y);
-      w = Math.round(w); h = Math.round(h);
-      if (w <= 0 || h <= 0) return;
-      c.fillStyle = col;
-      c.fillRect(x, y, w, h);
+      var x0 = this.s(x), y0 = this.s(y);
+      var x1 = this.s(x + w), y1 = this.s(y + h);
+      var unit = this.world ? 1 / this.SCALE : 1;
+      if (x1 <= x0) x1 = x0 + unit;
+      if (y1 <= y0) y1 = y0 + unit;
+      if (col) c.fillStyle = col;
+      c.fillRect(x0, y0, x1 - x0, y1 - y0);
     },
 
     frame: function (c, x, y, w, h, col) {
-      this.rect(c, x, y, w, 1, col);
-      this.rect(c, x, y + h - 1, w, 1, col);
-      this.rect(c, x, y, 1, h, col);
-      this.rect(c, x + w - 1, y, 1, h, col);
+      var t = this.world ? 1 : 1;
+      this.rect(c, x, y, w, t, col);
+      this.rect(c, x, y + h - t, w, t, col);
+      this.rect(c, x, y, t, h, col);
+      this.rect(c, x + w - t, y, t, h, col);
     },
 
     /* A circle made of rows of whole pixels. */
     disc: function (c, cx, cy, r, col) {
-      cx = Math.round(cx); cy = Math.round(cy);
+      cx = this.s(cx); cy = this.s(cy);
       c.fillStyle = col;
       for (var dy = -r; dy <= r; dy++) {
         var half = Math.floor(Math.sqrt(Math.max(0, r * r - dy * dy)));
@@ -170,7 +199,7 @@
        anti-aliased and no gap opens up at a diagonal. */
     stamp: function (c, sprite, map, cx, cy, angle, flip) {
       var h = sprite.length, w = sprite[0].length;
-      cx = Math.round(cx); cy = Math.round(cy);
+      cx = this.s(cx); cy = this.s(cy);
       if (!angle) {
         var x0 = cx - (w >> 1), y0 = cy - (h >> 1), last = null;
         for (var r = 0; r < h; r++) {
@@ -211,8 +240,8 @@
       scale = scale || 1;
       str = String(str).toUpperCase();
       var w = this.textWidth(str, scale);
-      var sx = Math.round(align === 'center' ? x - w / 2 : (align === 'right' ? x - w : x));
-      var sy = Math.round(y);
+      var sx = this.s(align === 'center' ? x - w / 2 : (align === 'right' ? x - w : x));
+      var sy = this.s(y);
       c.fillStyle = col || '#fff';
       for (var i = 0; i < str.length; i++) {
         var g = GLYPH[str.charAt(i)];

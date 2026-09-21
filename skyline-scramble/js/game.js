@@ -5,9 +5,8 @@
   'use strict';
 
   var canvas = document.getElementById('screen');
-  var ctx = canvas.getContext('2d');
   var CANVAS_W = 1280, CANVAS_H = 720;
-  Pixel.init();
+  var ctx = Pixel.init(canvas);
 
   /* W and E lean left and right and let go to jump; R spends the item.
      Two keys side by side, because the wind-up wants a key you can hold
@@ -153,6 +152,13 @@
 
     /* ------------------------------------------------------- draw */
     draw: function () {
+      /* The backdrop goes down first, in screen space, where a gradient
+         can be a gradient. Everything after it is world space, where a
+         unit is a block. */
+      var w = this.world || menuWorld();
+      var sc = Pixel.screen(true);
+      Draw.backdrop(sc, w.level, { x: Math.round(w.cam.x), y: Math.round(w.cam.y) }, this.time);
+
       var c = Pixel.begin();
       if (this.state === 'menu') this.drawMenu(c);
       else if (this.state === 'controls') this.drawControls(c);
@@ -177,7 +183,6 @@
                      Pixel.W / 2, 156, 1, '#ffffff', 'center');
         }
       }
-      Pixel.blit(ctx, CANVAS_W, CANVAS_H);
     },
 
     /* Portraits and scores at the edges, the race in the middle - you
@@ -330,6 +335,8 @@
     var s = Math.max(0.25, Math.min(Math.floor(fit * 4) / 4, 3));
     shell.style.transform = 'scale(' + s + ')';
   }
+
+  void ctx;
 
   var last = 0, acc = 0, STEP = 1 / 120;
   function frame(ts) {
