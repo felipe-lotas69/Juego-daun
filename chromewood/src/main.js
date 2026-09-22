@@ -31,6 +31,7 @@ import { stationsNear, startCraft, eat, canPlace } from './game/survival.js';
 
 import { Mirror } from './net/mirror.js';
 import { RoomClient } from './net/client.js';
+import { PeerNet, peerSupported } from './net/peer.js';
 import { encodeSnapshot, encodeInput, decodeInput, filterEvents } from './net/protocol.js';
 
 import { Input } from './core/input.js';
@@ -57,7 +58,13 @@ const audio = new Audio();
 const hud = new Hud(hudCanvas);
 
 const game = {
-  role: 'menu', sim: null, view: null, net: null, localId: null,
+  role: 'menu', sim: null, view: null, net: null, localId: null, hostId: null,
+  /* Co-op is peer to peer. The relay in server/ is still supported
+     for LAN play, where a direct link on the same switch beats a
+     round trip through a STUN-negotiated path - ask for it with
+     ?relay=192.168.1.20:8090 rather than with a box in the menu
+     that most people should never have to think about. */
+  relayAddr: new URLSearchParams(location.search).get('relay') || '',
   paused: false, running: false, over: false,
   actors: new Map(), buildingViews: new Map(), decor: null,
   colorByPlayer: new Map(),
@@ -145,31 +152,29 @@ async function startRun(role, form) {
     return;
   }
 
-  const net = new RoomClient();
+  /* Peer to peer unless somebody asked for a relay. Nothing to run,
+     nothing to deploy: the browsers talk to each other, and the
+     host's browser is the authority exactly as it always was. */
+  const net = game.relayAddr ? new RoomClient() : new PeerNet();
   game.net = net;
   menus.setNetStat('<span class="warn">CONNECTING…</span>');
   let welcome;
   try {
     welcome = await net.connect({
-      server: form.server, room: form.room, name: game.name,
+      server: game.relayAddr, room: form.room, name: game.name,
       host: role === 'host', seed: game.seedText, difficulty: game.difficulty,
     });
   } catch (err) {
     game.net = null;
     menus.setNetStat('<span class="bad">OFFLINE</span>');
-    /* On a static host there is no relay at this address at all, so
-       say that rather than leaving them to guess at the address. */
-    const auto = !(form.server || '').trim();
-    menus.setError(err.message + (auto
-      ? ' If this copy is hosted somewhere static, there is no relay here - put the'
-        + " host's address in SERVER. You can still play a solo run."
-      : ' You can still play a solo run.'));
+    menus.setError(err.message + ' You can still play a solo run.');
     return;
   }
 
   const seed = seedFrom(welcome.seed || game.seedText);
   game.difficulty = welcome.difficulty || game.difficulty;
   game.localId = welcome.id;
+  game.hostId = welcome.hostId !== undefined ? welcome.hostId : null;
 
   if (welcome.host) {
     game.sim = new Sim(seed, { difficulty: game.difficulty });
@@ -183,7 +188,18 @@ async function startRun(role, form) {
     net.sendTo(welcome.hostId, { k: 'hi', name: game.name });
   }
   wireNet(net);
-  menus.addChat(`joined run ${welcome.room}`, '#7ee8ff');
+  /* Straight away, not at the next thirty-frame tick: on a host no
+     snapshot ever arrives to trigger the update, so the status sat
+     on CONNECTING for the first half second of every run. */
+  menus.setNetStat(pingLabel());
+  if (welcome.host) {
+    /* The code is the only thing a host has to pass on, so say it
+       loudly once and leave it in the corner of the screen after. */
+    menus.addChat(`room code ${welcome.room} - tell whoever is joining`, '#ffd24a');
+    hud.showToast(`ROOM ${welcome.room}`, '#ffd24a', 8, 'others join with this code');
+  } else {
+    menus.addChat(`joined run ${welcome.room}`, '#7ee8ff');
+  }
 }
 
 function wireNet(net) {
@@ -332,6 +348,7 @@ function teardown() {
   if (game.ghost) { rig.scene.remove(game.ghost.mesh); game.ghost = null; }
   game.sim = null;
   game.localId = null;
+  game.hostId = null;
   game.colorByPlayer.clear();
   game.running = false;
 }
@@ -809,8 +826,12 @@ function setSlot(i) {
   else me.hotbarIndex = clamp(i, 0, me.hotbar.length - 1);
 }
 
+/* The host's id comes from the welcome, not from "whoever else is
+   here": with three or four players that picked another joiner and
+   every input went to somebody who could not act on it. */
 function hostId() {
   if (!game.net) return null;
+  if (game.hostId !== null && game.hostId !== undefined) return game.hostId;
   for (const [id] of game.net.peers) if (id !== game.net.id) return id;
   return 'all';
 }
@@ -1090,6 +1111,11 @@ viewCanvas.addEventListener('pointerdown', (e) => {
 viewCanvas.addEventListener('wheel', (e) => {
   if (panels.isOpen && panels.wheel(e.deltaY)) e.preventDefault();
 }, { passive: false });
+
+/* Say goodbye on the way out. Without this the others wait for ICE
+   to notice the silence, which takes ten seconds or so of a ghost
+   standing in the world. */
+window.addEventListener('pagehide', () => { if (game.net) game.net.close(); });
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && game.role === 'solo' && game.running) {

@@ -97,18 +97,12 @@ export class Menus {
       <div class="err" id="main-err"></div>
       <button class="primary" id="btn-solo">SOLO RUN <span class="hint">one against the night</span></button>
       <button id="btn-host">HOST CO-OP <span class="hint">up to four</span></button>
-      <div class="row2">
-        <label class="field" style="margin:0"><span>JOIN CODE</span>
-          <input id="in-room" type="text" maxlength="10" placeholder="CODE" autocomplete="off" spellcheck="false"></label>
-        <label class="field" style="margin:0"><span>SERVER</span>
-          <input id="in-server" type="text" placeholder="AUTO" autocomplete="off" spellcheck="false"></label>
-      </div>
+      <label class="field"><span>JOIN CODE</span>
+        <input id="in-room" type="text" maxlength="5" placeholder="5 LETTERS" autocomplete="off" spellcheck="false"></label>
       <button id="btn-join" style="margin-top:10px">JOIN A RUN</button>
-      <p class="note">Co-op needs somebody to run the relay
-        (<code>node server/server.js</code>, one file, no dependencies). Leave
-        SERVER on AUTO when the game is served from that same machine;
-        otherwise type the host's address, like <code>192.168.1.20:8090</code>.
-        A solo run needs nothing at all.</p>
+      <p class="note">Co-op runs browser to browser - there is no server to
+        start. Host a run, read out the five-letter code, and up to three
+        others can join from the same page.</p>
       <button class="ghost" id="btn-settings-main">SETTINGS</button>
       <h3>CONTROLS</h3>
       <table class="keys">
@@ -148,7 +142,7 @@ export class Menus {
       name: (q('#in-name').value || 'RUNNER').toUpperCase().slice(0, 12),
       seed: (q('#in-seed').value || 'MOSSGATE').toUpperCase().trim(),
       room: (q('#in-room').value || '').toUpperCase().trim(),
-      server: (q('#in-server').value || '').trim(),
+      server: '',
       difficulty: Number(q('#in-diff').value) || 1,
     };
   }

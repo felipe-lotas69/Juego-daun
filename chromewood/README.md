@@ -169,15 +169,23 @@ night waves.
 
 ## Co-op
 
-One player hosts and runs the simulation; everyone else mirrors it. The server
-in `server/` only moves messages between people in a room — it simulates
-nothing, which keeps it to one file with no dependencies and means solo play
-needs no server at all.
+Up to four people, and **there is no server to run**. The browsers talk to
+each other directly over WebRTC, and one of them - the host - owns the
+simulation exactly as before. Everyone else mirrors it.
 
 1. One player picks **HOST CO-OP** and reads out the five-letter room code.
-2. The others type it into **JOIN CODE**, plus the host's address in
-   **SERVER** if the game is not being served from the same machine
-   (`192.168.1.20:8090`, or a `wss://` URL).
+2. The others type it into **JOIN CODE**.
+
+That is the whole setup. It works from the published page with nothing
+installed and nothing deployed.
+
+Two browsers still have to be introduced before they can speak, which is the
+one thing a peer connection cannot do for itself. A signalling broker forwards
+a handful of offer/answer/candidate messages by destination id and then has no
+further part in the game - it never sees a snapshot, an input, or a chat line.
+We use the public PeerJS broker and speak its protocol directly in
+`src/net/peer.js`, rather than bundling a library for two hundred lines of
+WebSocket.
 
 Your own movement is predicted locally and reconciled against the host, so it
 never waits for a round trip. Everything else is interpolated an eighth of a
@@ -185,14 +193,35 @@ second behind. Snapshots carry players and their packs, enemies, animals,
 buildings, pickups, the gates, the contracts and tonight's weather, and run
 about 35 KB/s with a night in full swing.
 
-Anything that is not movement — crafting, building, eating, spending a skill
-point, buying a beacon upgrade — travels as a named action the host performs
+Anything that is not movement - crafting, building, eating, spending a skill
+point, buying a beacon upgrade - travels as a named action the host performs
 and echoes back in the next snapshot, so there is exactly one authority on
 what exists.
 
-If the host disappears, the server promotes someone else and their client
-rebuilds the world from the same seed. The run restarts — the relay stores
-nothing — but the session survives.
+### When a direct connection cannot be made
+
+A small number of networks - symmetric NAT, some corporate and school
+firewalls - will not let two browsers reach each other without a TURN relay,
+and there is no free TURN worth depending on. Two escape hatches, both URL
+parameters so neither clutters the menu:
+
+- `?broker=host:port` points the introduction at your own
+  [PeerServer](https://github.com/peers/peerjs-server) instead of the public
+  one. Useful if the public broker is down or blocked.
+- `?relay=192.168.1.20:8090` abandons peer-to-peer entirely and uses the
+  relay in `server/`, which is still here and still works:
+
+  ```
+  node chromewood/server/server.js
+  ```
+
+  On a LAN this is also simply faster than a negotiated peer path. Note that
+  a page served over `https` cannot open a plain `ws://` socket, so a relay
+  reached from the published site needs TLS; from a copy you are serving
+  yourself over `http`, it is fine as-is.
+
+If the host closes their tab the run ends for everyone, because the host was
+the simulation. The relay's host-migration path does not apply peer-to-peer.
 
 ## How it looks like that
 
@@ -273,7 +302,10 @@ chromewood/
               materials.js      toon ramp, rim light, detail sampling
               scene.js          lighting and the day/night rig
               fx.js             particles, bolts, beams, blasts
-    net/      protocol.js  client.js  mirror.js
+    net/      protocol.js       what goes over the wire
+              peer.js           co-op with no server: WebRTC + signalling
+              client.js         the relay transport, for ?relay= and LAN
+              mirror.js         a client's copy of the host's world
     ui/       font.js           a 5x7 bitmap font, drawn from ASCII art
               icons.js          9x9 item icons
               draw.js           plates, bars, slots, buttons
@@ -316,6 +348,11 @@ Six groups, all of which have caught something real:
   waking the Heart and winning. Snapshots must round-trip inventory,
   buildings, animals, gates, contracts and the night type into a client's
   mirror.
+- **Peer to peer.** The signalling broker has to resolve to the right
+  address for every form of `?broker=`, because getting that wrong means
+  co-op never connects and the failure looks like somebody else's outage.
+  The WebRTC handshake itself needs two real browsers and is covered by the
+  co-op harness rather than here.
 
 Things it has caught: landmark coordinates that only existed once something
 had been drawn (a headless host with its beacon at `NaN`); allies sliding in
@@ -343,6 +380,8 @@ win on a weak machine, then pixel size up.
 ## Notes
 
 - Needs WebGL2. Works in Firefox, Chrome and Safari.
-- Nothing is uploaded anywhere. The only thing stored locally is your name.
+- Nothing is uploaded anywhere and there is no account. The only thing stored
+  locally is your name. In co-op the game data goes browser to browser; the
+  signalling broker sees only a room id and the connection handshake.
 - This is a separate game from *Getaway Daun* in the repository root; the two
   share nothing but a repository.
