@@ -159,6 +159,11 @@ Give it a minute and it appears at
 root, Getaway Daun at `/getaway.html`, Chromewood at `/chromewood/` and Skyline
 Scramble at `/skyline-scramble/`. Every later push republishes automatically.
 
+Note that this switch has to be thrown by hand, once. A workflow cannot
+do it: `GITHUB_TOKEN` is refused the Pages-site creation API
+(`Resource not accessible by integration`) however its permissions are
+declared. Once the site exists, automation can publish to it freely.
+
 **Actions mode — deploys only after the checks pass:**
 
 Set **Source** to `GitHub Actions`, then add a repository variable
