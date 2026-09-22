@@ -2,225 +2,159 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<title>Getaway Daun</title>
-<meta name="description" content="A physics-based lean-and-hop action platformer. Grab a gun, ride the elevators, smash the glass, reach the van.">
-<meta name="theme-color" content="#11131c">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23ffc23c'/><rect x='12' y='6' width='8' height='13' rx='4' fill='%2311131c'/><rect x='11' y='20' width='4' height='7' fill='%2311131c'/><rect x='17' y='20' width='4' height='7' fill='%2311131c'/></svg>">
-<link rel="stylesheet" href="styles.css">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Juego Daun</title>
+<meta name="description" content="Three browser games: an isometric survival RPG, a lean-and-hop getaway, and a rooftop ragdoll race. No installs, no accounts.">
+<meta name="theme-color" content="#0a0710">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230a0710'/><rect x='2' y='9' width='4' height='4' fill='%23ffc23c'/><rect x='6' y='5' width='4' height='8' fill='%23b07bff'/><rect x='10' y='7' width='4' height='6' fill='%233fc0ef'/></svg>">
+<style>
+  /* Everything inline: this page is one file and loads before the
+     games it links to would have finished parsing their shaders. */
+  :root {
+    --ink: #07050d;
+    --plate: #16131f;
+    --edge: #2b2540;
+    --text: #e4e8f2;
+    --dim: #9aa0b4;
+    --faint: #626879;
+    --chrome: #3fe0ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--ink);
+    color: var(--text);
+    font: 16px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    -webkit-font-smoothing: antialiased;
+    /* A faint grid, so the page reads as the same pixel world the
+       games live in without needing an image. */
+    background-image:
+      linear-gradient(rgba(255,255,255,0.016) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.016) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 56px 16px 72px; }
+
+  header { margin-bottom: 40px; }
+  h1 {
+    font-size: clamp(30px, 7vw, 46px);
+    line-height: 1.05;
+    letter-spacing: 0.06em;
+    margin: 0 0 10px;
+    text-transform: uppercase;
+  }
+  h1 span { color: var(--chrome); }
+  .tag { color: var(--dim); margin: 0; max-width: 54ch; }
+
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+
+  .card {
+    display: grid;
+    grid-template-columns: 56px 1fr;
+    gap: 16px;
+    align-items: start;
+    padding: 18px;
+    background: var(--plate);
+    border: 1px solid var(--edge);
+    /* A notched corner instead of a rounded one. */
+    clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+    color: inherit;
+    text-decoration: none;
+    transition: background 0.12s, border-color 0.12s, transform 0.12s;
+  }
+  .card:hover, .card:focus-visible {
+    background: #1e1a2c;
+    border-color: #4a4268;
+    transform: translateY(-2px);
+    outline: none;
+  }
+  .card img { width: 56px; height: 56px; image-rendering: pixelated; display: block; }
+  .card h2 {
+    margin: 0 0 4px;
+    font-size: 18px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .card p { margin: 0; color: var(--dim); font-size: 14px; }
+  .meta { margin-top: 8px; font-size: 12px; color: var(--faint); letter-spacing: 0.04em; }
+  .meta b { color: var(--chrome); font-weight: normal; }
+
+  footer {
+    margin-top: 44px;
+    padding-top: 20px;
+    border-top: 1px solid var(--edge);
+    color: var(--faint);
+    font-size: 13px;
+  }
+  footer a { color: var(--dim); }
+  footer p { margin: 0 0 8px; }
+
+  @media (max-width: 520px) {
+    main { padding-top: 36px; }
+    .card { grid-template-columns: 40px 1fr; gap: 12px; padding: 14px; }
+    .card img { width: 40px; height: 40px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .card { transition: none; }
+    .card:hover, .card:focus-visible { transform: none; }
+  }
+</style>
 </head>
 <body>
-<div id="shell">
-  <canvas id="game" width="1120" height="630"></canvas>
+<main>
+  <header>
+    <h1>Juego <span>Daun</span></h1>
+    <p class="tag">Three games that run in a browser tab. No install, no account,
+      nothing uploaded anywhere.</p>
+  </header>
 
-  <!-- ================= MAIN MENU ================= -->
-  <div id="menu" class="screen">
-    <div class="panel">
-      <h1 class="logo">GETAWAY <span>DAUN</span></h1>
-      <p class="tag">You can't walk. You lean, you hop, you pray.</p>
-      <div class="btnrow">
-        <button id="btn-play" class="btn primary">CAMPAIGN</button>
-        <button id="btn-versus" class="btn primary">VERSUS</button>
-      </div>
-      <div class="btnrow">
-        <button id="btn-levels" class="btn">LEVELS</button>
-        <button id="btn-howto" class="btn">CONTROLS</button>
-        <button id="btn-options" class="btn">OPTIONS</button>
-      </div>
-      <p class="foot">A · D lean &nbsp;·&nbsp; W jump &nbsp;·&nbsp; R interact / shoot</p>
-    </div>
-  </div>
-
-  <!-- ================= CONTROLS ================= -->
-  <div id="howto" class="screen hidden">
-    <div class="panel wide">
-      <h2>CONTROLS</h2>
-      <div class="keys">
-        <div class="keyrow"><kbd>A</kbd><kbd>D</kbd><span>Lean left / right. On the ground a lean turns into a hop — that's how you move.</span></div>
-        <div class="keyrow"><kbd>W</kbd><span>Jump. You launch <em>in the direction you are leaning</em>. Stand tall for height, lean hard for distance.</span></div>
-        <div class="keyrow"><kbd>R</kbd><span>Interact: pick up guns, call elevators, slam buttons. With nothing in reach it fires your weapon.</span></div>
-        <div class="keyrow"><kbd>SPACE</kbd><span>Fire. Recoil pushes you — shotguns and rockets are movement tools.</span></div>
-        <div class="keyrow"><kbd>Q</kbd><span>Drop the weapon you're holding.</span></div>
-        <div class="keyrow"><kbd>P</kbd><kbd>ESC</kbd><span>Pause.</span></div>
-        <div class="keyrow"><kbd>ENTER</kbd><span>Restart the level (campaign), or start the next round (versus).</span></div>
-        <div class="keyrow"><kbd>&uarr;</kbd><kbd>&larr;</kbd><kbd>&rarr;</kbd><kbd>&crarr;</kbd><span>Player two, when two of you share a keyboard in versus.</span></div>
-      </div>
-      <p class="hint">Glass breaks when you shoot it or land on it hard. Lava, spikes, saws and the
-        elevator pistons do not negotiate &mdash; and neither does a long drop. Die and you restart from the
-        last checkpoint you crossed, which you will not have noticed crossing.</p>
-      <div class="btnrow"><button class="btn back">BACK</button></div>
-    </div>
-  </div>
-
-  <!-- ================= LEVEL SELECT ================= -->
-  <div id="levels" class="screen hidden">
-    <div class="panel wide">
-      <h2>LEVEL SELECT</h2>
-      <div id="level-grid" class="grid"></div>
-      <div class="btnrow"><button class="btn back">BACK</button></div>
-    </div>
-  </div>
-
-  <!-- ================= VERSUS SETUP ================= -->
-  <div id="versus" class="screen hidden">
-    <div class="panel wide">
-      <h2>VERSUS</h2>
-      <p class="hint" style="margin-top:0">Three maps in rotation. First to the van wins the round.
-        Empty seats are filled with bots, and every bot plays differently.</p>
-
-      <div class="setuprow">
-        <span class="lbl">FIRST TO</span>
-        <div class="seg" id="seg-target">
-          <button data-v="2">2</button><button data-v="3" class="on">3</button><button data-v="5">5</button>
+  <ul>
+    <li>
+      <a class="card" href="chromewood/">
+        <img alt="" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230a0710'/><rect x='6' y='3' width='4' height='7' fill='%23b07bff'/><rect x='5' y='9' width='6' height='4' fill='%233fe0ff'/></svg>">
+        <div>
+          <h2>Chromewood</h2>
+          <p>An isometric pixel-art survival RPG. You land with nothing: chop,
+            mine, cook, build a camp, repair the dead beacon, then go and close
+            the rift. Procedurally generated world, skill tree, eight kinds of
+            night.</p>
+          <p class="meta">Solo, or <b>up to four in co-op</b> · needs WebGL2</p>
         </div>
-      </div>
-      <div class="setuprow">
-        <span class="lbl">HUMANS</span>
-        <div class="seg" id="seg-humans">
-          <button data-v="1" class="on">1</button><button data-v="2">2</button>
+      </a>
+    </li>
+
+    <li>
+      <a class="card" href="getaway.html">
+        <img alt="" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23ffc23c'/><rect x='12' y='6' width='8' height='13' rx='4' fill='%2311131c'/><rect x='11' y='20' width='4' height='7' fill='%2311131c'/><rect x='17' y='20' width='4' height='7' fill='%2311131c'/></svg>">
+        <div>
+          <h2>Getaway Daun</h2>
+          <p>A physics-based lean-and-hop action platformer. Grab a gun, ride the
+            elevators, smash the glass, reach the van. You can't walk — you lean,
+            you hop, you pray.</p>
+          <p class="meta">Campaign and versus · <b>keyboard</b></p>
         </div>
-        <span class="tiny">two humans share one keyboard: P2 uses &larr; &darr; &rarr; and &crarr;</span>
-      </div>
+      </a>
+    </li>
 
-      <div id="slot-list" class="slots"></div>
-
-      <div class="btnrow">
-        <button id="btn-versus-start" class="btn primary">START MATCH</button>
-        <button id="btn-lan" class="btn">PLAY OVER LAN</button>
-        <button class="btn back">BACK</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ================= LAN ================= -->
-  <div id="lan" class="screen hidden">
-    <div class="panel wide">
-      <h2>LAN GAME</h2>
-      <p class="hint" style="margin-top:0">One machine hosts and everyone else points a browser at it.
-        Up to four players; empty seats become bots.</p>
-      <div class="lanbox">
-        <div class="lanhead">TO HOST</div>
-        <code>node server/server.js --port 8080</code>
-        <p class="tiny">It prints the address to share. Everyone on the same network opens that
-          address in a browser &mdash; there is nothing to install.</p>
-      </div>
-      <div class="lanbox">
-        <div class="lanhead">TO JOIN</div>
-        <div class="joinrow">
-          <input id="lan-host" type="text" placeholder="192.168.1.20:8080" autocomplete="off" spellcheck="false">
-          <button id="btn-lan-join" class="btn primary">JOIN</button>
+    <li>
+      <a class="card" href="skyline-scramble/">
+        <img alt="" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%233fc0ef'/><rect x='12' y='5' width='9' height='9' fill='%23f0cfa4'/><rect x='12' y='5' width='9' height='3' fill='%232b2118'/><rect x='18' y='10' width='2' height='2' fill='%2320232f'/><rect x='12' y='15' width='9' height='10' fill='%23e9edf2'/><rect x='13' y='25' width='3' height='5' fill='%233a5fa8'/><rect x='17' y='25' width='3' height='5' fill='%233a5fa8'/></svg>">
+        <div>
+          <h2>Skyline Scramble</h2>
+          <p>A two-player ragdoll race across the rooftops. Same rule as the
+            getaway: you cannot walk, you lean, you let go, you pray.</p>
+          <p class="meta">Two players at one keyboard, or <b>against a bot</b></p>
         </div>
-        <p id="lan-status" class="tiny"></p>
-      </div>
-      <div class="btnrow"><button class="btn back">BACK</button></div>
-    </div>
-  </div>
+      </a>
+    </li>
+  </ul>
 
-  <!-- ================= OPTIONS ================= -->
-  <div id="options" class="screen hidden">
-    <div class="panel">
-      <h2>OPTIONS</h2>
-      <div class="setuprow">
-        <span class="lbl">BLOOD</span>
-        <div class="seg" id="seg-gore">
-          <button data-v="0">OFF</button><button data-v="1" class="on">ON</button><button data-v="2">LOTS</button>
-        </div>
-      </div>
-      <div class="setuprow">
-        <span class="lbl">SOUND</span>
-        <div class="seg" id="seg-sound">
-          <button data-v="0">OFF</button><button data-v="1" class="on">ON</button>
-        </div>
-      </div>
-      <div class="btnrow"><button class="btn back">BACK</button></div>
-    </div>
-  </div>
-
-  <!-- ================= ROUND OVER ================= -->
-  <div id="roundend" class="screen hidden">
-    <div class="panel">
-      <h2 id="round-title">ROUND OVER</h2>
-      <p id="round-sub" class="hint" style="margin-top:0"></p>
-      <div id="round-board" class="board"></div>
-      <p id="round-next" class="tiny"></p>
-      <div class="btnrow"><button id="btn-round-next" class="btn primary">NEXT MAP</button></div>
-    </div>
-  </div>
-
-  <!-- ================= MATCH OVER ================= -->
-  <div id="matchend" class="screen hidden">
-    <div class="panel">
-      <h2 id="match-title">MATCH OVER</h2>
-      <div id="match-board" class="board"></div>
-      <div class="btnrow col">
-        <button id="btn-rematch" class="btn primary">REMATCH</button>
-        <button id="btn-match-menu" class="btn">MENU</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ================= PAUSE ================= -->
-  <div id="pause" class="screen hidden">
-    <div class="panel">
-      <h2>PAUSED</h2>
-      <div class="btnrow col">
-        <button id="btn-resume" class="btn primary">RESUME</button>
-        <button id="btn-retry" class="btn">RESTART LEVEL</button>
-        <button id="btn-quit" class="btn">QUIT TO MENU</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ================= LEVEL COMPLETE ================= -->
-  <div id="complete" class="screen hidden">
-    <div class="panel">
-      <h2 id="complete-title">LEVEL CLEAR</h2>
-      <div class="times">
-        <div><span class="lbl">TIME</span><span id="complete-time" class="val">0.00</span></div>
-        <div><span class="lbl">BEST</span><span id="complete-best" class="val">--</span></div>
-      </div>
-      <p id="complete-note" class="hint"></p>
-      <div class="btnrow col">
-        <button id="btn-next" class="btn primary">NEXT LEVEL</button>
-        <button id="btn-again" class="btn">PLAY AGAIN</button>
-        <button id="btn-menu2" class="btn">MENU</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ================= HUD ================= -->
-  <div id="hud" class="hidden">
-    <div class="hud-left">
-      <div id="hud-level">LEVEL 1</div>
-      <div id="hud-time">0.00</div>
-    </div>
-    <div class="hud-right">
-      <div id="hud-health" class="bar"><i style="width:100%"></i></div>
-      <div id="hud-weapon">UNARMED</div>
-    </div>
-    <div id="hud-score" class="hidden"></div>
-    <div id="hud-prompt" class="hidden"><kbd>R</kbd> <span></span></div>
-    <div id="hud-toast"></div>
-  </div>
-</div>
-
-<script src="js/utils.js"></script>
-<script src="js/pixel.js"></script>
-<script src="js/ragdoll.js"></script>
-<script src="js/input.js"></script>
-<script src="js/audio.js"></script>
-<script src="js/particles.js"></script>
-<script src="js/weapons.js"></script>
-<script src="js/gore.js"></script>
-<script src="js/entities.js"></script>
-<script src="js/levels.js"></script>
-<script src="js/versusmaps.js"></script>
-<script src="js/navgraph.js"></script>
-<script src="js/bots.js"></script>
-<script src="js/match.js"></script>
-<script src="js/net.js"></script>
-<script src="js/game.js"></script>
-<script src="js/ui.js"></script>
-<script src="js/main.js"></script>
+  <footer>
+    <p>Chromewood's co-op needs somebody to run its little relay server, which a
+      static site can't host — solo play works here with nothing else running.
+      The server is one file with no dependencies; see the repository.</p>
+    <p><a href="https://github.com/felipe-lotas69/Juego-daun">Source on GitHub</a></p>
+  </footer>
+</main>
 </body>
 </html>

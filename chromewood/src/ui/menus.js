@@ -104,6 +104,11 @@ export class Menus {
           <input id="in-server" type="text" placeholder="AUTO" autocomplete="off" spellcheck="false"></label>
       </div>
       <button id="btn-join" style="margin-top:10px">JOIN A RUN</button>
+      <p class="note">Co-op needs somebody to run the relay
+        (<code>node server/server.js</code>, one file, no dependencies). Leave
+        SERVER on AUTO when the game is served from that same machine;
+        otherwise type the host's address, like <code>192.168.1.20:8090</code>.
+        A solo run needs nothing at all.</p>
       <button class="ghost" id="btn-settings-main">SETTINGS</button>
       <h3>CONTROLS</h3>
       <table class="keys">

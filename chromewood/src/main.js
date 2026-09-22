@@ -157,7 +157,13 @@ async function startRun(role, form) {
   } catch (err) {
     game.net = null;
     menus.setNetStat('<span class="bad">OFFLINE</span>');
-    menus.setError(err.message + ' You can still play a solo run.');
+    /* On a static host there is no relay at this address at all, so
+       say that rather than leaving them to guess at the address. */
+    const auto = !(form.server || '').trim();
+    menus.setError(err.message + (auto
+      ? ' If this copy is hosted somewhere static, there is no relay here - put the'
+        + " host's address in SERVER. You can still play a solo run."
+      : ' You can still play a solo run.'));
     return;
   }
 
