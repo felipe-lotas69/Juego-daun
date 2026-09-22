@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Skyline Scramble</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="description" content="A two-player ragdoll race across the rooftops. You cannot walk - you lean, you let go, you pray.">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%233fc0ef'/><rect x='12' y='5' width='9' height='9' fill='%23f0cfa4'/><rect x='12' y='5' width='9' height='3' fill='%232b2118'/><rect x='18' y='10' width='2' height='2' fill='%2320232f'/><rect x='12' y='15' width='9' height='10' fill='%23e9edf2'/><rect x='13' y='25' width='3' height='5' fill='%233a5fa8'/><rect x='17' y='25' width='3' height='5' fill='%233a5fa8'/></svg>">
+</head>
+<body>
+  <div id="stage">
+    <div id="shell">
+      <canvas id="screen" width="1280" height="720"></canvas>
+    </div>
+  </div>
+  <p id="hint">Player 1 <b>W</b> <b>E</b> lean &middot; let go to jump &middot; <b>R</b> item &nbsp;|&nbsp; Player 2 <b>&larr;</b> <b>&rarr;</b> &middot; <b>&uarr;</b> item &nbsp;|&nbsp; <b>P</b> pause</p>
+
+  <script src="js/engine.js"></script>
+  <script src="js/art.js"></script>
+  <script src="js/levels.js"></script>
+  <script src="js/world.js"></script>
+  <script src="js/draw.js"></script>
+  <script src="js/bot.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>

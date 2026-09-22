@@ -1,0 +1,60 @@
+:root{
+  --ink:#0d1220;
+  --edge:#1b2436;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:
+    radial-gradient(120% 90% at 50% 0%, #1d3350 0%, #101a2c 55%, #080d16 100%);
+  color:#dbe6f2;
+  font:500 13px/1.4 "Segoe UI", system-ui, -apple-system, sans-serif;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:14px;
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+  user-select:none;
+}
+
+#stage{
+  display:grid;
+  place-items:center;
+}
+
+#shell{
+  width:1280px;
+  height:720px;
+  transform-origin:center center;
+  background:#000;
+  box-shadow:0 24px 70px rgba(0,0,0,.7), 0 0 0 3px var(--edge);
+}
+
+canvas{
+  display:block;
+  width:100%;
+  height:100%;
+  /* the buffer is blown up whole, so never let the browser interpolate */
+  image-rendering:pixelated;
+  image-rendering:crisp-edges;
+}
+
+#hint{
+  font-size:12px;
+  letter-spacing:.2px;
+  color:#8fa2ba;
+  text-align:center;
+  padding:0 12px;
+}
+#hint b{
+  display:inline-block;
+  min-width:18px;
+  padding:1px 5px;
+  border-radius:3px;
+  background:#1b2436;
+  color:#dbe6f2;
+  font-weight:700;
+  text-align:center;
+}
