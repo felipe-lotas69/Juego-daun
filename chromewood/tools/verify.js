@@ -40,6 +40,7 @@ import {
   encodeSnapshot, decodeInput, encodeInput, PROTOCOL_VERSION,
 } from '../src/net/protocol.js';
 import { Mirror } from '../src/net/mirror.js';
+import { brokerConfig, brokerIdForRoom } from '../src/net/peer.js';
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf('--' + name);
@@ -633,6 +634,44 @@ console.log('\nthe full arc');
   }
   ok('arc', seenArcs.join(' -> ') + ` then ${sim.arc}, ${sim.night} nights, ` +
     `${sim.stats.gatesSealed}/${sim.gates.length} gates`);
+}
+
+/* ------------------------------------- 4b. the peer-to-peer address */
+console.log('\npeer to peer');
+{
+  /* The WebRTC handshake itself needs two browsers and is covered by
+     the harness in tools/, not here. What is worth pinning down in a
+     unit check is the bit with fiddly rules: where the signalling
+     broker is, since getting it wrong means co-op simply never
+     connects and the failure looks like somebody else's outage. */
+  const saved = globalThis.location;
+  const at = (search, protocol = 'https:') => {
+    globalThis.location = { search, protocol };
+    const c = brokerConfig();
+    return `${c.secure ? 'wss' : 'ws'}://${c.host}:${c.port}${c.path}peerjs`;
+  };
+  const cases = [
+    ['', 'wss://0.peerjs.com:443/peerjs'],
+    ['?broker=localhost:9777', 'ws://localhost:9777/peerjs'],
+    ['?broker=ws://localhost:9777', 'ws://localhost:9777/peerjs'],
+    ['?broker=wss://sig.example.com', 'wss://sig.example.com:443/peerjs'],
+    ['?broker=example.com/peer', 'wss://example.com:443/peer/peerjs'],
+  ];
+  const wrong = cases.filter(([q, want]) => at(q) !== want)
+    .map(([q, want]) => `${q || '(default)'} -> ${at(q)}, wanted ${want}`);
+  globalThis.location = saved;
+  check(!wrong.length, 'the signalling broker resolves to the right address', wrong.join('; '));
+
+  /* A room code goes down a phone line, so it must not contain the
+     characters people mishear, and it must be the length the join
+     box accepts. */
+  const code = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  check(!/[01OIL]/.test(code), 'room codes avoid the letters that get misheard', code);
+  check(brokerIdForRoom('ABCDE').includes('ABCDE')
+    && brokerIdForRoom('ABCDE') !== 'ABCDE',
+    'a room id is namespaced on the shared broker',
+    'a bare room code would collide with every other PeerJS user');
+  ok('peer to peer', 'broker address, room codes');
 }
 
 /* -------------------------------------------- 5. the wire format */
