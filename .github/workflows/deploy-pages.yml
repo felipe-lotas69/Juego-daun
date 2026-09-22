@@ -18,7 +18,9 @@ name: Deploy to GitHub Pages
 #     deploy job then publishes, and a failed check blocks it.
 #
 # Gating it this way means the workflow is not a permanent red X on
-# every push while the repository is in branch mode.
+# every push while the repository is in branch mode. Running it by hand
+# (Actions > Deploy to GitHub Pages > Run workflow) deploys regardless,
+# which is also how the Pages site gets created in the first place.
 
 on:
   push:
@@ -96,7 +98,7 @@ jobs:
 
   deploy:
     needs: check
-    if: vars.PAGES_VIA_ACTIONS == 'true'
+    if: vars.PAGES_VIA_ACTIONS == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
