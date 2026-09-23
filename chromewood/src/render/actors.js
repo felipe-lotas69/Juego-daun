@@ -14,6 +14,9 @@
 import * as THREE from '../../vendor/three.module.js';
 import { characterSheet, DIR_MAP, CELL_W, CELL_H, DIRS, FRAMES, dirIndex } from './sprite.js';
 import { ITEMS } from '../game/items.js';
+import {
+  beastSheet, B_DIR_MAP, B_W, B_H, B_DIRS, B_FRAMES, beastDir,
+} from './beast.js';
 import { MeshBuilder } from './geom.js';
 import { makeToonMaterial, makeBlobShadowMaterial } from './materials.js';
 import { LAYER_WORLD, LAYER_NO_OUTLINE } from './pipeline.js';
@@ -327,6 +330,37 @@ function ensureBlob() {
 /* A quad wearing the character sheet. It stays upright and turns to
    face the camera; which cell it shows comes from the direction the
    character is walking relative to the screen. */
+/* Animals are drawn flat for the same reason people are. The quad is
+   wider than it is tall, and it keeps its own sheet cached by
+   species and colour rather than per animal. */
+function makeBeastSprite(type, def) {
+  const canvas = beastSheet(type, def.color, def.accent || def.color);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.repeat.set(1 / B_DIRS, 1 / B_FRAMES);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+
+  /* Sized off the creature's own height, so a hare and a ram are not
+     the same animal painted differently. */
+  const h = Math.max(0.62, (def.height || 1) * 1.12) / Math.cos(RENDER.cameraPitch);
+  const w = h * (B_W / B_H) * Math.cos(RENDER.cameraPitch);
+  const geo = new THREE.PlaneGeometry(w, h);
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide,
+    toneMapped: false, fog: true,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.layers.set(LAYER_NO_OUTLINE);
+  const baseY = h * 0.5;
+  mesh.position.y = baseY;
+  mesh.renderOrder = 3;
+  return { mesh, tex, baseY, col: -1, frame: -1, flip: false, gearKey: '', beast: true };
+}
+
 function makeCharacterSprite(colors) {
   const canvas = characterSheet(colors);
   const tex = new THREE.CanvasTexture(canvas);
@@ -388,6 +422,15 @@ export class Actor {
       this.sprite = makeCharacterSprite(colors);
       this.group.add(this.sprite.mesh);
       this.height = 1.25;
+    } else if (ANIMALS[kind]) {
+      /* Wildlife is flat too. The rift's things stay built out of
+         blocks: they are constructions, and looking like one is the
+         point of them. */
+      const def = ANIMALS[kind];
+      this.def = def;
+      this.sprite = makeBeastSprite(kind, def);
+      this.group.add(this.sprite.mesh);
+      this.height = def.height;
     } else if (ALL_CREATURES[kind]) {
       const p = cached('enemy:' + kind, () => buildEnemyParts(kind));
       this.def = p.def;
@@ -452,13 +495,17 @@ export class Actor {
       const S = this.sprite;
       const yaw = opts.cameraYaw !== undefined ? opts.cameraYaw : RENDER.cameraYaw;
 
+      const beast = S.beast;
+      const d = beast ? beastDir(ent.facing || 0, yaw) : dirIndex(ent.facing || 0, yaw);
+      const map = beast ? B_DIR_MAP[d] : DIR_MAP[d];
+
       /* Worn kit goes into the sheet's palette, so the sheet has to
          be rebuilt when it changes. Sheets are cached by their own
          colours, so putting a helmet on and taking it off again
          costs one canvas the first time and nothing after. */
       const eq = ent.equip;
       const gearKey = eq ? `${eq.head || ''}|${eq.body || ''}|${eq.legs || ''}` : '';
-      if (gearKey !== S.gearKey) {
+      if (!beast && gearKey !== S.gearKey) {
         S.gearKey = gearKey;
         const tintOf = (id) => (id && ITEMS[id] ? ITEMS[id].tint : 0);
         const sheet = characterSheet({
@@ -476,17 +523,17 @@ export class Actor {
          into the sheet, not rotated on screen. */
       g.rotation.set(0, yaw, 0);
 
-      const d = dirIndex(ent.facing || 0, yaw);
-      const map = DIR_MAP[d];
       /* Four whole frames, stepped rather than eased: feet that land
          on fractions of a pixel look like skating. */
+      const cols = beast ? B_DIRS : DIRS;
+      const rows = beast ? B_FRAMES : FRAMES;
       const frame = moving > 0.06
-        ? Math.floor(this.time * (5.5 + moving * 5)) % FRAMES
+        ? Math.floor(this.time * (5.5 + moving * 5)) % rows
         : 0;
       if (frame !== S.frame || map.col !== S.col) {
         S.frame = frame;
         S.col = map.col;
-        S.tex.offset.set(map.col / DIRS, 1 - (frame + 1) / FRAMES);
+        S.tex.offset.set(map.col / cols, 1 - (frame + 1) / rows);
       }
       if (map.flip !== S.flip) {
         S.flip = map.flip;

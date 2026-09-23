@@ -34,6 +34,7 @@ import {
   ITEMS, BUILDINGS, RECIPES, SMELTING, STATION_NAME, BEACON_REPAIR, CAT, SLOTS,
 } from '../src/game/items.js';
 import { ANIMALS, EXTRA_ENEMIES } from '../src/game/creatures.js';
+import { SHAPES } from '../src/render/beast.js';
 import { NIGHTS, WEATHER, CONTRACTS, buildNightDeck } from '../src/game/nights.js';
 import {
   allRecipes, invCount, invGive, startCraft, bestToolTier, eat, place, canPlace, equipItem,
@@ -578,6 +579,46 @@ function driveBot(sim, p, i, seq, recipes) {
     }
     if (usPerStep > 400) bad(label + ' performance', `${usPerStep.toFixed(0)}us per step leaves no room for rendering`);
   }
+}
+
+/* ----------------------------------------------- 2e. the wildlife */
+console.log('\nthe wildlife');
+{
+  /* Every animal has to be drawable, tell you what it drops, and
+     belong somewhere. A species with no shape falls back to a
+     generic four-legged thing, which is fine, but a species with no
+     biome never appears at all. */
+  const kinds = Object.entries(ANIMALS);
+  const problems = [];
+  for (const [id, def] of kinds) {
+    if (!def.biomes || !def.biomes.length) problems.push(`${id} lives nowhere`);
+    if (!def.drops || !def.drops.length) problems.push(`${id} drops nothing`);
+    for (const [item] of def.drops || []) {
+      if (!ITEMS[item]) problems.push(`${id} drops "${item}", which is not a thing`);
+    }
+    if (!(def.color >= 0)) problems.push(`${id} has no colour to draw it in`);
+  }
+  check(kinds.length >= 9, 'there is a decent bestiary', `${kinds.length} species`);
+  check(problems.length === 0, 'and every one of them has somewhere to live and something to give',
+    problems.join('; '));
+
+  /* The shapes table is what makes them different animals rather
+     than one animal in different colours. */
+  const shaped = kinds.filter(([id]) => SHAPES[id]).length;
+  check(shaped === kinds.length, 'and a drawn shape of its own',
+    `${shaped} of ${kinds.length} have an entry in the shape table`);
+  const lens = new Set(kinds.map(([id]) => SHAPES[id] && `${SHAPES[id].len}:${SHAPES[id].leg}:${SHAPES[id].ear}`));
+  check(lens.size >= 6, 'and they are not all the same animal recoloured',
+    `${lens.size} distinct builds across ${kinds.length} species`);
+
+  /* And they turn up: spawn weights per season have to leave every
+     species some part of the year where it is worth looking for. */
+  const never = kinds.filter(([id]) =>
+    [0, SEASON_NIGHTS, SEASON_NIGHTS * 2, SEASON_NIGHTS * 3]
+      .every(n => seasonAnimalWeight(n, id) <= 0));
+  check(never.length === 0, 'and none of them is out of season all year',
+    never.map(([id]) => id).join(', '));
+  ok('wildlife', kinds.map(([id]) => id).join(', '));
 }
 
 /* ------------------------------------------ 3a0. gear and blocks */

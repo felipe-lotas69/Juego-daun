@@ -24,7 +24,7 @@ export const SEASONS = [
     dayScale: 1.05,
     warmth: 0.2,
     weather: { rain: 0.30, fog: 0.14, snowstorm: 0.02, ashfall: 0.06 },
-    animals: { critter: 1.4, deer: 1.2, boar: 1.0, ram: 0.8, wolf: 0.7, lumen: 1.0 },
+    animals: { critter: 1.4, deer: 1.2, boar: 1.0, ram: 0.8, wolf: 0.7, lumen: 1.0, hare: 1.5, fowl: 1.3, fox: 0.9 },
     blurb: 'Everything is growing. Plant now.',
   },
   {
@@ -35,7 +35,7 @@ export const SEASONS = [
     dayScale: 1.20,
     warmth: 0.6,
     weather: { rain: 0.12, fog: 0.06, snowstorm: 0, ashfall: 0.12 },
-    animals: { critter: 1.2, deer: 1.1, boar: 1.3, ram: 1.0, wolf: 0.8, lumen: 1.3 },
+    animals: { critter: 1.2, deer: 1.1, boar: 1.3, ram: 1.0, wolf: 0.8, lumen: 1.3, hare: 1.2, fowl: 1.4, fox: 1.0 },
     blurb: 'Long days. The rift is restless in the heat.',
   },
   {
@@ -46,7 +46,7 @@ export const SEASONS = [
     dayScale: 0.92,
     warmth: 0,
     weather: { rain: 0.26, fog: 0.22, snowstorm: 0.04, ashfall: 0.08 },
-    animals: { critter: 0.9, deer: 1.4, boar: 1.4, ram: 1.2, wolf: 1.1, lumen: 0.8 },
+    animals: { critter: 0.9, deer: 1.4, boar: 1.4, ram: 1.2, wolf: 1.1, lumen: 0.8, hare: 1.0, fowl: 0.9, fox: 1.3 },
     blurb: 'The herds are fat and the nights are drawing in.',
   },
   {
@@ -57,7 +57,7 @@ export const SEASONS = [
     dayScale: 0.78,
     warmth: -0.9,                     /* the cold bites harder */
     weather: { rain: 0.04, fog: 0.18, snowstorm: 0.34, ashfall: 0.06 },
-    animals: { critter: 0.5, deer: 0.6, boar: 0.6, ram: 1.3, wolf: 1.6, lumen: 0.6 },
+    animals: { critter: 0.5, deer: 0.6, boar: 0.6, ram: 1.3, wolf: 1.6, lumen: 0.6, hare: 0.7, fowl: 0.3, fox: 1.4 },
     blurb: 'Nothing grows. Keep a fire and keep eating.',
   },
 ];
