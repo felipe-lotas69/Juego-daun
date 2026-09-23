@@ -426,9 +426,14 @@ export function tickBody(sim, p, dt) {
 
   /* Stamina: spent on swings and sprinting, back quickly when you
      stop. It is a pacing tool, not a resource to manage. */
-  const resting = !p.input.fire && !p.sprinting;
-  p.stamina = Math.min(p.maxStamina,
-    p.stamina + SURVIVAL.staminaRegen * (resting ? 1.6 : 0.5) * dt);
+  const resting = !p.input.fire && !p.sprinting && !p.swimming;
+  /* You do not get your breath back while you are still in the water:
+     without this the regen simply outran the cost of swimming and the
+     bay was free to cross. */
+  if (!p.swimming) {
+    p.stamina = Math.min(p.maxStamina,
+      p.stamina + SURVIVAL.staminaRegen * (resting ? 1.6 : 0.5) * dt);
+  }
 
   /* Hunger: slow, and only punishing when fully empty. */
   p.hunger = Math.max(0, p.hunger - SURVIVAL.hungerRate * (p.sprinting ? 1.6 : 1) * dt);

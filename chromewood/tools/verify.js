@@ -25,7 +25,7 @@
 
 import { World, FLAG, SOLID_PROPS, HARVEST, PLATEAUS } from '../src/world/worldgen.js';
 import { canStand } from '../src/game/movement.js';
-import { PLAYER, LEVEL_STEP } from '../src/core/config.js';
+import { PLAYER, LEVEL_STEP, SURVIVAL } from '../src/core/config.js';
 import { Sim, PHASE, ARC, BEACON_COSTS, emptyInput } from '../src/game/sim.js';
 import {
   SKILLS, ABILITIES, ENEMIES, BEACON_UPGRADES, SKILL_BRANCHES, PRIMARY_ID,
@@ -943,6 +943,77 @@ console.log('\nvillages');
   far.x = v.stallX + 40; far.z = v.stallZ;
   check(sim.tryTrade(far, v.id, 0) === false, 'and not from the other side of the valley',
     'a trade went through from forty tiles away');
+}
+
+/* ------------------------------------------------- 3b3. swimming */
+console.log('\nswimming');
+{
+  /* Deep water used to be a wall. It is now a place, which means it
+     has to be one you can get into, get out of, and not live in. */
+  /* A shoreline: deep water with dry, standable ground right beside
+     it. Looking three tiles off instead of one finds nothing at all,
+     because three tiles into a lake is still lake - and away from the
+     rim, because the map edge clamps movement and a swimmer pinned
+     against it proves nothing. */
+  let sim = null, p = null, w = null, spot = null;
+  for (const seed of [4545, 1212, 9001, 31337, 777]) {
+    sim = new Sim(seed, { difficulty: 1 });
+    p = sim.addPlayer('p0', 'SWIMMER');
+    w = sim.world;
+    for (let ty = 30; ty < w.size - 30 && !spot; ty++) {
+      for (let tx = 30; tx < w.size - 30 && !spot; tx++) {
+        const x = w.tileToWorldX(tx), z = w.tileToWorldZ(ty);
+        if (!w.deepAt(x, z)) continue;
+        /* Deep water never touches dry land - the generator rings it
+           with shallows - so the shore is a few tiles out through
+           them, and that is the swim. */
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          for (let k = 2; k <= 5; k++) {
+            const sx = w.tileToWorldX(tx + dx * k), sz = w.tileToWorldZ(ty + dy * k);
+            if (w.flagAt(sx, sz) & FLAG.WATER) continue;
+            const level = Math.round(w.groundAt(sx, sz) / LEVEL_STEP);
+            if (!canStand(w, sx, sz, PLAYER.radius, level)) break;
+            spot = { x, z, ox: dx * k, oy: dy * k };
+            break;
+          }
+          if (spot) break;
+        }
+      }
+    }
+    if (spot) break;
+  }
+  check(!!spot, 'the world has water deep enough to swim in', 'no deep water found');
+
+  if (spot) {
+    p.x = spot.x; p.z = spot.z; p.y = w.groundAt(p.x, p.z);
+    sim.setInput(p.id, { ...emptyInput(), seq: 0 });
+    sim.step(1 / 60); sim.drainEvents();
+    check(p.swimming === true, 'standing in it puts you in the water',
+      'the player is in deep water and not swimming');
+    const surface = w.waterSurfaceAt(p.x, p.z);
+    check(Math.abs(p.y - (surface - SURVIVAL.swimDepth)) < 0.01,
+      'and you ride at the surface rather than on the bottom',
+      `y ${p.y.toFixed(2)} against a surface of ${surface.toFixed(2)}`);
+
+    /* Swim for the shore. Stamina is watched at its lowest rather
+       than at the end, because it comes back the moment you are out. */
+    let lowStam = p.stamina;
+    let onLand = false;
+    for (let i = 1; i < 60 * 14 && !onLand; i++) {
+      sim.setInput(p.id, {
+        ...emptyInput(), seq: i,
+        mx: Math.sign(spot.ox), mz: Math.sign(spot.oy),
+        ax: p.x + spot.ox * 3, az: p.z + spot.oy * 3,
+      });
+      sim.step(1 / 60); sim.drainEvents();
+      lowStam = Math.min(lowStam, p.stamina);
+      if (!p.swimming && !(w.flagAt(p.x, p.z) & FLAG.WATER)) onLand = true;
+    }
+    check(onLand, 'and you can swim out of it again',
+      'fourteen seconds of swimming did not reach dry land');
+    check(lowStam < p.maxStamina, 'and it costs you to do it',
+      'swimming never dipped into the stamina bar');
+  }
 }
 
 /* ------------------------------------------ 3b2. nobody stays stuck */

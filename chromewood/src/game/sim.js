@@ -33,6 +33,9 @@ import {
 } from './survival.js';
 import { villageOffers } from './trade.js';
 import { makeRng } from '../core/rng.js';
+
+/* How far you can climb hauling yourself out of water. */
+const CLIMB_OUT = 3;
 import { clamp, clamp01, lerp, dist2, dist, damp, TAU } from '../core/util.js';
 import { castAbility, stepProjectiles, damageEnemy, damagePlayer, explode } from './combat.js';
 import { stepEnemy } from './enemyai.js';
@@ -614,15 +617,45 @@ export class Sim {
       * (p.killHaste > 0 ? 1 + s.killHaste : 1);
     if (p.warmth <= 0) speed *= 0.72;
     const f = this.world.flagAt(p.x, p.z);
-    if (f & FLAG.WATER) speed *= 0.55;
+
+    /* What you are walking on. A road is the only thing in the world
+       that makes you faster, which is what makes it worth building
+       one, and a marsh is the only ground that reads as an obstacle
+       without anything standing in it. */
+    p.swimming = this.world.deepAt(p.x, p.z);
+    if (p.swimming) {
+      speed *= SURVIVAL.swimSpeed;
+      /* Swimming costs: you cannot cross the bay without stopping,
+         and out of breath you barely move. */
+      p.stamina = Math.max(0, p.stamina - SURVIVAL.swimStamina * dt);
+      if (p.stamina <= 0) speed *= 0.55;
+      p.sprinting = false;
+    } else if (f & FLAG.WATER) {
+      speed *= 0.62;                     /* wading */
+    } else if (f & FLAG.ROAD) {
+      speed *= 1.14;
+    } else if (this.world.biomeAt(p.x, p.z) === BIOME.MARSH) {
+      speed *= 0.78;
+    } else if (this.season.snow > 0.4) {
+      speed *= 0.92;                     /* snow underfoot */
+    }
     if (p.craft) speed *= 0.35;
 
     if (p.dashTimer > 0) p.invuln = Math.max(p.invuln, 0.05);
     if (applyLocomotion(p, input, speed, dt)) {
       this.emit({ t: 'dash', id: p.id, x: p.x, y: p.y, z: p.z, dx: p.dashDirX, dz: p.dashDirZ });
     }
-    moveEntity(this.world, p, PLAYER.radius, dt);
-    p.y = this.world.groundAt(p.x, p.z);
+    /* Out of the water you may haul yourself up a step you could not
+       walk up, which is what stops a swim ending at a shore you can
+       reach and cannot climb - a trap the shallows put in front of
+       every beach on the map. */
+    const inWater = !!(f & FLAG.WATER);
+    moveEntity(this.world, p, PLAYER.radius, dt, true, inWater ? CLIMB_OUT : undefined);
+    /* Afloat you sit at the surface, not on the bottom. */
+    const surface = p.swimming ? this.world.waterSurfaceAt(p.x, p.z) : null;
+    p.y = surface !== null && surface !== undefined
+      ? surface - SURVIVAL.swimDepth
+      : this.world.groundAt(p.x, p.z);
 
     if (input.ax !== undefined) { p.aimX = input.ax; p.aimZ = input.az; }
     const adx = p.aimX - p.x, adz = p.aimZ - p.z;
@@ -633,7 +666,7 @@ export class Sim {
     p.anim.hurt = Math.max(0, p.anim.hurt - dt * 3);
 
     /* ---- what the mouse does depends on what you are holding ---- */
-    if (input.fire && !p.craft) {
+    if (input.fire && !p.craft && !p.swimming) {
       const held = heldItem(p);
       const def = held && ITEMS[held];
       if (p.buildKey) this._tryBuildAtAim(p);
