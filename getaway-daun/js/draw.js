@@ -96,7 +96,12 @@
   /* Lamp posts along the horizon. They sit between the skyline and the
      play area and are most of what gives the distance a floor. */
   function drawPosts(L, cam, sc) {
-    var baseY = Math.round(Pixel.H - 30 - 2 * 4 - cam.y * 0.17);
+    /* street lamps stand on the ground line like everything else. Pinned
+       to a fraction of the frame instead, they hang in the sky the
+       moment the camera pulls back. */
+    var baseY = L.groundY !== undefined
+      ? Math.round(L.groundY - cam.y) - 1
+      : Math.round(Pixel.H - 30 - 2 * 4 - cam.y * 0.17);
     for (var i = 0; i < sc.posts.length; i++) {
       var po = sc.posts[i];
       var x = Math.round(po.x - cam.x * 0.34);
@@ -437,31 +442,28 @@
       Pixel.rect(P, x + 2, y + 6, d.w - 4, 1, '#6f7681');
       Pixel.rect(P, x, y + 10, d.w, 1, '#6f7681');
     } else if (d.kind === 'fence') {
-      /* A builder's yard seen through chain-link. The mesh alone read as
-         a chequerboard hung in mid air; what sells it is having
-         something behind it worth looking at. */
+      /* Chain-link, with the yard's clutter stacked against the near side
+         of it. Drawing the mesh OVER the pallets turned them into a
+         chequerboard; in front, the wire only ever crosses sky. */
+      var fy, fx2;
+      for (fy = y - 18; fy < y; fy++) {
+        for (fx2 = x; fx2 < x + d.w; fx2++) {
+          if ((fx2 + fy) % 4 === 0 || (fx2 - fy + 400) % 4 === 0) {
+            Pixel.rect(P, fx2, fy, 1, 1, 'rgba(226,234,240,0.38)');
+          }
+        }
+      }
+      Pixel.rect(P, x, y - 19, d.w, 2, '#9aa3ab');            /* top rail */
+      for (var fp = x; fp <= x + d.w; fp += 20) Pixel.rect(P, fp, y - 19, 2, 19, '#9aa3ab');
       Pixel.rect(P, x + 4, y - 15, 18, 15, '#a8814e');        /* pallets */
       Pixel.rect(P, x + 4, y - 15, 18, 2, '#c49a60');
       Pixel.rect(P, x + 4, y - 10, 18, 2, '#8c6a3d');
       Pixel.rect(P, x + 4, y - 5, 18, 2, '#8c6a3d');
-      Pixel.rect(P, x + 26, y - 11, 14, 11, '#4a6f9a');       /* a skip */
-      Pixel.rect(P, x + 26, y - 11, 14, 2, '#6a91bd');
-      Pixel.rect(P, x + 27, y - 14, 5, 3, '#6b5a44');
-      Pixel.rect(P, x + 44, y - 20, 3, 20, '#8a949f');        /* a post in the yard */
-      Pixel.rect(P, x + 41, y - 22, 9, 3, '#e8a72c');
-      /* a diamond mesh, not a chequerboard: two sets of diagonals every
-         four pixels reads as wire, while filling every other pixel reads
-         as a pale wall with something behind it */
-      var fy, fx2;
-      for (fy = y - 22; fy < y; fy++) {
-        for (fx2 = x; fx2 < x + d.w; fx2++) {
-          if ((fx2 + fy) % 4 === 0 || (fx2 - fy + 400) % 4 === 0) {
-            Pixel.rect(P, fx2, fy, 1, 1, 'rgba(226,234,240,0.5)');
-          }
-        }
-      }
-      Pixel.rect(P, x, y - 23, d.w, 2, '#9aa3ab');            /* top rail */
-      for (var fp = x; fp <= x + d.w; fp += 20) Pixel.rect(P, fp, y - 23, 2, 23, '#9aa3ab');
+      Pixel.rect(P, x + 26, y - 11, 16, 11, '#c8892c');       /* a skip */
+      Pixel.rect(P, x + 26, y - 11, 16, 2, '#e0a84a');
+      Pixel.rect(P, x + 27, y - 14, 6, 3, '#6b5a44');
+      Pixel.rect(P, x + 46, y - 9, 8, 9, '#4a6f9a');          /* a drum */
+      Pixel.rect(P, x + 46, y - 9, 8, 2, '#6a91bd');
     } else if (d.kind === 'hoarding') {
       /* an advertising hoarding on legs - flat colour, big type-block */
       var hc = ['#d8402f', '#3f7fd8', '#e8a72c', '#46a86a'][(d.seed || 0) % 4];

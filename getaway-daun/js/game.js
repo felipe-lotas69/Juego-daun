@@ -279,15 +279,15 @@
     drawMenu: function (c) {
       var L = LEVELS[0];
       Draw.world(c, menuWorld(), this.time);
-      Pixel.rect(c, 0, 0, Pixel.UI_W, Pixel.UI_H, 'rgba(10,16,30,0.28)');
+      Pixel.rect(c, 0, 0, Pixel.UI_W, Pixel.UI_H, 'rgba(10,16,30,0.20)');
 
-      Pixel.outlineText(c, 'GETAWAY', Pixel.UI_W / 2, 12, 2, '#ffffff', '#101018', 'center');
-      Pixel.outlineText(c, 'DAUN', Pixel.UI_W / 2, 32, 2, '#ffc23c', '#101018', 'center');
+      Pixel.outlineText(c, 'GETAWAY', Pixel.UI_W / 2, 8, 2, '#ffffff', '#101018', 'center');
+      Pixel.outlineText(c, 'DAUN', Pixel.UI_W / 2, 24, 2, '#ffc23c', '#101018', 'center');
       Pixel.outlineText(c, 'YOU CANNOT WALK. LEAN, LET GO, PRAY.',
-                        Pixel.UI_W / 2, 50, 0.6, '#dbe6f2', '#101018', 'center');
+                        Pixel.UI_W / 2, 40, 0.6, '#dbe6f2', '#101018', 'center');
 
       for (var i = 0; i < this.menuItems.length; i++) {
-        var y = 62 + i * 11;
+        var y = 50 + i * 10;
         var on = i === this.menuIndex;
         var w = 68, x = Pixel.UI_W / 2 - w / 2;
         Pixel.rect(c, x, y, w, 9, on ? '#ffc23c' : 'rgba(16,20,30,0.72)');
@@ -295,7 +295,8 @@
         Pixel.text(c, this.menuItems[i], Pixel.UI_W / 2, y + 2, 0.6,
                    on ? '#101018' : '#dbe6f2', 'center');
       }
-      Pixel.text(c, 'ARROWS OR W/S  -  ENTER', Pixel.UI_W / 2, Pixel.UI_H - 12, 0.6, '#9fb0c4', 'center');
+      /* clear of the street, which the strapline would vanish into */
+      Pixel.outlineText(c, 'ARROWS OR W/S  -  ENTER', Pixel.UI_W / 2, 101, 0.6, '#dbe6f2', '#101018', 'center');
       void L;
     },
 
@@ -336,7 +337,7 @@
     if (!_menuWorld) {
       _menuWorld = new World(LEVELS[0], {});
       _menuWorld.cam.x = 420;
-      _menuWorld.cam.y = 34;
+      _menuWorld.cam.y = 0;      /* the street sits on the floor of the frame */
       _menuWorld.racers = [];
     }
     _menuWorld.cam.x = 420 + Math.sin(Game.time * 0.12) * 40;
