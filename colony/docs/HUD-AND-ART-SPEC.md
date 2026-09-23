@@ -73,3 +73,46 @@ rectangle, water hitting land at a right angle. Soften it:
 The palette should stay flat and muted, closer to a painted board game than a neon tile set.
 Contrast belongs to what is interactive. Nothing in the world layer should be pure black or
 pure white.
+## 16. Matching the original game's look
+
+The player supplied screenshots of the game this one is modelled on and asked that the design
+match it. Here is what those screenshots actually show, as a spec.
+
+### The UI chrome
+- **Panels are dark, near-black, slightly translucent over the world**, with a thin lighter
+  hairline border — not opaque grey slabs. The world should be faintly visible behind a panel
+  edge. No drop shadows, no gradients, no rounded corners beyond 2px.
+- **Text is small, light grey-white, and dense.** The original packs a lot of information into
+  little space and trusts the player to read it. Our current panels are roomier than the
+  original and the type is larger; tighten both. A row in a list is about 20px tall, not 30.
+- **The accent is a warm yellow-gold**, used for the active tab, a selected category, a
+  highlighted value and nothing else. Red is danger and alerts only. Green is positive values
+  only. A panel that uses four accent colours has none.
+- **Buttons are flat rectangles with a hairline border** that lighten on hover. Not filled
+  blocks, not pills.
+
+### The architect, specifically
+The original's build menu is a **two-column grid of category buttons**, not a single column:
+Orders / Zone, Structure / Production, Storage / Furniture, Power / Security, Misc / Floors,
+and so on, with a search field beneath them. Selecting one opens a row of command buttons above
+the bottom bar, each an **icon with its label underneath it**, in a grid that wraps. Change our
+single column to the two-column grid, because that is what the reference shows.
+
+### The bottom bar
+A row of text tabs spanning the width, the active one marked. Beside them at the right, small
+icon buttons. This we already have.
+
+### The top strip
+Resources at the far left as small icon-and-count rows. Colonist portraits centred, each a small
+box with the pawn's face, a name, and thin bars. Alerts as short coloured lines down the right
+edge — the original writes them as plain coloured text with a small icon, not as bordered cards.
+
+### The world
+- The original's ground is **warm and muted**: browns and olive greens, low saturation, nothing
+  neon. Water is a muted blue-green, not a bright blue. Stone is warm grey, not blue-grey.
+- Terrain reads as **soft and painterly at a distance** with detail that only resolves close up.
+- Things standing on the ground carry a **soft dark contact shadow** and read clearly against it.
+- The night tint is a deep desaturated blue, and lamplight is warm and pools softly.
+
+Where our palette is more saturated or cooler than that, pull it toward warm and muted. The
+picture should look like weathered ground in afternoon light, not a colour swatch.
