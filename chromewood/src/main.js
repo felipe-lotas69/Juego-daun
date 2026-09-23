@@ -906,7 +906,7 @@ function frame(now) {
   handleHotkeys();
 
   if (!game.running || !game.sim) {
-    rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance);
+    rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance, null, cam.zoom);
     cam.update(rawDt, null, null);
     pipeline.render(rig.scene, cam.camera, cam.subpixel);
     hud.update(rawDt);
@@ -964,7 +964,7 @@ function frame(now) {
   if (input.isDown('zoomOut')) cam.nudgeZoom(rawDt * 8);
 
   rig.setTime(sim.dayTime);
-  rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance, sim.weather);
+  rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance, sim.weather, cam.zoom);
   audio.setAmbient(rig.nightAmount);
 
   game.view.update(cam.smoothed, cam.zoom);

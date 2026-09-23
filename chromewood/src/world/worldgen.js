@@ -285,11 +285,18 @@ export class World {
         e += fbm(nx * 3.1, ny * 3.1, S + 11, 3) * 0.30;         /* hills     */
         e += fbm(nx * 8.0, ny * 8.0, S + 313, 2) * 0.09;        /* roughness */
 
+        /* Basins. Without something that digs as well as piles, an
+           island is a dome with texture on it: the low ground is
+           only low because it is far from the peaks, so there is
+           nowhere that feels enclosed. */
+        const basin = Math.max(0, fbm(nx * 0.62 - 21.4, ny * 0.62 + 8.7, S + 2027, 2) - 0.52) / 0.48;
+        e -= Math.pow(basin, 1.3) * 0.34;
+
         /* A spine of mountains: ridged noise, raised to a power so
            the ridges stay sharp and the ground between stays low. */
         const r = ridge(nx * 0.75 + 31.7, ny * 0.75 - 12.3, S + 991, 4);
-        const mountainMask = Math.max(0, fbm(nx * 0.40 + 7, ny * 0.40 + 19, S + 555, 2) - 0.40) / 0.60;
-        e += Math.pow(r, 1.7) * mountainMask * 1.30;
+        const mountainMask = Math.max(0, fbm(nx * 0.40 + 7, ny * 0.40 + 19, S + 555, 2) - 0.38) / 0.62;
+        e += Math.pow(r, 1.7) * mountainMask * 1.62;
 
         /* Coast: a radial falloff makes an island rather than a
            square, so the edge of the map is sea and not a wall. */
@@ -1077,8 +1084,47 @@ export class World {
 
       this.caves.push({ id, tx: m.tx, ty: m.ty, floor, tiles, dx, dy });
       const cave = this.caves[this.caves.length - 1];
+
+      /* Fill in anything the digger cut but left cut off from the
+         doorway, before anything is put in it. A pocket you cannot
+         reach is not a secret, it is a bug nobody can see; filled
+         back in it is a pillar standing in the tunnel. */
+      const reached = this._caveReach(cave);
+      const kept = [];
+      for (const i of cave.tiles) {
+        if (reached[i]) { kept.push(i); continue; }
+        this._uncut(i);
+      }
+      cave.tiles = kept;
+      if (kept.length < 24) {
+        for (const i of kept) this._uncut(i);
+        const mj = this.idx(m.tx, m.ty);
+        this.caveId[mj] = 0;
+        this.flags[mj] &= ~FLAG.CAVE_MOUTH;
+        this.caves.pop();
+        continue;
+      }
+
+      /* Then stock it, then take out anything that grew across the
+         one passage there was, and fill in whatever that still could
+         not open - a plug several tiles thick of solid ore can beat
+         the clearing pass, and a tunnel nobody can reach is worse
+         than a shorter tunnel. */
       this._stockCave(cave, rng);
       this._openCave(cave);
+      const after = this._caveReach(cave);
+      const final = [];
+      for (const i of cave.tiles) {
+        if (after[i]) { final.push(i); continue; }
+        this._uncut(i);
+      }
+      cave.tiles = final;
+
+      /* Opening the passages takes things out, and the trim takes
+         tiles away with whatever was on them. Top the cave back up
+         with things that cannot block a passage, so a cave is never
+         a corridor of bare stone. */
+      this._topUpCave(cave, rng);
     }
     this.stats.caves = this.caves.length;
   }
@@ -1088,26 +1134,34 @@ export class World {
      doorway under the same rule a body obeys, and clear whatever is
      standing between the doorway and the rest of it. Repeated,
      because clearing one blocker usually reveals the next. */
+  /* Everything you can walk to from the doorway, under the same
+     climb rule a body obeys. */
+  _caveReach(cave) {
+    const n = this.size;
+    const seen = new Uint8Array(n * n);
+    const stack = [[cave.tx, cave.ty]];
+    seen[this.idx(cave.tx, cave.ty)] = 1;
+    while (stack.length) {
+      const [tx, ty] = stack.pop();
+      const h = this.height[this.idx(tx, ty)];
+      for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = tx + ox, ny = ty + oy;
+        if (!this.inBounds(nx, ny)) continue;
+        const j = this.idx(nx, ny);
+        if (seen[j] || this.caveId[j] !== cave.id) continue;
+        if (this.flags[j] & FLAG.SOLID) continue;
+        if (Math.abs(this.height[j] - h) > CLIMB) continue;
+        seen[j] = 1;
+        stack.push([nx, ny]);
+      }
+    }
+    return seen;
+  }
+
   _openCave(cave) {
     const n = this.size;
-    for (let pass = 0; pass < 80; pass++) {
-      const seen = new Uint8Array(cave.tiles.length ? n * n : 0);
-      const stack = [[cave.tx, cave.ty]];
-      seen[this.idx(cave.tx, cave.ty)] = 1;
-      while (stack.length) {
-        const [tx, ty] = stack.pop();
-        const h = this.height[this.idx(tx, ty)];
-        for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const nx = tx + ox, ny = ty + oy;
-          if (!this.inBounds(nx, ny)) continue;
-          const j = this.idx(nx, ny);
-          if (seen[j] || this.caveId[j] !== cave.id) continue;
-          if (this.flags[j] & FLAG.SOLID) continue;
-          if (Math.abs(this.height[j] - h) > CLIMB) continue;
-          seen[j] = 1;
-          stack.push([nx, ny]);
-        }
-      }
+    for (let pass = 0; pass < 240; pass++) {
+      const seen = this._caveReach(cave);
       /* Everything reached? Then there is nothing in the way. */
       let missing = 0;
       for (const i of cave.tiles) if (!seen[i]) missing++;
@@ -1128,7 +1182,7 @@ export class World {
           const j = this.idx(nx, ny);
           if (this.caveId[j] !== cave.id) continue;
           if (seen[j]) near = true;
-          else if (!(this.flags[j] & FLAG.SOLID)) far = true;
+          else far = true;          /* solid too: plugs peel a layer at a time */
         }
         if (!near || !far) continue;
         this.clearProp(tx, ty);
@@ -1136,6 +1190,31 @@ export class World {
         break;
       }
       if (!cleared) break;
+    }
+  }
+
+  /* Only ever mushrooms, loose rock and bones: none of them are
+     solid, so none of them can wall a tunnel off after the fact. */
+  _topUpCave(cave, rng) {
+    const n = this.size;
+    const want = Math.round(cave.tiles.length * 0.22);
+    let have = 0;
+    const empty = [];
+    for (const i of cave.tiles) {
+      if (this.prop[i]) have++;
+      else empty.push(i);
+    }
+    const table = [PROP.MUSHROOM, PROP.MUSHROOM, PROP.ROCK, PROP.ROCK, PROP.BONES];
+    while (have < want && empty.length) {
+      const k = rng.int(empty.length);
+      const i = empty[k];
+      empty[k] = empty[empty.length - 1];
+      empty.pop();
+      const tx = i % n, ty = (i / n) | 0;
+      if (Math.hypot(tx - cave.tx, ty - cave.ty) < 3) continue;
+      this.setProp(tx, ty, table[rng.int(table.length)]);
+      this.variant[i] = rng.int(256);
+      have++;
     }
   }
 

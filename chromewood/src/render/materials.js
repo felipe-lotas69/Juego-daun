@@ -65,6 +65,48 @@ const DETAIL_VERT = /* glsl */`
   vDetailUv = uv;
 `;
 
+/* ---------------------------------------------------- cloud shadows
+
+   There is no sky to put clouds in - the camera looks down and the
+   background is a flat colour - so the clouds are only ever their
+   shadows, drifting across the ground. It costs two sines per pixel
+   and it is the single cheapest thing that makes a landscape look
+   like it has weather over it. */
+const CLOUD_VERT_PARS = /* glsl */`
+  varying vec2 vCloudXZ;
+`;
+
+const CLOUD_VERT = /* glsl */`
+  vCloudXZ = (modelMatrix * vec4(transformed, 1.0)).xz;
+`;
+
+const CLOUD_FRAG_PARS = /* glsl */`
+  uniform vec2  uCloudDrift;
+  uniform float uCloudStrength;
+  varying vec2 vCloudXZ;
+`;
+
+const CLOUD_FRAG = /* glsl */`
+  {
+    vec2 p = vCloudXZ * 0.030 + uCloudDrift;
+    /* Three layers, one of them turned forty degrees off the others.
+       Two axis-aligned layers on their own make a corrugated roof;
+       the rotated one is what stops it reading as stripes. */
+    vec2 q = vec2(p.x * 0.77 + p.y * 0.64, p.y * 0.77 - p.x * 0.64);
+    float a = sin(p.x) * sin(p.y * 0.83 + 1.3);
+    float b = sin(q.x * 1.9 + 2.1) * sin(q.y * 1.7 - 0.7);
+    float c = sin((p.x + p.y) * 0.44 + 4.0);
+    float v = a * 0.48 + b * 0.30 + c * 0.22;
+    float shade = smoothstep(0.02, 0.58, v) * uCloudStrength;
+    diffuseColor.rgb *= 1.0 - shade * 0.24;
+  }
+`;
+
+export const cloudUniforms = {
+  uCloudDrift: { value: new THREE.Vector2(0, 0) },
+  uCloudStrength: { value: 1.0 },
+};
+
 const DETAIL_FRAG_PARS = /* glsl */`
   uniform sampler2D tDetail;
   uniform float uDetailStrength;
@@ -120,10 +162,11 @@ export function makeToonMaterial(opts = {}) {
     fog = true,
     shadowSide = null,
     detail = true,
+    clouds = true,
   } = opts;
 
   const key = [color, vertexColors, emissive, emissiveIntensity, rim, transparent,
-    opacity, side, depthWrite, bands, fog, detail].join('|');
+    opacity, side, depthWrite, bands, fog, detail, clouds].join('|');
   if (materialCache.has(key)) return materialCache.get(key);
 
   const mat = new THREE.MeshToonMaterial({
@@ -162,10 +205,20 @@ export function makeToonMaterial(opts = {}) {
         .replace('#include <common>', `#include <common>\n${DETAIL_FRAG_PARS}`)
         .replace('#include <color_fragment>', `#include <color_fragment>\n${DETAIL_FRAG}`);
     }
+    if (clouds) {
+      shader.uniforms.uCloudDrift = cloudUniforms.uCloudDrift;
+      shader.uniforms.uCloudStrength = cloudUniforms.uCloudStrength;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>\n${CLOUD_VERT_PARS}`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>\n${CLOUD_VERT}`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>\n${CLOUD_FRAG_PARS}`)
+        .replace('#include <color_fragment>', `#include <color_fragment>\n${CLOUD_FRAG}`);
+    }
   };
   /* Materials that differ only in their patch still need distinct
      programs, which this key gives them. */
-  mat.customProgramCacheKey = () => `toon-rim-${bands}-${detail ? 'd' : 'p'}`;
+  mat.customProgramCacheKey = () => `toon-rim-${bands}-${detail ? 'd' : 'p'}-${clouds ? 'c' : 'x'}`;
 
   materialCache.set(key, mat);
   return mat;
