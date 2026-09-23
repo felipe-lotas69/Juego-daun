@@ -59,7 +59,7 @@ jobs:
       - name: Every script parses
         run: |
           for f in js/*.js server/*.js tools/*.js \
-                   skyline-scramble/js/*.js skyline-scramble/tools/*.js; do
+                   getaway-daun/js/*.js getaway-daun/tools/*.js; do
             [ -e "$f" ] || continue
             node --check "$f" || exit 1
           done
@@ -82,10 +82,10 @@ jobs:
       - name: Getaway Daun's levels are completable
         run: node tools/verify-levels.js
 
-      - name: Skyline Scramble's levels are completable
+      - name: Getaway Daun's courses are completable
         run: |
-          if [ -f skyline-scramble/tools/verify-levels.js ]; then
-            node skyline-scramble/tools/verify-levels.js
+          if [ -f getaway-daun/tools/verify-levels.js ]; then
+            node getaway-daun/tools/verify-levels.js
           fi
 
       - name: Chromewood's content, worlds, arc and wire format
@@ -93,7 +93,7 @@ jobs:
 
       - name: Every page the landing page links to exists
         run: |
-          for f in index.html getaway.html chromewood/index.html skyline-scramble/index.html; do
+          for f in index.html getaway.html chromewood/index.html getaway-daun/index.html; do
             test -f "$f" || { echo "missing $f"; exit 1; }
           done
           # A dead link on the front page is the one bug every visitor hits.

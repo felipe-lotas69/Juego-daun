@@ -9,8 +9,8 @@ switched on, see [Hosting](#hosting) below.
 | | |
 |---|---|
 | [**Chromewood**](chromewood/) | An isometric pixel-art survival RPG. Land with nothing, build a camp, repair the beacon, close the rift. Solo or up to four in co-op. [Its own README](chromewood/README.md). |
-| [**Getaway Daun**](getaway.html) | The game below: lean-and-hop action platforming. |
-| [**Skyline Scramble**](skyline-scramble/) | A two-player ragdoll race across the rooftops. [Its own README](skyline-scramble/README.md). |
+| [**Getaway Daun**](getaway-daun/) | The rebuilt one: a 1-4 player ragdoll race with guns, and recoil you travel on. [Its own README](getaway-daun/README.md). |
+| [**Getaway Daun (first build)**](getaway.html) | The earlier single-file version, kept as it was. |
 
 The rest of this file is about Getaway Daun.
 
@@ -156,8 +156,8 @@ Branch: `claude/getaway-shootout-game-x4v0bp` / `(root)` → Save.**
 
 Give it a minute and it appears at
 `https://felipe-lotas69.github.io/Juego-daun/`, with the landing page at the
-root, Getaway Daun at `/getaway.html`, Chromewood at `/chromewood/` and Skyline
-Scramble at `/skyline-scramble/`. Every later push republishes automatically.
+root, Getaway Daun at `/getaway-daun/`, Chromewood at `/chromewood/` and the
+first build at `/getaway.html`. Every later push republishes automatically.
 
 Note that this switch has to be thrown by hand, once. A workflow cannot
 do it: `GITHUB_TOKEN` is refused the Pages-site creation API
