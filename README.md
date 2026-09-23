@@ -9,7 +9,7 @@ switched on, see [Hosting](#hosting) below.
 | | |
 |---|---|
 | [**Chromewood**](chromewood/) | An isometric pixel-art survival RPG. Land with nothing, build a camp, repair the beacon, close the rift. Solo or up to four in co-op. [Its own README](chromewood/README.md). |
-| [**Getaway Daun**](getaway-daun/) | The rebuilt one: a 1-4 player ragdoll race with guns, and recoil you travel on. [Its own README](getaway-daun/README.md). |
+| [**Getaway Daun**](getaway-daun/) | The rebuilt one: a 1-4 player ragdoll race down a high street and over the rooftops, with guns, and recoil you travel on. [Its own README](getaway-daun/README.md). |
 | [**Getaway Daun (first build)**](getaway.html) | The earlier single-file version, kept as it was. |
 
 The rest of this file is about Getaway Daun.

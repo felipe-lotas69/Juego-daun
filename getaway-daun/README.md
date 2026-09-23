@@ -45,8 +45,19 @@ your body has tipped, so firing mid-tumble sends shots anywhere. Utilities
 
 ## Courses
 
-Three, rotating: **Rooftop Row** over a long drop, **Freight Line** across a
-train in open scrub, **Night Shift** up through an office to the exit.
+Four, rotating:
+
+| | |
+|---|---|
+| **Downtown** | Street level. A pavement runs the whole length of it and everything in the picture stands on that one line — the taxis, the double-deckers, the far skyline. You climb the traffic, or take the high road over a shop awning and the air-con box above it. |
+| **Rooftop Row** | Thin decks over a long drop, with the towers under them going off the bottom of the frame. |
+| **Freight Line** | Across a standing train in open scrub. |
+| **Night Shift** | Up through an office at night, the city outside the glass. |
+
+Downtown is built to one rule: every climb is a step of sixteen, and **every
+solid piece is the same height from both sides**. A racer shoved off the back
+of a bus has to be able to get over it again, and a face taller than a jump
+lifts is where a race quietly ends.
 
 ## The camera
 
@@ -57,30 +68,45 @@ across the map get a loose one.
 ## Checking it still works
 
 ```
-node tools/verify-levels.js
+node tools/verify-levels.js      # can a jump get from here to there?
+node tools/race-bots.js 12       # can four bots actually finish?
 ```
 
-Walks every course against the real launch maths — the same function the game
-and the bots use, read out of the source rather than copied, so the check
-cannot drift from what a jump actually does.
+The first walks every course against the real launch maths — the same
+function the game and the bots use, read out of the source rather than
+copied, so the check cannot drift from what a jump actually does.
+
+The second is the one that finds the real problems. It runs four bots through
+every course headlessly with a seeded RNG, twelve times over, and fails if
+any of them is still out there at the end. Geometry that passes the first
+check and traps a player anyway — a notch at the front of a bus you can stand
+in but never climb out of — shows up here as `0/4 home`, and a course an
+opponent cannot finish is a course a player will get stuck on too. Both run
+in CI.
 
 ## How it is put together
 
-One art pixel is three screen pixels, and that holds for **everything** —
+One art pixel is six screen pixels, and that holds for **everything** —
 characters, decks, props, skyline, clouds. Sprites are rigid low-res bitmaps
 that rotate and sit at sub-pixel precision, so a character can tilt 37 degrees
 without snapping to a grid, but nothing is drawn at a different density from
 anything else. The interface has a fixed space of its own so it does not
 shrink when the camera pulls back.
 
-A racer stands about a tenth of the frame. Walkable surfaces are thin decks
-with a long drop under them, never blocks filling the bottom of the screen,
-and the background is pushed hard toward the sky colour in three parallax
-layers so it can never be mistaken for somewhere to land.
+A racer stands about a fifth of the frame. Walkable surfaces are thin decks
+with something underneath them — a tower with lit windows, a shop, a wagon —
+never a grey block filling the bottom of the screen. The sky is flat and
+saturated and owns the top half of the picture; the skyline behind is warm,
+low, and never reaches the top edge.
+
+Where a course has one ground line, it says so (`L.groundY`), and the far
+skyline, the street, the lamp posts and the office glazing all stand on that
+same line instead of on a fraction of the screen height. That is what stops
+the lamps hanging in the sky the moment the camera pulls back.
 
 - `js/engine.js` — maths, canvas, font, sprite baking, keys
 - `js/art.js` — the sprite sheets, written as pixels
-- `js/levels.js` — the three courses
+- `js/levels.js` — the four courses
 - `js/weapons.js` — guns, bullets, recoil
 - `js/world.js` — bodies, the verlet ragdoll, the simulation
 - `js/draw.js` — painting the world
@@ -89,12 +115,8 @@ layers so it can never be mistaken for somewhere to land.
 
 ## Not done yet
 
-Moving platforms and hazards (trains on tracks, boats, elevators), water to
-fall into, getaway vehicles other than the van, and unlockable cosmetics.
-
-The art direction is also only part-way there. Still to build: street-level
-courses, the big foreground pieces (brick walls with reachable rooftops,
-cutaway shop fronts, a taxi and a bus used as platforms), chain-link fence
-drawn as a dither, dumpsters and trash bags, and restyled item pickups.
+Moving platforms and hazards (trains that actually move, boats, elevators,
+conveyors), water to fall into, getaway vehicles other than the van, and
+unlockable cosmetics.
 
 All art, characters and level design here are original.
