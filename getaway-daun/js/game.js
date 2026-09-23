@@ -162,29 +162,31 @@
       Draw.backdrop(sc, w.level, { x: Math.round(w.cam.x), y: Math.round(w.cam.y) }, this.time);
 
       var c = Pixel.begin(this.world ? this.world.zoom : 1);
-      if (this.state === 'menu') this.drawMenu(c);
-      else if (this.state === 'controls') this.drawControls(c);
+      if (this.state === 'menu') { c = Pixel.ui(); this.drawMenu(c); }
+      else if (this.state === 'controls') { c = Pixel.ui(); this.drawControls(c); }
       else {
         Draw.world(c, this.world, this.time);
         /* the HUD never zooms with the camera */
-        c = Pixel.begin(1);
+        c = Pixel.ui();
         this.drawHud(c);
         if (this.countdown > 0) {
           var n = Math.ceil(this.countdown - 0.2);
-          if (n > 0) Pixel.outlineText(c, String(n), Pixel.W / 2, 44, 2.5, '#ffc23c', '#101018', 'center');
-          else Pixel.outlineText(c, 'GO', Pixel.W / 2, 44, 2.5, '#57c96a', '#101018', 'center');
+          if (n > 0) Pixel.outlineText(c, String(n), Pixel.UI_W / 2, 44, 2.5, '#ffc23c', '#101018', 'center');
+          else Pixel.outlineText(c, 'GO', Pixel.UI_W / 2, 44, 2.5, '#57c96a', '#101018', 'center');
         }
         if (this.state === 'paused') {
-          Pixel.rect(c, 0, 0, Pixel.W, Pixel.H, 'rgba(12,14,22,0.66)');
-          Pixel.outlineText(c, 'PAUSED', Pixel.W / 2, 44, 2, '#ffffff', '#101018', 'center');
-          Pixel.text(c, 'P TO RESUME   BACKSPACE TO QUIT', Pixel.W / 2, 66, 0.6, '#c8d2e0', 'center');
+          c = Pixel.ui();
+          Pixel.rect(c, 0, 0, Pixel.UI_W, Pixel.UI_H, 'rgba(12,14,22,0.66)');
+          Pixel.outlineText(c, 'PAUSED', Pixel.UI_W / 2, 44, 2, '#ffffff', '#101018', 'center');
+          Pixel.text(c, 'P TO RESUME   BACKSPACE TO QUIT', Pixel.UI_W / 2, 66, 0.6, '#c8d2e0', 'center');
         }
         if (this.state === 'roundover' || this.state === 'matchover') {
-          Pixel.rect(c, 0, 0, Pixel.W, Pixel.H, 'rgba(12,14,22,0.6)');
-          Pixel.outlineText(c, this.banner, Pixel.W / 2, 26, 1.25, '#ffc23c', '#101018', 'center');
+          c = Pixel.ui();
+          Pixel.rect(c, 0, 0, Pixel.UI_W, Pixel.UI_H, 'rgba(12,14,22,0.6)');
+          Pixel.outlineText(c, this.banner, Pixel.UI_W / 2, 26, 1.25, '#ffc23c', '#101018', 'center');
           this.drawScoreboard(c, 46);
           Pixel.text(c, this.state === 'matchover' ? 'ENTER FOR THE MENU' : 'ENTER FOR THE NEXT MAP',
-                     Pixel.W / 2, 110, 0.6, '#ffffff', 'center');
+                     Pixel.UI_W / 2, 110, 0.6, '#ffffff', 'center');
         }
       }
     },
@@ -201,7 +203,7 @@
         var r = w.racers[i];
         var left = i < 2;
         var slot = left ? i : (i - 2);
-        var x = left ? 15 + slot * 27 : Pixel.W - 58 + slot * 27;
+        var x = left ? 15 + slot * 27 : Pixel.UI_W - 58 + slot * 27;
         this.drawPortrait(c, r, x, 3);
         Pixel.rect(c, x + 13, 3, 9, 13, '#101018');
         Pixel.rect(c, x + 14, 4, 7, 11, r.def.mark);
@@ -220,10 +222,10 @@
       }
 
       if (this.toastT > 0) {
-        Pixel.outlineText(c, this.toast, Pixel.W / 2, 28, 0.75, '#ffc23c', '#101018', 'center');
+        Pixel.outlineText(c, this.toast, Pixel.UI_W / 2, 28, 0.75, '#ffc23c', '#101018', 'center');
       }
       if (this.bannerT > 0 && this.state === 'playing') {
-        Pixel.outlineText(c, this.banner, Pixel.W / 2, 40, 1.25, '#ffffff', '#101018', 'center');
+        Pixel.outlineText(c, this.banner, Pixel.UI_W / 2, 40, 1.25, '#ffffff', '#101018', 'center');
       }
 
       /* what the local players are holding */
@@ -233,8 +235,8 @@
            the boxes are wider than the gap between them otherwise. */
         var held = hp.weapon ? WEAPONS[hp.weapon.key].name : (hp.util ? hp.util.toUpperCase() : null);
         var boxW = held ? Pixel.textWidth(held, 0.5) + 5 : 10;
-        var bxh = (i % 2 === 0) ? 5 : Pixel.W - 5 - boxW;
-        var byh = Pixel.H - 13 - (i >> 1) * 13;
+        var bxh = (i % 2 === 0) ? 5 : Pixel.UI_W - 5 - boxW;
+        var byh = Pixel.UI_H - 13 - (i >> 1) * 13;
         Pixel.rect(c, bxh, byh, boxW, 11, 'rgba(16,20,30,0.72)');
         Pixel.frame(c, bxh, byh, boxW, 11, held ? '#ffc23c' : hp.def.mark);
         Pixel.rect(c, bxh + 1, byh + 1, 2, 9, hp.def.mark);
@@ -277,30 +279,30 @@
     drawMenu: function (c) {
       var L = LEVELS[0];
       Draw.world(c, menuWorld(), this.time);
-      Pixel.rect(c, 0, 0, Pixel.W, Pixel.H, 'rgba(10,16,30,0.28)');
+      Pixel.rect(c, 0, 0, Pixel.UI_W, Pixel.UI_H, 'rgba(10,16,30,0.28)');
 
-      Pixel.outlineText(c, 'GETAWAY', Pixel.W / 2, 12, 2, '#ffffff', '#101018', 'center');
-      Pixel.outlineText(c, 'DAUN', Pixel.W / 2, 32, 2, '#ffc23c', '#101018', 'center');
+      Pixel.outlineText(c, 'GETAWAY', Pixel.UI_W / 2, 12, 2, '#ffffff', '#101018', 'center');
+      Pixel.outlineText(c, 'DAUN', Pixel.UI_W / 2, 32, 2, '#ffc23c', '#101018', 'center');
       Pixel.outlineText(c, 'YOU CANNOT WALK. LEAN, LET GO, PRAY.',
-                        Pixel.W / 2, 50, 0.6, '#dbe6f2', '#101018', 'center');
+                        Pixel.UI_W / 2, 50, 0.6, '#dbe6f2', '#101018', 'center');
 
       for (var i = 0; i < this.menuItems.length; i++) {
         var y = 62 + i * 11;
         var on = i === this.menuIndex;
-        var w = 68, x = Pixel.W / 2 - w / 2;
+        var w = 68, x = Pixel.UI_W / 2 - w / 2;
         Pixel.rect(c, x, y, w, 9, on ? '#ffc23c' : 'rgba(16,20,30,0.72)');
         Pixel.frame(c, x, y, w, 9, on ? '#ffffff' : '#5a6478');
-        Pixel.text(c, this.menuItems[i], Pixel.W / 2, y + 2, 0.6,
+        Pixel.text(c, this.menuItems[i], Pixel.UI_W / 2, y + 2, 0.6,
                    on ? '#101018' : '#dbe6f2', 'center');
       }
-      Pixel.text(c, 'ARROWS OR W/S  -  ENTER', Pixel.W / 2, Pixel.H - 12, 0.6, '#9fb0c4', 'center');
+      Pixel.text(c, 'ARROWS OR W/S  -  ENTER', Pixel.UI_W / 2, Pixel.UI_H - 12, 0.6, '#9fb0c4', 'center');
       void L;
     },
 
     drawControls: function (c) {
       Draw.world(c, menuWorld(), this.time);
-      Pixel.rect(c, 0, 0, Pixel.W, Pixel.H, 'rgba(10,16,30,0.72)');
-      Pixel.outlineText(c, 'CONTROLS', Pixel.W / 2, 10, 1.5, '#57c96a', '#101018', 'center');
+      Pixel.rect(c, 0, 0, Pixel.UI_W, Pixel.UI_H, 'rgba(10,16,30,0.72)');
+      Pixel.outlineText(c, 'CONTROLS', Pixel.UI_W / 2, 10, 1.5, '#57c96a', '#101018', 'center');
 
       var rows = [
         ['HOLD', 'LEAN THAT WAY AND WIND UP'],
@@ -314,9 +316,9 @@
         Pixel.text(c, rows[i][0], 20, y, 0.6, '#ffc23c');
         Pixel.text(c, rows[i][1], 68, y, 0.6, '#ffffff');
       }
-      Pixel.text(c, 'P1 A D W    P2 LEFT RIGHT UP', Pixel.W / 2, 90, 0.6, '#8fd4f2', 'center');
-      Pixel.text(c, 'P3 F H T    P4 J L I', Pixel.W / 2, 100, 0.6, '#c0a0f2', 'center');
-      Pixel.text(c, 'PRESS ANY KEY', Pixel.W / 2, Pixel.H - 12, 0.6, '#9fb0c4', 'center');
+      Pixel.text(c, 'P1 A D W    P2 LEFT RIGHT UP', Pixel.UI_W / 2, 90, 0.6, '#8fd4f2', 'center');
+      Pixel.text(c, 'P3 F H T    P4 J L I', Pixel.UI_W / 2, 100, 0.6, '#c0a0f2', 'center');
+      Pixel.text(c, 'PRESS ANY KEY', Pixel.UI_W / 2, Pixel.UI_H - 12, 0.6, '#9fb0c4', 'center');
     }
   };
 

@@ -383,7 +383,11 @@
 
       /* the body's lean: wound up on the ground, tumbling in the air */
       if (r.grounded && r.stun <= 0) {
-        var want = r.winding ? r.windDir * (0.12 + r.charge * 0.72) : 0;
+        /* Never quite upright. A standing racer sways on its own clock, so
+           four of them on a roof are never a row of posts - and it reads as
+           a body balancing rather than a sprite parked on a surface. */
+        var idle = Math.sin(this.time * 2.1 + r.index * 1.9) * 0.07;
+        var want = r.winding ? r.windDir * (0.12 + r.charge * 0.72) : idle;
         r.tilt += (want - r.tilt) * Math.min(1, dt * 16);
         r.spin *= Math.exp(-9 * dt);
       } else {

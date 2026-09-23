@@ -32,18 +32,33 @@
     };
     var roofs = [
       [0, 170, 150], [200, 120, 142], [350, 90, 150], [480, 110, 134],
-      [640, 140, 150], [820, 80, 138], [940, 120, 124], [1110, 150, 142],
+      [640, 140, 150], [820, 80, 138], [940, 120, 124], [1110, 160, 142],
       [1310, 90, 130], [1450, 130, 148], [1620, 110, 136], [1780, 160, 150],
       [1990, 120, 140], [2150, 310, 148]
     ];
+    /* A roof is a THIN slab with a long drop under it, not a block that
+       fills the bottom of the screen. Thirty units is about a character
+       and a half - enough to read as a building top, little enough that
+       the gaps between them are obviously gaps. */
+    var DECK = 30;
     for (var i = 0; i < roofs.length; i++) {
       var r = roofs[i];
-      L.solids.push(block(r[0], r[1], r[2], L.height + 40));
-      /* parapet and clutter, so a roof is not a bare bar */
+      L.solids.push(block(r[0], r[1], r[2], r[2] + DECK));
       L.decor.push({ kind: 'parapet', x: r[0], w: r[1], y: r[2] });
+      L.decor.push({ kind: 'facade', x: r[0], w: r[1], y: r[2] + DECK, seed: i });
+
+      /* clutter, thickly: the roof should look worked-on, and every piece
+         is something to trip over or hide behind */
+      var mid = r[0] + (r[1] >> 1);
       if (i % 3 === 1) L.decor.push({ kind: 'ac', x: r[0] + 14, y: r[2] - 7 });
-      if (i % 4 === 2) L.decor.push({ kind: 'vent', x: r[0] + r[1] - 20, y: r[2] - 9 });
-      if (i % 2 === 0) L.decor.push({ kind: 'aerial', x: r[0] + (r[1] >> 1), y: r[2] });
+      if (i % 4 === 2) L.decor.push({ kind: 'vent', x: r[0] + r[1] - 22, y: r[2] - 9 });
+      if (i % 2 === 0) L.decor.push({ kind: 'aerial', x: mid, y: r[2] });
+      if (i % 5 === 3) L.decor.push({ kind: 'tank', x: r[0] + 20, y: r[2] });
+      if (i % 3 === 2) L.decor.push({ kind: 'pipes', x: r[0] + r[1] - 34, y: r[2] });
+      if (i % 4 === 1) L.decor.push({ kind: 'chimney', x: mid + 18, y: r[2] });
+      if (r[1] > 110) L.decor.push({ kind: 'rail', x: r[0] + 6, w: Math.min(34, r[1] - 12), y: r[2] });
+      if (i % 3 === 0) L.decor.push({ kind: 'ladder', x: r[0] + r[1] - 8, y: r[2] + DECK });
+      if (i % 5 === 1) L.decor.push({ kind: 'sign', x: mid - 10, y: r[2] + 8, seed: i });
       if (i > 0 && i % 2 === 0) L.checkpoints.push({ x: r[0] + 10, y: r[2] - 22 });
     }
     /* a couple of high ledges worth the risk */
@@ -130,12 +145,12 @@
       [150, 260], [560, 200], [900, 240], [1270, 220], [1580, 240], [1930, 260]
     ];
 
-    L.solids.push(block(0, L.width, FLOOR, 272));
+    L.solids.push(block(0, L.width, FLOOR, FLOOR + 26));
     L.decor.push({ kind: 'carpet', x: 0, w: L.width, y: FLOOR });
 
     for (var i = 0; i < desks.length; i++) {
       var d = desks[i];
-      L.solids.push(block(d[0], d[1], DESK, DESK + 12));
+      L.solids.push(block(d[0], d[1], DESK, DESK + 14));
       L.decor.push({ kind: 'desk', x: d[0], w: d[1], y: DESK, seed: i });
       if (i > 0) L.checkpoints.push({ x: d[0] + 14, y: DESK - 22 });
     }

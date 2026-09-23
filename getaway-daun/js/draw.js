@@ -81,22 +81,6 @@
     sc.fillStyle = sunG;
     sc.fillRect(0, 0, W, H);
 
-    for (var i = 0; i < sceneryData.clouds.length; i++) {
-      var c = sceneryData.clouds[i];
-      var cx = (((c.x + time * c.sp) % (L.width + 300)) - cam.x * 0.14 - 60) * S;
-      if (cx < -c.w * S * 2 || cx > W + c.w * S) continue;
-      var cy = (c.y - cam.y * 0.05) * S;
-      var cw = c.w * S, ch = cw * 0.34;
-      var cg = sc.createLinearGradient(0, cy - ch, 0, cy + ch);
-      cg.addColorStop(0, 'rgba(255,255,255,0.92)');
-      cg.addColorStop(1, 'rgba(255,255,255,0.55)');
-      sc.fillStyle = cg;
-      sc.beginPath();
-      sc.ellipse(cx, cy, cw * 0.5, ch * 0.62, 0, 0, 6.2832);
-      sc.ellipse(cx + cw * 0.26, cy + ch * 0.14, cw * 0.34, ch * 0.44, 0, 0, 6.2832);
-      sc.ellipse(cx - cw * 0.3, cy + ch * 0.2, cw * 0.3, ch * 0.38, 0, 0, 6.2832);
-      sc.fill();
-    }
   }
 
   /* ---------------------------------------------------------- sky */
@@ -105,6 +89,7 @@
     /* Each place gets its own horizon. A freight yard in the desert had
        a city skyline behind it, which is the kind of thing that makes a
        level look assembled rather than designed. */
+    if (L.theme !== 'indoor') drawClouds(L, cam, sc, time);
     if (L.theme === 'desert') drawScrub(L, cam, sc);
     else {
       drawSkyline(L, cam, sc);
@@ -161,6 +146,24 @@
     }
   }
 
+  /* Chunky clouds, in world units like everything else, so they share the
+     art scale with the characters instead of being smooth shapes pasted
+     behind them. Three tones and a slow drift of their own. */
+  function drawClouds(L, cam, sc, time) {
+    for (var i = 0; i < sc.clouds.length; i++) {
+      var c = sc.clouds[i];
+      var cx = Math.round(((c.x + time * c.sp) % (L.width + 400)) - cam.x * 0.16 - 80);
+      var w = c.w;
+      if (cx < -w * 2 || cx > Pixel.W + w) continue;
+      var cy = Math.round(c.y - cam.y * 0.06);
+      Pixel.rect(P, cx, cy, w, 4, '#ffffff');
+      Pixel.rect(P, cx + 4, cy - 3, w - 11, 3, '#ffffff');
+      Pixel.rect(P, cx + 9, cy - 6, w - 20, 3, '#f2fbff');
+      Pixel.rect(P, cx + 2, cy + 4, w - 5, 2, '#d8eefc');
+      Pixel.rect(P, cx + 7, cy + 6, w - 15, 1, '#c3e3f6');
+    }
+  }
+
   function drawSkyline(L, cam, sc) {
     /* three skyline layers, each slower and paler than the one in front */
     var par = [0.10, 0.20, 0.34];
@@ -169,6 +172,11 @@
       var winLit = L.theme === 'indoor' ? '#6a6a96' : mix(col, '#ffffff', 0.55);
       var winDark = mix(col, '#000000', 0.10);
       var baseY = Math.round(Pixel.H - 30 - l * 4 - cam.y * par[l] * 0.5);
+      /* Aerial perspective. Each layer is pushed hard toward the sky, so
+         distance reads as distance and the background can never be
+         mistaken for something you could land on. */
+      var haze = [0.72, 0.55, 0.36][l];
+      var sky = L.sky[2];
       for (var k = 0; k < band.length; k++) {
         var bd = band[k];
         var bx = Math.round(bd.x - cam.x * par[l]);
@@ -178,22 +186,24 @@
            one flat colour reads as a bar chart however many windows you
            put on it; the variation is what makes it a city. */
         var face = mix(col, bd.lit > 0.5 ? L.cityWarm : L.cityCool, Math.abs(bd.lit - 0.5) * 1.4);
+        face = mix(face, sky, haze);
         Pixel.rect(P, bx, by, bd.w, bd.h + 60, face);
-        Pixel.rect(P, bx + bd.w - 1, by, 1, bd.h + 60, mix(face, '#000000', 0.07));
-        Pixel.rect(P, bx, by, bd.w, 1, mix(face, '#ffffff', 0.4));
+        Pixel.rect(P, bx + bd.w - 1, by, 1, bd.h + 60, mix(face, '#000000', 0.05));
+        Pixel.rect(P, bx, by, bd.w, 1, mix(face, '#ffffff', 0.22));
         if (bd.cap) Pixel.rect(P, bx + (bd.w >> 1) - 1, by - 4, 2, 4, mix(face, '#000000', 0.12));
         /* Windows are LIGHTER than the wall and stand in neat columns -
            glass catching the sky, not holes punched in a facade. */
         /* A regular grid of small panes. Scattering them at random and
            making them large read as damage rather than as windows. */
-        var lit = L.theme === 'indoor' ? winLit : mix(face, '#ffffff', 0.62);
+        /* windows fade out with the rest of it */
+        var lit = L.theme === 'indoor' ? winLit : mix(face, '#ffffff', 0.34 * (1 - haze) + 0.08);
         var cols = Math.floor((bd.w - 2) / 4);
         var inset = Math.max(1, (bd.w - cols * 4 + 2) >> 1);
         for (var wy = by + 4; wy < by + bd.h - 3; wy += 5) {
           for (var ci = 0; ci < cols; ci++) {
             var wx = bx + inset + ci * 4;
             var key = (ci * 5 + Math.round(wy) * 3) % 13;
-            Pixel.rect(P, wx, wy, 2, 3, key === 0 ? winDark : lit);
+            Pixel.rect(P, wx, wy, 2, 3, key === 0 ? mix(face, '#000000', 0.06) : lit);
           }
         }
       }
@@ -207,12 +217,23 @@
                     Math.round(A[2] + (B[2] - A[2]) * t) + ')';
   }
   var hexCache = {};
+  /* Parses BOTH '#rrggbb' and the 'rgb(r,g,b)' that mix() itself returns.
+     Without the second case a chained mix - shading a colour that was
+     already blended - ran parseInt over 'rgb(...)', got NaN, and produced
+     black. Every haze tint and every derived edge tone was coming out as
+     a black smear. */
   function hex(c) {
     if (hexCache[c]) return hexCache[c];
-    var h = c.charAt(0) === '#' ? c.slice(1) : c;
-    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
-    var n = parseInt(h, 16);
-    var out = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    var out;
+    if (c.charAt(0) === '#') {
+      var h = c.slice(1);
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      var n = parseInt(h, 16);
+      out = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    } else {
+      var m = /(-?\d+)\D+(-?\d+)\D+(-?\d+)/.exec(c);
+      out = m ? [+m[1], +m[2], +m[3]] : [0, 0, 0];
+    }
     hexCache[c] = out;
     return out;
   }
@@ -276,10 +297,56 @@
       drawFreightCar(d, x, y);
     } else if (d.kind === 'crate') {
       for (var cx = 0; cx < d.w; cx += 12) Pixel.stamp(P, ART.CRATE, ART.CRATE_MAP, x + cx + 6, y + 5, 0, false);
+    } else if (d.kind === 'facade') {
+      /* the few rows of wall hanging under a roof slab, so the deck reads
+         as the top of a building rather than a bar floating in the sky */
+      Pixel.rect(P, x, y, d.w, 5, mix(f.body, '#000000', 0.42));
+      Pixel.rect(P, x, y, d.w, 1, mix(f.body, '#000000', 0.55));
+      for (var fw = x + 4; fw < x + d.w - 5; fw += 9) {
+        Pixel.rect(P, fw, y - 7, 4, 5, 'rgba(24,30,44,0.55)');
+        Pixel.rect(P, fw, y - 7, 4, 1, 'rgba(255,255,255,0.14)');
+      }
+    } else if (d.kind === 'tank') {
+      /* a water tank on legs */
+      Pixel.rect(P, x + 1, y - 4, 2, 4, '#4a4237');
+      Pixel.rect(P, x + 11, y - 4, 2, 4, '#4a4237');
+      Pixel.rect(P, x, y - 17, 14, 13, '#8a6f4a');
+      Pixel.rect(P, x, y - 17, 14, 2, '#a98a5e');
+      Pixel.rect(P, x, y - 12, 14, 1, '#5e4a2f');
+      Pixel.rect(P, x, y - 8, 14, 1, '#5e4a2f');
+      Pixel.rect(P, x + 4, y - 20, 6, 3, '#6b573a');
+    } else if (d.kind === 'pipes') {
+      Pixel.rect(P, x, y - 9, 3, 9, '#77808c');
+      Pixel.rect(P, x, y - 11, 3, 2, '#99a2ae');
+      Pixel.rect(P, x + 6, y - 14, 3, 14, '#77808c');
+      Pixel.rect(P, x + 6, y - 16, 3, 2, '#99a2ae');
+      Pixel.rect(P, x, y - 9, 9, 2, '#5f6771');
+    } else if (d.kind === 'chimney') {
+      Pixel.rect(P, x, y - 15, 7, 15, '#7a6152');
+      Pixel.rect(P, x - 1, y - 17, 9, 2, '#8e7261');
+      Pixel.rect(P, x, y - 11, 7, 1, '#5d4839');
+      Pixel.rect(P, x, y - 6, 7, 1, '#5d4839');
+    } else if (d.kind === 'ladder') {
+      Pixel.rect(P, x, y - 12, 1, 14, '#6d7682');
+      Pixel.rect(P, x + 4, y - 12, 1, 14, '#6d7682');
+      for (var lr = y - 11; lr < y + 2; lr += 3) Pixel.rect(P, x, lr, 5, 1, '#8a949f');
+    } else if (d.kind === 'sign') {
+      var sc2 = ['#d8483d', '#3f7fd8', '#e8b23c'][(d.seed || 0) % 3];
+      Pixel.rect(P, x + 3, y - 10, 1, 10, '#45403a');
+      Pixel.rect(P, x, y - 18, 14, 9, sc2);
+      Pixel.frame(P, x, y - 18, 14, 9, '#2b2b30');
+      Pixel.rect(P, x + 2, y - 16, 10, 2, 'rgba(255,255,255,0.7)');
+      Pixel.rect(P, x + 2, y - 13, 7, 2, 'rgba(255,255,255,0.45)');
     } else if (d.kind === 'rail') {
+
       Pixel.rect(P, x, y, d.w, 3, '#1b1b22');
       Pixel.rect(P, x, y + 3, d.w, 1, '#3a3630');
       for (var sl = 0; sl < d.w; sl += 9) Pixel.rect(P, x + sl, y + 3, 5, 2, '#5b5044');
+    } else if (d.kind === 'rail') {
+      /* a safety railing along a roof edge */
+      Pixel.rect(P, x, y - 9, d.w, 1, '#8a949f');
+      Pixel.rect(P, x, y - 5, d.w, 1, '#767f8a');
+      for (var pst = x; pst < x + d.w; pst += 8) Pixel.rect(P, pst, y - 9, 1, 9, '#6d7682');
     } else if (d.kind === 'ground') {
       Pixel.rect(P, x, y, d.w, 3, '#d8cfa2');
       Pixel.rect(P, x, y + 3, d.w, 30, '#c0b68c');

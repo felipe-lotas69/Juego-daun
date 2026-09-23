@@ -109,9 +109,19 @@
        pixel read smaller than it should. 256x144 puts the grid a shade
        coarser than the reference rather than a shade finer, and keeps
        SCALE a whole number, which crisp blocks depend on. */
-    W: 213,          /* world units across the view */
-    H: 120,
-    SCALE: 6,        /* screen pixels per world unit, and per art pixel */
+    /* One art pixel is SCALE screen pixels and that is true of EVERY
+       asset - characters, platforms, props, skyline, clouds. Three, so a
+       22-unit character stands about a tenth of the frame and the camera
+       can show a wide slice of the level. */
+    W: 427,          /* world units across the view */
+    H: 240,
+    SCALE: 3,        /* screen pixels per world unit, and per art pixel */
+
+    /* The interface does NOT live in world units - it would shrink every
+       time the camera pulled back. It gets a fixed space of its own. */
+    UI_W: 213,
+    UI_H: 120,
+    UI_SCALE: 6,
     ctx: null,
     cw: 1280,
     ch: 720,
@@ -132,6 +142,15 @@
       var c = this.ctx;
       var z = this.SCALE * (zoom || 1);
       c.setTransform(z, 0, 0, z, 0, 0);
+      c.imageSmoothingEnabled = false;
+      this.world = true;
+      return c;
+    },
+
+    /* a fixed space for the HUD, independent of the camera */
+    ui: function () {
+      var c = this.ctx;
+      c.setTransform(this.UI_SCALE, 0, 0, this.UI_SCALE, 0, 0);
       c.imageSmoothingEnabled = false;
       this.world = true;
       return c;

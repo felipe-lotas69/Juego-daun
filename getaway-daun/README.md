@@ -66,11 +66,17 @@ cannot drift from what a jump actually does.
 
 ## How it is put together
 
-The canvas runs at its own resolution. Sprites are low-res pixel art drawn
-onto it as rigid bitmaps that rotate and sit at **sub-pixel precision** — a
-character can tilt 37 degrees without snapping to a grid — while the backdrop
-behind them is a real gradient with soft cloud banks. Pixel assets on a
-smooth world, rather than the whole picture squashed onto one coarse grid.
+One art pixel is three screen pixels, and that holds for **everything** —
+characters, decks, props, skyline, clouds. Sprites are rigid low-res bitmaps
+that rotate and sit at sub-pixel precision, so a character can tilt 37 degrees
+without snapping to a grid, but nothing is drawn at a different density from
+anything else. The interface has a fixed space of its own so it does not
+shrink when the camera pulls back.
+
+A racer stands about a tenth of the frame. Walkable surfaces are thin decks
+with a long drop under them, never blocks filling the bottom of the screen,
+and the background is pushed hard toward the sky colour in three parallax
+layers so it can never be mistaken for somewhere to land.
 
 - `js/engine.js` — maths, canvas, font, sprite baking, keys
 - `js/art.js` — the sprite sheets, written as pixels
@@ -85,5 +91,8 @@ smooth world, rather than the whole picture squashed onto one coarse grid.
 
 Moving platforms and hazards (trains on tracks, boats, elevators), water to
 fall into, getaway vehicles other than the van, and unlockable cosmetics.
+A racer is about 1/11 of the frame where 1/12 to 1/15 was asked for; closing
+that last bit means redrawing the sprites smaller and rebalancing the courses
+against them.
 
 All art, characters and level design here are original.
