@@ -24,6 +24,8 @@
    ============================================================ */
 
 import { World, FLAG, SOLID_PROPS, HARVEST, PLATEAUS } from '../src/world/worldgen.js';
+import { canStand } from '../src/game/movement.js';
+import { PLAYER, LEVEL_STEP } from '../src/core/config.js';
 import { Sim, PHASE, ARC, BEACON_COSTS, emptyInput } from '../src/game/sim.js';
 import {
   SKILLS, ABILITIES, ENEMIES, BEACON_UPGRADES, SKILL_BRANCHES, PRIMARY_ID,
@@ -326,7 +328,11 @@ function findResource(sim, p, kinds, wanted, ignore) {
   const w = sim.world;
   const ctx = w.worldToTileX(p.x), cty = w.worldToTileZ(p.z);
   let best = null, bestD = 1e9;
-  for (let r = 1; r < 26 && !best; r++) {
+  /* Every ring, not just the first one with anything in it: stopping
+     at the first hit means the bot grinds whatever rock happens to
+     be nearest and never walks the extra four tiles to the tree it
+     actually needs. */
+  for (let r = 1; r < 26; r++) {
     for (let a = 0; a < r * 8; a++) {
       const ang = (a / (r * 8)) * Math.PI * 2;
       const tx = ctx + Math.round(Math.cos(ang) * r), ty = cty + Math.round(Math.sin(ang) * r);
@@ -412,7 +418,11 @@ function driveBot(sim, p, i, seq, recipes) {
     fire = !!enemy && d <= 4;
   } else if (enemy && (sim.beacon.lit || invCount(p, 'club') + invCount(p, 'spear') > 0)) {
     tx = enemy.x; tz = enemy.z; fire = true;
-  } else if (!sim.beacon.lit && (repairDone || BEACON_REPAIR.some(([it, n]) => invCount(p, it) >= Math.min(n, 8)))) {
+  } else if (!sim.beacon.lit && (repairDone || BEACON_REPAIR.some(([it, n]) =>
+      invCount(p, it) >= Math.min(n, 8) && (sim.beacon.store[it] || 0) < n))) {
+    /* Only haul what the beacon still wants. Carrying a stack it has
+       already had its fill of used to pin the bot to the console
+       holding the interact key until it starved. */
     tx = sim.beacon.x; tz = sim.beacon.z; interact = true;
   } else {
     /* What is the next thing on the list short of? */
@@ -431,7 +441,18 @@ function driveBot(sim, p, i, seq, recipes) {
        target across a cliff or a lake is a target it will lean on
        forever. Give up on one that is not getting any closer. */
     if (!p._ignore) { p._ignore = new Set(); p._lastD = Infinity; p._stuck = 0; }
-    const node = findResource(sim, p, ['axe', 'pick', 'hand'], wanted, p._ignore);
+    /* The search walks twenty-six rings of tiles; at sixty frames a
+       second per bot that is most of the step budget, and the answer
+       does not change between frames. Keep it until the tile it
+       picked is gone or a third of a second has passed. */
+    let node = p._node;
+    const stale = !node || i - (p._nodeAt || 0) > 20
+      || !HARVEST[sim.world.prop[sim.world.idx(node.tx, node.ty)]]
+      || p._ignore.has(node.tx * 4096 + node.ty);
+    if (stale) {
+      node = findResource(sim, p, ['axe', 'pick', 'hand'], wanted, p._ignore);
+      p._node = node; p._nodeAt = i;
+    }
     if (node) {
       const d = Math.hypot(node.x - p.x, node.z - p.z);
       if (d > p._lastD - 0.02) p._stuck += 1; else p._stuck = 0;
@@ -704,6 +725,62 @@ console.log('\ndeterminism');
   const a = play(), b = play();
   check(a === b, 'the same seed plays out the same way',
     'two runs of seed 31337 diverged, so something still calls Math.random');
+}
+
+/* ------------------------------------------ 3b2. nobody stays stuck */
+console.log('\ngetting unstuck');
+{
+  /* A body whose four collision probes all land somewhere illegal
+     used to be frozen for good: every candidate move failed the
+     test, including the one that did not move at all. It happens in
+     a corner between two cliff steps, under a prop that was placed
+     on your feet, inside a wall somebody built round you. The player
+     stayed alive, at full health, unable to take a single step, and
+     starved. This is the check that it can walk out. */
+  const sim = new Sim(20260921, { difficulty: 1 });
+  const p = sim.addPlayer('p0', 'WEDGED');
+  const w = sim.world;
+
+  /* Find a spot the collision test refuses outright. */
+  let wedged = null;
+  const OFF = [-0.35, 0, 0.35];
+  for (let ty = 2; ty < w.size - 2 && !wedged; ty++) {
+    for (let tx = 2; tx < w.size - 2 && !wedged; tx++) {
+      for (const ox of OFF) {
+        for (const oz of OFF) {
+          const x = w.tileToWorldX(tx) + ox, z = w.tileToWorldZ(ty) + oz;
+          if (w.flagAt(x, z) & FLAG.WATER) continue;
+          const level = Math.round(w.groundAt(x, z) / LEVEL_STEP);
+          /* Standing on clear ground, but boxed in by the probes. */
+          if (w.blockedAt(x, z, level)) continue;
+          if (canStand(w, x, z, PLAYER.radius, level)) continue;
+          wedged = { x, z, tx, ty };
+          break;
+        }
+        if (wedged) break;
+      }
+    }
+  }
+  check(!!wedged, 'the world contains a spot that wedges a body',
+    'no wedging tile found, so this check proves nothing');
+
+  if (wedged) {
+    p.x = wedged.x; p.z = wedged.z;
+    p.y = w.groundAt(p.x, p.z);
+    const x0 = p.x, z0 = p.z;
+    for (let i = 0; i < 120; i++) {
+      sim.setInput(p.id, { ...emptyInput(), seq: i, mx: 1, mz: 0.35, ax: p.x + 8, az: p.z + 3 });
+      sim.step(1 / 60);
+      sim.drainEvents();
+    }
+    const moved = Math.hypot(p.x - x0, p.z - z0);
+    check(moved > 1, 'a wedged body walks out of it',
+      'it moved ' + moved.toFixed(3) + ' units in two seconds of walking');
+    const level = Math.round(p.y / LEVEL_STEP);
+    check(canStand(w, p.x, p.z, PLAYER.radius, level),
+      'and ends up somewhere it is allowed to be',
+      'it walked out and stopped somewhere still illegal');
+  }
 }
 
 /* --------------------------------------------------- 4. the whole arc */
