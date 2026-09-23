@@ -23,7 +23,7 @@ import {
   PLAYER, BEACON, WAVE, DAY, COMBAT, XP_CURVE, WORLD_HALF, SURVIVAL, RESONANCE, GATE,
 } from '../core/config.js';
 import { ENEMIES, ELITE, SKILLS, BEACON_UPGRADES, STATUS, BOONS, PRIMARY_ID } from './defs.js';
-import { ITEMS, BUILDINGS } from './items.js';
+import { ITEMS, BUILDINGS, BEACON_REPAIR } from './items.js';
 import { ANIMALS, EXTRA_ENEMIES, FACTION, animalsForBiome } from './creatures.js';
 import { NIGHTS, WEATHER, buildNightDeck, rollWeather, CONTRACTS } from './nights.js';
 import {
@@ -116,7 +116,7 @@ export class Sim {
       stamina: SURVIVAL.maxStamina, maxStamina: SURVIVAL.maxStamina,
       hunger: SURVIVAL.maxHunger * 0.85, maxHunger: SURVIVAL.maxHunger,
       warmth: SURVIVAL.maxWarmth, sprinting: false,
-      level: 1, xp: 0, xpNext: XP_CURVE(1), skillPoints: 0,
+      level: 1, xp: 0, xpNext: XP_CURVE(1), skillPoints: 1,
       skills: {}, abilities: [null, null, null, null],
       cooldowns: {},
       inv: {}, hotbar: [null, null, null, null, null, null], hotbarIndex: 0,
@@ -134,6 +134,10 @@ export class Sim {
     };
     this.recalcStats(p);
     p.hp = p.maxHp;
+    /* The sidearm costs nothing and fires forever; it is what makes
+       the first night survivable without an errand first. */
+    p.abilities[0] = PRIMARY_ID;
+    p.cooldowns[PRIMARY_ID] = 0;
     /* You start with nothing but the clothes and a rusted core. */
     this.players.set(id, p);
     this.emit({ t: 'join', id, name: p.name });
@@ -207,11 +211,13 @@ export class Sim {
     return m;
   }
 
-  /* Skills are locked until the beacon is lit: your Core cannot
-     hold a pattern until something attunes it. That is the reason
-     to repair it, rather than a number telling you to. */
+  /* Your Core works from the moment you wake up - weakly, but it
+     works. Locking the whole skill tree behind repairing the beacon
+     made the beacon an errand you had to run before the game would
+     let you play, which is exactly the kind of directed objective
+     this is not supposed to have. Repairing it is now worth doing
+     for what it gives everyone, not for permission. */
   learnSkill(p, key) {
-    if (!this.beacon.lit) return false;
     const s = SKILLS[key];
     if (!s || p.skills[key] || p.skillPoints < s.cost) return false;
     if (s.req && !p.skills[s.req]) return false;
@@ -564,7 +570,10 @@ export class Sim {
     if (p.shieldMax > 0 && p.shieldTimer <= 0 && p.shield < p.shieldMax) {
       p.shield = Math.min(p.shieldMax, p.shield + s.shieldRegen * dt);
     }
-    if (this.beacon.lit) p.energy = Math.min(p.maxEnergy, p.energy + s.energyRegen * dt);
+    /* A cold core still turns over, just slowly. Lighting the beacon
+       is the difference between scraping by and casting freely. */
+    p.energy = Math.min(p.maxEnergy,
+      p.energy + s.energyRegen * dt * (this.beacon.lit ? 1 : 0.45));
     if (s.regen) p.hp = Math.min(p.maxHp, p.hp + s.regen * dt);
 
     tickBody(this, p, dt);
@@ -1132,8 +1141,11 @@ export class Sim {
     this.spawnDrops(e.x, e.z, drops, e.lastHitBy);
 
     if (e.isHeart) {
-      this.phase = PHASE.WON;
+      /* A landmark, not a curtain: the rift is quiet now and you
+         keep whatever you built. Stopping the game here would make
+         the Heart an objective again. */
       this.arc = ARC.DONE;
+      this.stats.heartsKilled = (this.stats.heartsKilled || 0) + 1;
       this.emit({ t: 'won', night: this.night });
     }
     this.emit({ t: 'kill', id: e.id, type: e.type, elite: e.elite, boss: e.boss,
@@ -1377,8 +1389,18 @@ export class Sim {
     if (!this.isNight && b.hp < b.maxHp && b.hp > 0) {
       b.hp = Math.min(b.maxHp, b.hp + BEACON.dayRepair * dt);
     }
-    if (b.hp <= 0 && this.phase === PHASE.RUNNING) {
-      this.phase = PHASE.LOST;
+    /* Only something you lit can go dark on you. Losing the run to
+       a structure you never opted into is a fail state attached to
+       an objective you were never given. */
+    if (b.hp <= 0 && b.lit) {
+      b.lit = false;
+      b.hp = 0;
+      /* Lighting only reads the store, so unless the parts are spent
+         here a wrecked beacon would come straight back for free.
+         Rebuilding costs what building it cost. */
+      for (const [item, n] of BEACON_REPAIR) {
+        b.store[item] = Math.max(0, (b.store[item] || 0) - n);
+      }
       this.emit({ t: 'beacon_down' });
     }
   }
@@ -1503,24 +1525,34 @@ export class Sim {
   }
 
   /* Convenience for the UI: what should the player be doing? */
-  objective() {
-    if (!this.beacon.lit) {
-      const prog = beaconRepairProgress(this);
-      return { id: 'beacon', text: 'REPAIR THE BEACON', sub: `${Math.round(prog * 100)}% of parts delivered`, progress: prog };
-    }
+  /* What is happening, not what to do. A sandbox has no next step
+     to put in a banner, so this returns null almost all the time and
+     speaks up only when something is actually going on that you
+     might not be looking at. */
+  status() {
     if (this.arc === ARC.HEART) {
-      return { id: 'heart', text: 'THE RIFT HEART IS AWAKE', sub: 'Kill it and the run is yours', progress: 1 };
+      return { id: 'heart', text: 'THE RIFT HEART IS AWAKE', sub: 'it knows where the beacon is', urgent: true };
     }
-    const sealed = this.stats.gatesSealed, total = this.gates.length;
     const active = this.gates.find(g => g.active);
     if (active) {
-      return { id: 'sealing', text: 'HOLD THE GATE', sub: `${Math.round(active.progress * 100)}%`, progress: active.progress };
+      return { id: 'sealing', text: 'HOLDING THE GATE', sub: `${Math.round(active.progress * 100)}%`,
+        progress: active.progress };
     }
-    return {
-      id: 'gates', text: `SEAL THE RIFT GATES`, sub: `${sealed} of ${total} sealed`,
-      progress: total ? sealed / total : 0,
-    };
+    if (this.beacon.lit && this.beacon.hp < this.beacon.maxHp * 0.5) {
+      return { id: 'beacon_hurt', text: 'THE BEACON IS BURNING',
+        sub: `${Math.round((this.beacon.hp / this.beacon.maxHp) * 100)}% left`,
+        progress: this.beacon.hp / this.beacon.maxHp, urgent: true };
+    }
+    for (const p of this.players.values()) {
+      if (p.state === 'downed') return { id: 'down', text: 'SOMEONE IS DOWN', sub: 'hold G over them', urgent: true };
+    }
+    return null;
   }
+
+  /* Kept so anything still asking gets the same answer. */
+  objective() { return this.status(); }
+
+
 
   drainEvents() { const e = this.events; this.events = []; return e; }
 }
