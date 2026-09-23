@@ -44,7 +44,11 @@ import {
 import { Mirror } from '../src/net/mirror.js';
 import { brokerConfig, brokerIdForRoom } from '../src/net/peer.js';
 import { villageOffers } from '../src/game/trade.js';
+import {
+  SEASONS, SEASON_NIGHTS, seasonFor, rollSeasonWeather, seasonAnimalWeight,
+} from '../src/game/seasons.js';
 import { hasGlyph } from '../src/ui/font.js';
+import { makeRng } from '../src/core/rng.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -796,6 +800,71 @@ console.log('\ncaves');
   check(portals === w0.caves.length, 'and a framed doorway you can see from outside',
     `${portals} portals for ${w0.caves.length} caves`);
   ok('caves', sample.join('; '));
+}
+
+/* -------------------------------------------------- 2d. the year */
+console.log('\nseasons');
+{
+  /* A season has to be four different answers to the same question,
+     not four tints. Each one should change what grows, what is out
+     there and what the sky does. */
+  const seen = new Set();
+  for (let n = 0; n < 24; n++) seen.add(seasonFor(n).id);
+  check(seen.size === 4, 'the year has four seasons in it', [...seen].join(', '));
+  check(seasonFor(0).id !== seasonFor(SEASON_NIGHTS).id, 'and it turns over',
+    'the season did not change after a full season of nights');
+  check(seasonFor(0).id === seasonFor(SEASON_NIGHTS * 4).id, 'and comes back round',
+    'the year does not repeat');
+
+  const crops = SEASONS.map(s => s.crop);
+  check(Math.max(...crops) / Math.min(...crops) >= 2,
+    'growing is worth timing', `crop rates: ${crops.join(', ')}`);
+  const winter = SEASONS.find(s => s.id === 'winter');
+  const summer = SEASONS.find(s => s.id === 'summer');
+  check(winter.crop < summer.crop && winter.warmth < summer.warmth,
+    'winter is the hard one', 'winter is not colder or leaner than summer');
+
+  /* Weather is rolled per season, so a snowstorm in high summer is a
+     bug and a winter without one is a missed opportunity. */
+  const rollMany = (night) => {
+    const rng = makeRng(99);
+    const out = {};
+    for (let i = 0; i < 600; i++) {
+      const w = rollSeasonWeather(rng, night, WEATHER);
+      out[w.id] = (out[w.id] || 0) + 1;
+    }
+    return out;
+  };
+  const summerRolls = rollMany(SEASON_NIGHTS * 1 + 1);
+  const winterRolls = rollMany(SEASON_NIGHTS * 3 + 1);
+  check(!summerRolls.snowstorm, 'it does not snow in summer',
+    `summer rolled ${summerRolls.snowstorm} snowstorms`);
+  check((winterRolls.snowstorm || 0) > 60, 'and it does in winter',
+    `winter rolled ${winterRolls.snowstorm || 0} snowstorms in 600`);
+
+  /* And the woods hold a different population in each. */
+  let differs = false;
+  for (const type of ['wolf', 'deer', 'critter']) {
+    if (seasonAnimalWeight(0, type) !== seasonAnimalWeight(SEASON_NIGHTS * 3, type)) differs = true;
+  }
+  check(differs, 'and different things are out in it',
+    'spring and winter spawn the same population');
+
+  /* The whole thing has to run: a year of simulated nights without
+     throwing, with crops that still ripen. */
+  const sim = new Sim(8181, { difficulty: 1 });
+  const p = sim.addPlayer('p0', 'YEAR');
+  let thrown = null;
+  const seenSeasons = new Set();
+  for (let i = 0; i < 60 * 60 * 14 && !thrown; i++) {
+    sim.setInput(p.id, { ...emptyInput(), seq: i });
+    p.hp = p.maxHp; p.hunger = 90; p.warmth = 100;
+    try { sim.step(1 / 60); sim.drainEvents(); }
+    catch (err) { thrown = `${err.message} at step ${i}`; }
+    seenSeasons.add(sim.season.id);
+  }
+  check(!thrown, 'a year runs without throwing', thrown);
+  ok('seasons', `${seenSeasons.size} seasons in fourteen simulated minutes, night ${sim.night}`);
 }
 
 /* ------------------------------------------------- 2c. villages */

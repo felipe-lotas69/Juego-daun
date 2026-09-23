@@ -22,7 +22,7 @@ export const RENDER = {
   maxInternalW: 860,      /* clamp so huge monitors stay chunky            */
   toonBands: 4,
   outline: true,
-  outlineAlpha: 0.46,
+  outlineAlpha: 0.58,
   bloom: true,
   bloomStrength: 0.85,
   bloomThreshold: 0.62,

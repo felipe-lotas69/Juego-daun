@@ -26,6 +26,7 @@ import { ENEMIES, ELITE, SKILLS, BEACON_UPGRADES, STATUS, BOONS, PRIMARY_ID } fr
 import { ITEMS, BUILDINGS, BEACON_REPAIR } from './items.js';
 import { ANIMALS, EXTRA_ENEMIES, FACTION, animalsForBiome } from './creatures.js';
 import { NIGHTS, WEATHER, buildNightDeck, rollWeather, CONTRACTS } from './nights.js';
+import { seasonFor, rollSeasonWeather, seasonAnimalWeight } from './seasons.js';
 import {
   ResonanceField, swing, tickCraft, tickBody, place, invGive, invTake, invCount, invRoom,
   heldItem, depositToBeacon, beaconRepairProgress,
@@ -343,6 +344,8 @@ export class Sim {
     this._stepLures(dt);
   }
 
+  get season() { return seasonFor(this.night); }
+
   get isNight() { return this.dayTime % this.cycleLength >= DAY.dayLength; }
   get timeToPhaseChange() {
     const t = this.dayTime % this.cycleLength;
@@ -367,7 +370,7 @@ export class Sim {
     this.weatherTimer -= dt;
     if (this.weatherTimer > 0) return;
     this.weatherTimer = 110 + this.rng() * 170;
-    const next = rollWeather(this.rng, this.night);
+    const next = rollSeasonWeather(this.rng, this.night, WEATHER);
     if (next !== this.weather) {
       this.weather = next;
       this.emit({ t: 'weather', id: next.id, name: next.name, blurb: next.blurb || '' });
@@ -1034,7 +1037,7 @@ export class Sim {
       const options = animalsForBiome(name, this.isNight);
       if (!options.length) continue;
       const def = options[Math.floor(this.rng() * options.length)];
-      if (this.rng() > def.density) continue;
+      if (this.rng() > def.density * seasonAnimalWeight(this.night, def.id)) continue;
       const count = def.pack ? def.pack : 1;
       for (let k = 0; k < count; k++) {
         this.spawnAnimal(def.id, x + (this.rng() - 0.5) * 3, z + (this.rng() - 0.5) * 3);
@@ -1339,7 +1342,8 @@ export class Sim {
          news rather than something to shelter from. */
       if (b.def.farm && b.seed && b.grow < 1) {
         const wet = this.weather && (this.weather.id === 'rain' || this.weather.id === 'storm');
-        b.grow = Math.min(1, b.grow + (dt / b.def.farm.time) * (wet ? 1.6 : 1));
+        b.grow = Math.min(1, b.grow
+          + (dt / b.def.farm.time) * (wet ? 1.6 : 1) * this.season.crop);
         if (b.grow >= 1) this.emit({ t: 'ripe', id: b.id, x: b.x, y: b.y, z: b.z, seed: b.seed });
       }
       if (!b.def.turret) continue;
@@ -1379,7 +1383,9 @@ export class Sim {
     if (biome === BIOME.SNOW) c += SURVIVAL.coldSnow;
     if (this.weather.cold) c += this.weather.cold;
     if (this.world.flagAt(x, z) & FLAG.WATER) c += 3;
-    return c;
+    /* Summer takes the edge off a night; winter is the night. */
+    c -= this.season.warmth;
+    return Math.max(0, c);
   }
 
   /* ------------------------------------------- turrets and traps */

@@ -26,6 +26,7 @@ import { buildStructureMesh, makeGhostMaterial } from './render/buildings.js';
 import { TEX } from './render/textures.js';
 
 import { Sim, PHASE, emptyInput } from './game/sim.js';
+import { nextSeason, seasonProgress } from './game/seasons.js';
 import { ITEMS, BUILDINGS } from './game/items.js';
 import { stationsNear, startCraft, eat, canPlace } from './game/survival.js';
 
@@ -1073,7 +1074,8 @@ function frame(now) {
   /* Under a hill there is no sun, no sky and no weather. */
   const underground = sim.world.caveIdAt
     ? (sim.world.caveIdAt(cam.smoothed.x, cam.smoothed.z) ? 1 : 0) : 0;
-  rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance, sim.weather, cam.zoom, underground);
+  rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance, sim.weather, cam.zoom, underground,
+    sim.season, nextSeason(sim.night), seasonProgress(sim.night, sim.dayTime, sim.cycleLength));
   audio.setAmbient(rig.nightAmount);
 
   game.view.update(cam.smoothed, cam.zoom);
