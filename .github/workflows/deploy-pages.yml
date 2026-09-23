@@ -1,0 +1,65 @@
+name: Deploy to GitHub Pages
+
+# The site is the repository: every game here is plain HTML, CSS and
+# JavaScript with no build step, so Pages serves the tree as it stands.
+# The checks run first regardless, because a broken game is worse
+# published than unpublished.
+#
+# The deploy job is OFF unless the repository variable PAGES_VIA_ACTIONS
+# is set to "true". Pages can publish this repo in either of two modes
+# and only one of them may be active:
+#
+#   Deploy from a branch  - the default here, and what works with no
+#     extra permissions. Pages serves the branch directly; nothing in
+#     this file runs except the checks below.
+#   GitHub Actions        - set Settings > Pages > Source to "GitHub
+#     Actions", then add the repository variable PAGES_VIA_ACTIONS=true
+#     (Settings > Secrets and variables > Actions > Variables). The
+#     deploy job then publishes, and a failed check blocks it.
+#
+# Gating it this way means the workflow is not a permanent red X on
+# every push while the repository is in branch mode.
+
+on:
+  push:
+    branches:
+      - claude/rimworld-web-clone-eiziry
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and let a newer push win rather than queueing
+# a stale one behind it.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: vars.PAGES_VIA_ACTIONS == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          # Turns Pages on if it is not on already. If the token is not
+          # allowed to, the job fails here with a clear message and the
+          # repository should stay in branch mode instead.
+          enablement: true
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

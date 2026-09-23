@@ -24,9 +24,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Syntax-check every script
+      - name: Every script parses
         run: for f in js/*.js tools/*.js; do node --check "$f" || exit 1; done
-      - name: Defs are internally consistent
+      - name: Defs cross-reference cleanly
         run: node tools/verify-defs.js
       - name: Every contract global and function exists
         run: node tools/verify-api.js
@@ -34,6 +34,32 @@ jobs:
         run: node tools/verify-sim.js 3
       - name: The renderer, UI and input boot and run frames
         run: node tools/verify-client.js 200
+
+  chromewood:
+    name: Chromewood
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: chromewood
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: The server parses and every module loads
+        run: |
+          node --check server/server.js
+          for f in $(find src -name '*.js'); do
+            node --input-type=module -e "
+              import('./$f').catch(e => {
+                if (/document is not defined|window is not defined|self is not defined/.test(e.message)) process.exit(0);
+                console.error('$f: ' + e.message);
+                process.exit(1);
+              })
+            " || exit 1
+          done
+      - name: Content, worlds, arc and wire format
+        run: node tools/verify.js --seeds 4 --minutes 15
 
   getaway:
     name: Getaway Daun
@@ -46,7 +72,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Syntax-check every script
+      - name: Every script parses
         run: for f in js/*.js server/*.js tools/*.js; do node --check "$f" || exit 1; done
       - name: Levels are completable and nothing respawns inside a hazard
         run: bash tools/verify-all.sh
+
+  links:
+    name: The front page has no dead links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every page the landing page links to exists
+        run: |
+          for href in $(grep -o 'class="game" href="[^"]*"' index.html | cut -d'"' -f4); do
+            test -f "${href}index.html" || { echo "dead link: $href"; exit 1; }
+            echo "ok $href"
+          done

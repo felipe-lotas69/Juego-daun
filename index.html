@@ -4,17 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Juego Daun</title>
-<meta name="description" content="Two browser games in one repository: RIMDAUN, a colony simulation, and Getaway Daun, a physics platformer. No install, no build step.">
+<meta name="description" content="Three browser games in one repository: RIMDAUN, a colony simulation; Chromewood, an isometric survival RPG; and Getaway Daun, a physics platformer. No install, no build step.">
 <meta name="theme-color" content="#0e1014">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230e1014'/><rect x='5' y='6' width='9' height='9' fill='%235c7a3e'/><rect x='18' y='17' width='9' height='9' fill='%23ffc23c'/></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230e1014'/><rect x='4' y='5' width='8' height='8' fill='%235c7a3e'/><rect x='12' y='12' width='8' height='8' fill='%235aa9a3'/><rect x='20' y='19' width='8' height='8' fill='%23ffc23c'/></svg>">
 <style>
   :root{
     --bg:#0e1014;
-    --panel:#161a21;
+    --panel:#15181f;
+    --panel-hi:#1b1f28;
     --line:#242a34;
     --ink:#e8e2d4;
     --dim:#8a90a0;
-    --colony:#5c7a3e;
+    --faint:#5c6270;
+    --colony:#7d9b52;
+    --chrome:#5aa9a3;
     --getaway:#ffc23c;
   }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -23,127 +26,142 @@
     min-height:100vh;
     background:var(--bg);
     color:var(--ink);
-    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     display:flex;flex-direction:column;
-    padding:clamp(20px,5vw,64px);
+    padding:clamp(22px,5vw,60px);
   }
-  header{max-width:980px;width:100%;margin:0 auto 40px}
-  h1{
-    font-size:13px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;
-    color:var(--dim);
-  }
-  header p{margin-top:10px;font-size:clamp(20px,3.2vw,28px);line-height:1.3;max-width:34ch}
-  main{
-    max-width:980px;width:100%;margin:0 auto;
-    display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
-  }
+  .wrap{width:100%;max-width:1060px;margin:0 auto}
+  header{margin-bottom:38px}
+  h1{font-size:12px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--faint)}
+  header p{margin-top:12px;font-size:clamp(21px,3vw,27px);line-height:1.35;max-width:32ch}
+  main{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(290px,1fr))}
   .game{
     display:flex;flex-direction:column;
     background:var(--panel);
     border:1px solid var(--line);
     text-decoration:none;color:inherit;
-    transition:border-color .15s ease,transform .15s ease;
+    transition:border-color .15s ease,background .15s ease;
   }
-  .game:hover,.game:focus-visible{border-color:var(--accent);transform:translateY(-2px);outline:none}
-  .game svg{display:block;width:100%;height:132px}
-  .body{padding:22px 24px 24px;display:flex;flex-direction:column;flex:1}
-  .body h2{font-size:19px;letter-spacing:.02em}
-  .kind{
-    font-size:11px;letter-spacing:.14em;text-transform:uppercase;
-    color:var(--accent);margin-bottom:10px;
-  }
-  .body p{color:var(--dim);margin-top:10px;flex:1}
-  ul{list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin-top:18px}
-  li{
-    font-size:11px;color:var(--dim);
-    border:1px solid var(--line);padding:3px 8px;
-  }
-  .play{
-    margin-top:20px;font-size:13px;font-weight:600;color:var(--accent);
-    display:inline-flex;align-items:center;gap:7px;
-  }
-  .play span{transition:transform .15s ease}
-  .game:hover .play span{transform:translateX(3px)}
-  footer{
-    max-width:980px;width:100%;margin:44px auto 0;
-    color:var(--dim);font-size:13px;
-    border-top:1px solid var(--line);padding-top:18px;
-    display:flex;flex-wrap:wrap;gap:6px 18px;
-  }
+  .game:hover,.game:focus-visible{border-color:var(--accent);background:var(--panel-hi);outline:none}
+  .game svg{display:block;width:100%;height:126px}
+  .body{padding:20px 22px 22px;display:flex;flex-direction:column;flex:1}
+  .kind{font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--accent);margin-bottom:9px}
+  .body h2{font-size:18px;letter-spacing:.01em}
+  .body p{color:var(--dim);margin-top:9px;flex:1;font-size:14px}
+  ul{list-style:none;display:flex;flex-wrap:wrap;gap:5px;margin-top:16px}
+  li{font-size:10.5px;color:var(--faint);border:1px solid var(--line);padding:3px 7px}
+  .play{margin-top:18px;font-size:13px;font-weight:600;color:var(--accent);display:inline-flex;align-items:center;gap:6px}
+  .play i{font-style:normal;transition:transform .15s ease}
+  .game:hover .play i{transform:translateX(3px)}
+  footer{margin-top:40px;color:var(--faint);font-size:13px;border-top:1px solid var(--line);padding-top:16px;display:flex;flex-wrap:wrap;gap:6px 18px}
   footer a{color:var(--dim)}
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
 <body>
+<div class="wrap">
 
 <header>
   <h1>felipe-lotas69 / Juego&nbsp;Daun</h1>
-  <p>Two games that run in a browser tab. No install, no build step, no accounts.</p>
+  <p>Three games that run in a browser tab. No install, no build step, no accounts.</p>
 </header>
 
 <main>
 
   <a class="game" href="colony/" style="--accent:var(--colony)">
-    <!-- A patch of ground seen from above: soil, grass, a river, two trees. -->
-    <svg viewBox="0 0 320 132" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Top-down terrain with a river and trees">
-      <rect width="320" height="132" fill="#6b533b"/>
-      <rect y="0" width="320" height="46" fill="#5c7a3e"/>
-      <rect y="86" width="320" height="46" fill="#5c7a3e"/>
-      <path d="M0 52 h320 v28 H0 z" fill="#2f5d78"/>
-      <path d="M0 52 h320 v4 H0 z" fill="#3d7396"/>
-      <g fill="#3f6b33">
-        <circle cx="58" cy="24" r="15"/><circle cx="74" cy="30" r="11"/>
-        <circle cx="236" cy="108" r="14"/><circle cx="252" cy="102" r="10"/>
-      </g>
-      <g fill="#5a4227">
-        <rect x="55" y="30" width="5" height="10"/><rect x="233" y="112" width="5" height="10"/>
+    <!-- Ground seen from above: soil, grass, a river, trees, a walled room. -->
+    <svg viewBox="0 0 320 126" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Top-down terrain with a river, trees and a walled room">
+      <rect width="320" height="126" fill="#6b533b"/>
+      <rect width="320" height="44" fill="#61803f"/>
+      <rect y="84" width="320" height="42" fill="#61803f"/>
+      <rect y="48" width="320" height="32" fill="#33607a"/>
+      <rect y="48" width="320" height="4" fill="#41748f"/>
+      <g fill="#426b35">
+        <circle cx="52" cy="22" r="14"/><circle cx="68" cy="28" r="10"/>
+        <circle cx="244" cy="104" r="13"/><circle cx="259" cy="99" r="9"/>
       </g>
       <g fill="#8f97a3">
-        <rect x="150" y="96" width="34" height="5"/><rect x="150" y="96" width="5" height="26"/>
-        <rect x="179" y="96" width="5" height="26"/>
+        <rect x="146" y="92" width="40" height="5"/><rect x="146" y="92" width="5" height="30"/>
+        <rect x="181" y="92" width="5" height="30"/>
       </g>
-      <g fill="#6d8b48" opacity=".65">
-        <rect x="20" y="14" width="2" height="6"/><rect x="104" y="30" width="2" height="6"/>
-        <rect x="286" y="20" width="2" height="6"/><rect x="40" y="104" width="2" height="6"/>
-        <rect x="300" y="112" width="2" height="6"/>
+      <g fill="#c9c2b2"><rect x="158" y="106" width="9" height="6" rx="1"/></g>
+      <g fill="#6f8f4a" opacity=".55">
+        <rect x="18" y="12" width="2" height="5"/><rect x="100" y="30" width="2" height="5"/>
+        <rect x="286" y="18" width="2" height="5"/><rect x="36" y="102" width="2" height="5"/>
       </g>
     </svg>
     <div class="body">
       <div class="kind">Colony simulation</div>
       <h2>RIMDAUN</h2>
       <p>Three survivors come down on an unclaimed world. You never move them directly — you
-        decide what matters, and they decide who does it, in what order, and whether they can
-        face doing it at all today.</p>
+        decide what matters, and they decide who does it, and whether they can face doing it
+        at all today.</p>
       <ul>
-        <li>work priorities</li><li>mood &amp; mental breaks</li><li>body-part health</li>
-        <li>raids &amp; cover</li><li>a planet with civilizations</li><li>ideoligions</li>
+        <li>work priorities</li><li>mood &amp; breaks</li><li>body-part health</li>
+        <li>raids &amp; cover</li><li>a planet with civilizations</li><li>prisons</li>
+        <li>basements</li><li>ideoligions</li>
       </ul>
-      <div class="play">Play<span>&rarr;</span></div>
+      <div class="play">Play<i>&rarr;</i></div>
+    </div>
+  </a>
+
+  <a class="game" href="chromewood/" style="--accent:var(--chrome)">
+    <!-- Isometric tiles, a lit beacon, and the rift. -->
+    <svg viewBox="0 0 320 126" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Isometric forest tiles with a beacon and a rift">
+      <rect width="320" height="126" fill="#12181a"/>
+      <g fill="#1f3a34">
+        <path d="M160 34 L214 63 L160 92 L106 63 Z"/>
+        <path d="M214 63 L268 92 L214 121 L160 92 Z"/>
+        <path d="M106 63 L160 92 L106 121 L52 92 Z"/>
+      </g>
+      <g fill="#295049">
+        <path d="M160 28 L214 57 L160 86 L106 57 Z"/>
+      </g>
+      <g fill="#3f6b4a">
+        <path d="M98 44 l10 -16 10 16 z"/><path d="M100 54 l8 -13 8 13 z"/>
+        <path d="M222 52 l9 -14 9 14 z"/>
+      </g>
+      <rect x="155" y="40" width="10" height="26" fill="#6b7280"/>
+      <circle cx="160" cy="36" r="7" fill="#5aa9a3"/>
+      <circle cx="160" cy="36" r="13" fill="#5aa9a3" opacity=".22"/>
+      <g fill="#a855c7" opacity=".8">
+        <path d="M272 18 q10 22 0 44 q-10 -22 0 -44z"/>
+      </g>
+    </svg>
+    <div class="body">
+      <div class="kind">Isometric survival RPG</div>
+      <h2>Chromewood</h2>
+      <p>The forest grew back through the machines, and something in the rift sends things out
+        after dark. Arrive with nothing, build a camp, repair the beacon, then go and close
+        the rift.</p>
+      <ul>
+        <li>chop, mine, cook, build</li><li>day &amp; night</li><li>four-player co-op</li>
+        <li>three.js, vendored</li>
+      </ul>
+      <div class="play">Play<i>&rarr;</i></div>
     </div>
   </a>
 
   <a class="game" href="getaway/" style="--accent:var(--getaway)">
-    <!-- Rooftops at night, a van waiting, and someone mid-hop. -->
-    <svg viewBox="0 0 320 132" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Rooftop silhouettes at night with a getaway van">
-      <rect width="320" height="132" fill="#11131c"/>
+    <!-- Rooftops at night, a van waiting, someone mid-hop. -->
+    <svg viewBox="0 0 320 126" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Rooftop silhouettes at night with a getaway van">
+      <rect width="320" height="126" fill="#11131c"/>
       <g fill="#1c2030">
-        <rect x="0" y="62" width="86" height="70"/><rect x="104" y="80" width="74" height="52"/>
-        <rect x="196" y="50" width="60" height="82"/><rect x="272" y="92" width="48" height="40"/>
+        <rect y="58" width="86" height="68"/><rect x="104" y="76" width="74" height="50"/>
+        <rect x="196" y="46" width="60" height="80"/><rect x="272" y="88" width="48" height="38"/>
       </g>
       <g fill="#ffc23c" opacity=".5">
-        <rect x="12" y="74" width="7" height="9"/><rect x="30" y="74" width="7" height="9"/>
-        <rect x="12" y="94" width="7" height="9"/><rect x="60" y="94" width="7" height="9"/>
-        <rect x="208" y="64" width="7" height="9"/><rect x="230" y="86" width="7" height="9"/>
+        <rect x="12" y="70" width="7" height="9"/><rect x="30" y="70" width="7" height="9"/>
+        <rect x="12" y="90" width="7" height="9"/><rect x="60" y="90" width="7" height="9"/>
+        <rect x="208" y="60" width="7" height="9"/><rect x="230" y="82" width="7" height="9"/>
       </g>
       <g fill="#f2efe6">
-        <rect x="140" y="58" width="8" height="12"/><rect x="138" y="70" width="4" height="9"/>
-        <rect x="146" y="70" width="4" height="9"/>
+        <rect x="140" y="54" width="8" height="12"/><rect x="138" y="66" width="4" height="9"/>
+        <rect x="146" y="66" width="4" height="9"/>
       </g>
-      <rect x="132" y="47" width="22" height="3" fill="#ff4d5e"/>
-      <g fill="#ffc23c">
-        <rect x="278" y="76" width="36" height="16"/><rect x="286" y="68" width="20" height="9"/>
-      </g>
-      <g fill="#11131c"><rect x="284" y="90" width="8" height="6"/><rect x="302" y="90" width="8" height="6"/></g>
+      <rect x="132" y="43" width="22" height="3" fill="#ff4d5e"/>
+      <g fill="#ffc23c"><rect x="278" y="72" width="36" height="16"/><rect x="286" y="64" width="20" height="9"/></g>
+      <g fill="#11131c"><rect x="284" y="86" width="8" height="6"/><rect x="302" y="86" width="8" height="6"/></g>
     </svg>
     <div class="body">
       <div class="kind">Action platformer</div>
@@ -154,16 +172,17 @@
         <li>six campaign levels</li><li>versus mode</li><li>four bot personalities</li>
         <li>ragdolls</li><li>LAN play</li>
       </ul>
-      <div class="play">Play<span>&rarr;</span></div>
+      <div class="play">Play<i>&rarr;</i></div>
     </div>
   </a>
 
 </main>
 
 <footer>
-  <span>Both games are plain static files — open either folder's <code>index.html</code> straight off disk and it works.</span>
+  <span>All three are plain static files — open any folder's <code>index.html</code> straight off disk and it works.</span>
   <a href="https://github.com/felipe-lotas69/Juego-daun">Source</a>
 </footer>
 
+</div>
 </body>
 </html>
