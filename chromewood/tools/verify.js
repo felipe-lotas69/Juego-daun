@@ -392,7 +392,14 @@ function driveBot(sim, p, i, seq, recipes) {
 
   let tx, tz, fire = false, interact = false;
   const enemy = sim._nearestEnemy(p.x, p.z, 14);
-  const gate = sim.gates.find(g => !g.sealed);
+  /* The nearest unsealed gate, not the first in the list: the first
+     one can be on the far side of a mountain range. */
+  let gate = null, gateD = Infinity;
+  for (const g of sim.gates) {
+    if (g.sealed) continue;
+    const d = Math.hypot(g.x - p.x, g.z - p.z);
+    if (d < gateD) { gateD = d; gate = g; }
+  }
   const repairDone = BEACON_REPAIR.every(([it, n]) => (sim.beacon.store[it] || 0) >= n);
 
   if (sim.beacon.lit && gate) {
@@ -442,8 +449,29 @@ function driveBot(sim, p, i, seq, recipes) {
   const dx = tx - p.x, dz = tz - p.z, m = Math.hypot(dx, dz) || 1;
   const close = m < 1.4;
   const holding = interact || (sim.beacon.lit && gate && m <= 4);
+
+  /* The bot has no pathfinder. Without one it leans on the first
+     cliff between it and whatever it wants and stays there for the
+     rest of the run, which makes a world with more relief in it look
+     like a broken game. Sliding along the obstacle for a couple of
+     seconds when the distance stops falling is not pathfinding, but
+     it gets round a ridge, and it is the same thing a person does. */
+  let mx = close ? 0 : dx / m, mz = close ? 0 : dz / m;
+  if (!close) {
+    const nav = p._nav || (p._nav = { lastD: Infinity, stuck: 0, side: 1, until: -1 });
+    if (m > nav.lastD - 0.004) nav.stuck += 1; else nav.stuck = 0;
+    nav.lastD = m;
+    if (nav.stuck > 90 && i > nav.until) { nav.side = -nav.side; nav.until = i + 180; nav.stuck = 0; }
+    if (i < nav.until) {
+      const a = nav.side * 1.15;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const rx = mx * ca - mz * sa, rz = mx * sa + mz * ca;
+      mx = rx; mz = rz;
+    }
+  }
+
   sim.setInput(p.id, {
-    seq, mx: close ? 0 : dx / m, mz: close ? 0 : dz / m,
+    seq, mx, mz,
     ax: enemy && holding ? enemy.x : tx, az: enemy && holding ? enemy.z : tz,
     fire: fire && (holding || m < 3), dash: false,
     abil: sim.beacon.lit && i % 50 === 0 ? 1 : 0, interact, sprint: m > 8,

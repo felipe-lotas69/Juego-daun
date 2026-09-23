@@ -16,9 +16,12 @@ import { TEX } from './textures.js';
 export const GROUND_COLORS = {
   [BIOME.OCEAN]:    [0x4a6a78, 0x44626f, 0x6a6352, 0x4c4839],
   [BIOME.BEACH]:    [0xd9c48c, 0xcfb981, 0xb09a68, 0x8a7750],
-  [BIOME.MEADOW]:   [0x74c85a, 0x6bbd54, 0x8a6a45, 0x644c32],
-  [BIOME.FOREST]:   [0x4fae52, 0x489f4b, 0x7a4f37, 0x5c3928],
-  [BIOME.PINE]:     [0x3f8f63, 0x39835a, 0x6b5744, 0x4e3f31],
+  /* Ground is darker than the things standing on it. A canopy the
+     same value as the grass under it has no silhouette, and a forest
+     of those is a green fog rather than a place with trees in it. */
+  [BIOME.MEADOW]:   [0x7fbe4e, 0x74b247, 0x8a6a45, 0x644c32],
+  [BIOME.FOREST]:   [0x3a7a3c, 0x346e36, 0x6d4630, 0x52331f],
+  [BIOME.PINE]:     [0x31704d, 0x2c6545, 0x6b5744, 0x4e3f31],
   [BIOME.HIGHLAND]: [0x8e8a80, 0x847f76, 0x6d6960, 0x4f4c45],
   [BIOME.SNOW]:     [0xe4edf5, 0xd7e2ec, 0x93a0ad, 0x6e7a86],
   [BIOME.MARSH]:    [0x6a7a48, 0x5f6e41, 0x584a34, 0x3f3626],
@@ -207,6 +210,27 @@ export function buildProp(b, g, prop, x, y, z, variant, biome) {
     case PROP.STUMP: {
       b.at(jx, y, jz).rot(spin);
       b.taper(0.34, 0.20, 0.34, 0.88, 0x6b4630, { topColor: 0xa07c52, tex: TEX.BARK });
+      b.rot(0);
+      break;
+    }
+
+    /* A fallen trunk. The single most legible thing in a forest:
+       nobody needs to be told what it is or what it gives you. */
+    case PROP.LOG: {
+      const len = 0.85 + r1 * 0.35;
+      const bark = lerpHex(0x6b4630, 0x55381f, r2);
+      b.at(jx, y, jz).rot(spin);
+      b.box(len, 0.26, 0.26, bark, { topColor: lerpHex(bark, 0xa07c52, 0.5), tex: TEX.BARK });
+      /* Sawn ends, the pale rings that say it is wood and not a rock. */
+      b.at(jx, y, jz).rot(spin);
+      b.box(0.06, 0.22, 0.22, 0xc0996a, { xOff: len * 0.5, topColor: 0xd4ae7e });
+      b.at(jx, y, jz).rot(spin);
+      b.box(0.06, 0.22, 0.22, 0xc0996a, { xOff: -len * 0.5, topColor: 0xd4ae7e });
+      /* A broken-off branch, so it is not a perfect cylinder. */
+      if (r3 > 0.45) {
+        b.at(jx, y + 0.26, jz).rot(spin + 1.1);
+        b.box(0.34, 0.14, 0.14, bark, { topColor: lerpHex(bark, 0xa07c52, 0.4), tex: TEX.BARK });
+      }
       b.rot(0);
       break;
     }

@@ -46,7 +46,7 @@ export const BIOME_NAME = {
   [BIOME.OCEAN]: 'Shallows', [BIOME.BEACH]: 'Shore', [BIOME.MEADOW]: 'Meadow',
   [BIOME.FOREST]: 'Chromewood', [BIOME.PINE]: 'Pinehold', [BIOME.HIGHLAND]: 'Crags',
   [BIOME.SNOW]: 'Whitecap', [BIOME.MARSH]: 'Sump', [BIOME.BLOOM]: 'Bloomwood',
-  [BIOME.SCRAP]: 'Scrapfield', [BIOME.ASH]: 'Ashlands', [BIOME.PLAZA]: 'The Plaza',
+  [BIOME.SCRAP]: 'The Ruins', [BIOME.ASH]: 'Ashlands', [BIOME.PLAZA]: 'The Plaza',
 };
 
 export const PROP = {
@@ -59,6 +59,7 @@ export const PROP = {
   RUIN_WALL: 24, RUIN_PILLAR: 25, PYLON: 26, CONDUIT: 27, SCRAP_PILE: 28,
   ANTENNA: 29, CRATE: 30, LAMP: 31,
   BONES: 32, ICE_SPIKE: 33, SNOW_ROCK: 34,
+  LOG: 35,
 };
 
 /* Props that stop a body. */
@@ -81,6 +82,7 @@ export const HARVEST = {
   [PROP.TREE_DEAD]:   { tool: 'axe',  tier: 0, hp: 45, yield: [['wood', 3]] },
   [PROP.TREE_SNOW]:   { tool: 'axe',  tier: 0, hp: 65, yield: [['wood', 6], ['resin', 1]] },
   [PROP.STUMP]:       { tool: 'axe',  tier: 0, hp: 30, yield: [['wood', 2]] },
+  [PROP.LOG]:         { tool: 'axe',  tier: 0, hp: 26, yield: [['wood', 4], ['fiber', 1]] },
   [PROP.BUSH]:        { tool: 'hand', tier: 0, hp: 12, yield: [['fiber', 3]] },
   [PROP.BERRY_BUSH]:  { tool: 'hand', tier: 0, hp: 12, yield: [['fiber', 2], ['berries', 3], ['seed_berry', 1]] },
   [PROP.GRASS]:       { tool: 'hand', tier: 0, hp: 4,  yield: [['fiber', 1]] },
@@ -230,6 +232,8 @@ export class World {
     this._shallows();
     this._biomes();
     this._plaza();
+    /* Needs the plaza to exist, so it runs after it. */
+    this._clearSpawnRegion();
     this._connect();
     this._scatter();
     this._starterGround();
@@ -455,25 +459,103 @@ export class World {
         let b;
         if (this.flags[i] & FLAG.WATER) b = BIOME.OCEAN;
         else if (h <= SEA_LEVEL + 2) b = (m > 0.54 ? BIOME.MARSH : BIOME.BEACH);
-        else if (h <= 8) b = m < 0.46 ? BIOME.MEADOW : BIOME.FOREST;
-        else if (h <= 11) b = m < 0.40 ? BIOME.PINE : BIOME.FOREST;
-        else if (h <= 13) b = temp < 0.26 ? BIOME.SNOW : temp < 0.48 ? BIOME.HIGHLAND : BIOME.PINE;
-        else b = temp < 0.34 ? BIOME.SNOW : BIOME.HIGHLAND;
+        else if (h <= 10) b = m < 0.52 ? BIOME.MEADOW : BIOME.FOREST;
+        else if (h <= 12) b = m < 0.40 ? BIOME.PINE : BIOME.FOREST;
+        /* Snow is a thing that happens at the top of a mountain, not
+           a third of the continent. It needs the altitude AND the
+           cold, and below the treeline it needs to be properly cold. */
+        else if (h <= 14) b = temp < 0.12 ? BIOME.SNOW : temp < 0.42 ? BIOME.HIGHLAND : BIOME.PINE;
+        else b = temp < 0.22 ? BIOME.SNOW : BIOME.HIGHLAND;
 
-        /* Overgrowth and wreckage sit on top as worley patches. */
+        /* Overgrowth and wreckage sit on top as worley patches.
+           The cell size is the whole point: at one cell per 25 tiles
+           the map was a different biome every few paces, which reads
+           as noise rather than as places. One cell per ninety tiles
+           is a region you walk into and notice you are in. */
         if (b !== BIOME.OCEAN) {
-          const wx = tx * 0.040 + fbm(tx * 0.03, ty * 0.03, S + 77, 2) * 2.0;
-          const wy = ty * 0.040 + fbm(tx * 0.03 + 9, ty * 0.03 + 3, S + 78, 2) * 2.0;
+          const wx = tx * 0.011 + fbm(tx * 0.012, ty * 0.012, S + 77, 2) * 0.5;
+          const wy = ty * 0.011 + fbm(tx * 0.012 + 9, ty * 0.012 + 3, S + 78, 2) * 0.5;
           const cell = worley(wx, wy, S + 4242);
           const pick = hash2(Math.floor(wx), Math.floor(wy), S + 555);
-          if (cell < 0.44) {
+          if (cell < 0.30) {
             const ashBias = Math.max(0, (d - 0.40) / 0.45);
-            if (pick < 0.16 + ashBias * 0.45) b = BIOME.ASH;
-            else if (pick < 0.58) b = BIOME.BLOOM;
+            if (pick < 0.14 + ashBias * 0.42) b = BIOME.ASH;
+            else if (pick < 0.62) b = BIOME.BLOOM;
             else b = BIOME.SCRAP;
           }
         }
         this.biome[i] = b;
+      }
+    }
+
+    this._settleBiomes();
+  }
+
+  /* Two passes of a majority filter. Terracing makes the height
+     field step, and a band boundary that runs along a step produces
+     single-tile islands of the neighbouring biome - a lone square of
+     snow in a meadow, which is exactly what makes a world look
+     generated rather than made. Taking the commonest biome in a 5x5
+     neighbourhood keeps the regions and throws away the speckle.
+     Water and the plaza are structural and never move. */
+  _settleBiomes() {
+    const n = this.size;
+    const fixed = (b) => b === BIOME.OCEAN || b === BIOME.PLAZA;
+    let src = this.biome;
+    const dst = new src.constructor(src.length);
+    const tally = new Int32Array(32);
+    for (let pass = 0; pass < 2; pass++) {
+      for (let ty = 0; ty < n; ty++) {
+        for (let tx = 0; tx < n; tx++) {
+          const i = ty * n + tx;
+          const here = src[i];
+          if (fixed(here)) { dst[i] = here; continue; }
+          tally.fill(0);
+          for (let oy = -2; oy <= 2; oy++) {
+            const yy = ty + oy;
+            if (yy < 0 || yy >= n) continue;
+            for (let ox = -2; ox <= 2; ox++) {
+              const xx = tx + ox;
+              if (xx < 0 || xx >= n) continue;
+              const b = src[yy * n + xx];
+              if (fixed(b)) continue;
+              /* The centre counts for more, so a real boundary stays
+                 where the climate put it instead of being rounded
+                 off pass after pass. */
+              tally[b] += (ox === 0 && oy === 0) ? 6 : 1;
+            }
+          }
+          let best = here, bestN = -1;
+          for (let b = 0; b < tally.length; b++) if (tally[b] > bestN) { bestN = tally[b]; best = b; }
+          dst[i] = best;
+        }
+      }
+      src.set(dst);
+    }
+  }
+
+  /* The first ten minutes happen here, so the ground around the
+     plaza is somewhere a person with no tools can understand: trees
+     to chop, rock to break, grass to pull. Ash, wreckage and snow
+     are things to walk to, not things to land in. */
+  _clearSpawnRegion() {
+    const n = this.size;
+    const { tx: px, ty: py } = this.plaza;
+    const R = 34;
+    for (let ty = Math.max(0, py - R); ty <= Math.min(n - 1, py + R); ty++) {
+      for (let tx = Math.max(0, px - R); tx <= Math.min(n - 1, px + R); tx++) {
+        const i = ty * n + tx;
+        const b = this.biome[i];
+        if (b === BIOME.OCEAN || b === BIOME.PLAZA || b === BIOME.BEACH) continue;
+        const d = Math.hypot(tx - px, ty - py);
+        if (d > R) continue;
+        /* Fade out: right by the plaza nothing hostile, further out
+           it is allowed back so the edge is not a circle. */
+        const keep = (d - R * 0.55) / (R * 0.45);
+        if (keep > 0 && hash2(tx, ty, this.seed + 8811) < keep) continue;
+        if (b === BIOME.ASH || b === BIOME.SCRAP || b === BIOME.SNOW || b === BIOME.BLOOM) {
+          this.biome[i] = this.moisture[i] < 0.46 ? BIOME.MEADOW : BIOME.FOREST;
+        }
       }
     }
   }
@@ -908,7 +990,7 @@ export class World {
         if (!this.inBounds(tx, ty)) continue;
         const i = this.idx(tx, ty);
         if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID)) continue;
-        this.setProp(tx, ty, rng() < 0.55 ? PROP.SCRAP_PILE : rng() < 0.6 ? PROP.CRATE : PROP.CONDUIT);
+        this.setProp(tx, ty, rng() < 0.6 ? PROP.SCRAP_PILE : PROP.CRATE);
       }
     }
 
@@ -991,6 +1073,7 @@ function familyOf(prop) {
     case PROP.SCRAP_PILE: case PROP.CONDUIT: case PROP.CRATE:
     case PROP.RUIN_WALL: case PROP.RUIN_PILLAR: case PROP.LAMP:
     case PROP.ANTENNA: case PROP.PYLON: case PROP.BONES:
+    case PROP.LOG:
       return FAMILY.DEBRIS;
     default:
       return FAMILY.COVER;
@@ -1008,28 +1091,29 @@ function isLandmarkProp(prop) {
 
 const SCATTER = {
   [BIOME.BEACH]: [
-    { prop: PROP.SCRAP_PILE, p: 0.012 }, { prop: PROP.CRATE, p: 0.006 },
     { prop: PROP.GRASS, p: 0.05 }, { prop: PROP.ROCK, p: 0.03 }, { prop: PROP.BONES, p: 0.004 },
+    { prop: PROP.LOG, p: 0.006 },
   ],
   [BIOME.MARSH]: [
     { prop: PROP.REED, p: 0.16 }, { prop: PROP.TREE_DEAD, p: 0.05 }, { prop: PROP.MUSHROOM, p: 0.06 },
     { prop: PROP.FERN, p: 0.10 }, { prop: PROP.ROCK, p: 0.02 }, { prop: PROP.BUSH, p: 0.05 },
+    { prop: PROP.LOG, p: 0.012 },
   ],
   [BIOME.MEADOW]: [
-    { prop: PROP.SCRAP_PILE, p: 0.010 }, { prop: PROP.GRASS, p: 0.22 }, { prop: PROP.FLOWER, p: 0.07 }, { prop: PROP.BUSH, p: 0.04 },
+    { prop: PROP.GRASS, p: 0.15 }, { prop: PROP.FLOWER, p: 0.035 }, { prop: PROP.BUSH, p: 0.04 },
     { prop: PROP.BERRY_BUSH, p: 0.022 }, { prop: PROP.TREE_OAK, p: 0.025 }, { prop: PROP.ROCK, p: 0.03 },
-    { prop: PROP.BOULDER, p: 0.008 },
+    { prop: PROP.BOULDER, p: 0.008 }, { prop: PROP.LOG, p: 0.008 },
   ],
   [BIOME.FOREST]: [
-    { prop: PROP.SCRAP_PILE, p: 0.009 }, { prop: PROP.CRATE, p: 0.005 },
     { prop: PROP.TREE_OAK, p: 0.075 }, { prop: PROP.TREE_BIRCH, p: 0.045 }, { prop: PROP.TREE_PINE, p: 0.03 },
-    { prop: PROP.BUSH, p: 0.06 }, { prop: PROP.FERN, p: 0.07 }, { prop: PROP.GRASS, p: 0.11 },
+    { prop: PROP.BUSH, p: 0.05 }, { prop: PROP.FERN, p: 0.055 }, { prop: PROP.GRASS, p: 0.085 },
     { prop: PROP.MUSHROOM, p: 0.03 }, { prop: PROP.BERRY_BUSH, p: 0.018 }, { prop: PROP.ROCK, p: 0.02 },
-    { prop: PROP.STUMP, p: 0.008 }, { prop: PROP.FLOWER, p: 0.02 },
+    { prop: PROP.STUMP, p: 0.008 }, { prop: PROP.LOG, p: 0.016 }, { prop: PROP.FLOWER, p: 0.012 },
   ],
   [BIOME.PINE]: [
-    { prop: PROP.SCRAP_PILE, p: 0.008 }, { prop: PROP.TREE_PINE, p: 0.12 }, { prop: PROP.ROCK, p: 0.045 }, { prop: PROP.BOULDER, p: 0.015 },
+    { prop: PROP.TREE_PINE, p: 0.12 }, { prop: PROP.ROCK, p: 0.045 }, { prop: PROP.BOULDER, p: 0.015 },
     { prop: PROP.GRASS, p: 0.07 }, { prop: PROP.BUSH, p: 0.03 }, { prop: PROP.MUSHROOM, p: 0.02 },
+    { prop: PROP.LOG, p: 0.014 }, { prop: PROP.STUMP, p: 0.006 },
   ],
   [BIOME.HIGHLAND]: [
     { prop: PROP.ROCK, p: 0.09 }, { prop: PROP.BOULDER, p: 0.035 }, { prop: PROP.ROCK_TALL, p: 0.016 },
@@ -1040,21 +1124,25 @@ const SCATTER = {
     { prop: PROP.BOULDER, p: 0.02 }, { prop: PROP.BONES, p: 0.004 },
   ],
   [BIOME.BLOOM]: [
-    { prop: PROP.TREE_BLOOM, p: 0.07 }, { prop: PROP.CRYSTAL, p: 0.035 }, { prop: PROP.GRASS, p: 0.11 },
+    { prop: PROP.TREE_BLOOM, p: 0.07 }, { prop: PROP.CRYSTAL, p: 0.02 }, { prop: PROP.GRASS, p: 0.11 },
     { prop: PROP.FLOWER, p: 0.06 }, { prop: PROP.MUSHROOM, p: 0.05 }, { prop: PROP.BUSH, p: 0.03 },
-    { prop: PROP.ROCK, p: 0.015 },
+    { prop: PROP.ROCK, p: 0.015 }, { prop: PROP.LOG, p: 0.008 },
   ],
+  /* The Ruins: a town that fell over. Broken walls, toppled pillars,
+     crates somebody stacked and never came back for, and the grass
+     growing through it. Nothing here needs explaining. */
   [BIOME.SCRAP]: [
-    { prop: PROP.RUIN_WALL, p: 0.042 }, { prop: PROP.RUIN_PILLAR, p: 0.02 }, { prop: PROP.SCRAP_PILE, p: 0.05 },
-    { prop: PROP.CONDUIT, p: 0.032 }, { prop: PROP.PYLON, p: 0.012 }, { prop: PROP.CRATE, p: 0.02 },
-    { prop: PROP.GRASS, p: 0.06 }, { prop: PROP.ANTENNA, p: 0.008 }, { prop: PROP.LAMP, p: 0.01 },
-    { prop: PROP.ROCK, p: 0.015 },
+    { prop: PROP.RUIN_WALL, p: 0.050 }, { prop: PROP.RUIN_PILLAR, p: 0.026 },
+    { prop: PROP.SCRAP_PILE, p: 0.055 }, { prop: PROP.CRATE, p: 0.026 },
+    { prop: PROP.GRASS, p: 0.09 }, { prop: PROP.BUSH, p: 0.03 },
+    { prop: PROP.ROCK, p: 0.02 }, { prop: PROP.BONES, p: 0.006 },
+    { prop: PROP.STUMP, p: 0.008 }, { prop: PROP.LOG, p: 0.008 },
   ],
   [BIOME.ASH]: [
-    { prop: PROP.SCRAP_PILE, p: 0.020 }, { prop: PROP.CONDUIT, p: 0.010 },
-    { prop: PROP.TREE_DEAD, p: 0.07 }, { prop: PROP.RIFT_SHARD, p: 0.03 }, { prop: PROP.ROCK, p: 0.04 },
+    { prop: PROP.TREE_DEAD, p: 0.07 }, { prop: PROP.ROCK, p: 0.04 },
+    { prop: PROP.SCRAP_PILE, p: 0.020 },
     { prop: PROP.BOULDER, p: 0.02 }, { prop: PROP.STUMP, p: 0.02 }, { prop: PROP.GRASS, p: 0.03 },
-    { prop: PROP.BONES, p: 0.008 },
+    { prop: PROP.BONES, p: 0.008 }, { prop: PROP.LOG, p: 0.010 },
   ],
   [BIOME.PLAZA]: [],
   [BIOME.OCEAN]: [],
