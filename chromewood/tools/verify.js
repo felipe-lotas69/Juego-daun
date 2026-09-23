@@ -25,26 +25,32 @@
 
 import { World, FLAG, SOLID_PROPS, HARVEST, PLATEAUS } from '../src/world/worldgen.js';
 import { canStand } from '../src/game/movement.js';
-import { PLAYER, LEVEL_STEP } from '../src/core/config.js';
+import { PLAYER, LEVEL_STEP, SURVIVAL } from '../src/core/config.js';
 import { Sim, PHASE, ARC, BEACON_COSTS, emptyInput } from '../src/game/sim.js';
 import {
   SKILLS, ABILITIES, ENEMIES, BEACON_UPGRADES, SKILL_BRANCHES, PRIMARY_ID,
 } from '../src/game/defs.js';
 import {
-  ITEMS, BUILDINGS, RECIPES, SMELTING, STATION_NAME, BEACON_REPAIR, CAT,
+  ITEMS, BUILDINGS, RECIPES, SMELTING, STATION_NAME, BEACON_REPAIR, CAT, SLOTS,
 } from '../src/game/items.js';
 import { ANIMALS, EXTRA_ENEMIES } from '../src/game/creatures.js';
+import { SHAPES } from '../src/render/beast.js';
 import { NIGHTS, WEATHER, CONTRACTS, buildNightDeck } from '../src/game/nights.js';
 import {
-  allRecipes, invCount, invGive, startCraft, bestToolTier, eat, place, canPlace,
+  allRecipes, invCount, invGive, startCraft, bestToolTier, eat, place, canPlace, equipItem,
 } from '../src/game/survival.js';
+import { damagePlayer } from '../src/game/combat.js';
 import {
   encodeSnapshot, decodeInput, encodeInput, PROTOCOL_VERSION,
 } from '../src/net/protocol.js';
 import { Mirror } from '../src/net/mirror.js';
 import { brokerConfig, brokerIdForRoom } from '../src/net/peer.js';
 import { villageOffers } from '../src/game/trade.js';
+import {
+  SEASONS, SEASON_NIGHTS, seasonFor, rollSeasonWeather, seasonAnimalWeight,
+} from '../src/game/seasons.js';
 import { hasGlyph } from '../src/ui/font.js';
+import { makeRng } from '../src/core/rng.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -575,6 +581,133 @@ function driveBot(sim, p, i, seq, recipes) {
   }
 }
 
+/* ----------------------------------------------- 2e. the wildlife */
+console.log('\nthe wildlife');
+{
+  /* Every animal has to be drawable, tell you what it drops, and
+     belong somewhere. A species with no shape falls back to a
+     generic four-legged thing, which is fine, but a species with no
+     biome never appears at all. */
+  const kinds = Object.entries(ANIMALS);
+  const problems = [];
+  for (const [id, def] of kinds) {
+    if (!def.biomes || !def.biomes.length) problems.push(`${id} lives nowhere`);
+    if (!def.drops || !def.drops.length) problems.push(`${id} drops nothing`);
+    for (const [item] of def.drops || []) {
+      if (!ITEMS[item]) problems.push(`${id} drops "${item}", which is not a thing`);
+    }
+    if (!(def.color >= 0)) problems.push(`${id} has no colour to draw it in`);
+  }
+  check(kinds.length >= 9, 'there is a decent bestiary', `${kinds.length} species`);
+  check(problems.length === 0, 'and every one of them has somewhere to live and something to give',
+    problems.join('; '));
+
+  /* The shapes table is what makes them different animals rather
+     than one animal in different colours. */
+  const shaped = kinds.filter(([id]) => SHAPES[id]).length;
+  check(shaped === kinds.length, 'and a drawn shape of its own',
+    `${shaped} of ${kinds.length} have an entry in the shape table`);
+  const lens = new Set(kinds.map(([id]) => SHAPES[id] && `${SHAPES[id].len}:${SHAPES[id].leg}:${SHAPES[id].ear}`));
+  check(lens.size >= 6, 'and they are not all the same animal recoloured',
+    `${lens.size} distinct builds across ${kinds.length} species`);
+
+  /* And they turn up: spawn weights per season have to leave every
+     species some part of the year where it is worth looking for. */
+  const never = kinds.filter(([id]) =>
+    [0, SEASON_NIGHTS, SEASON_NIGHTS * 2, SEASON_NIGHTS * 3]
+      .every(n => seasonAnimalWeight(n, id) <= 0));
+  check(never.length === 0, 'and none of them is out of season all year',
+    never.map(([id]) => id).join(', '));
+  ok('wildlife', kinds.map(([id]) => id).join(', '));
+}
+
+/* ------------------------------------------ 3a0. gear and blocks */
+console.log('\nwearing and stacking');
+{
+  /* Armour: every piece has somewhere to go, a number on it, and a
+     way to make it. A piece with no recipe is a piece nobody sees. */
+  const armour = Object.entries(ITEMS).filter(([, d]) => d.cat === CAT.ARMOR);
+  const problems = [];
+  for (const [id, def] of armour) {
+    if (!SLOTS.includes(def.slot)) problems.push(`${id} is worn on "${def.slot}"`);
+    if (!(def.armor > 0)) problems.push(`${id} has no armour value`);
+    if (!allRecipes().some(r => r.out[0] === id)) problems.push(`${id} cannot be made`);
+  }
+  check(armour.length >= 9, 'there is a full set to make, three deep',
+    `${armour.length} pieces`);
+  check(problems.length === 0, 'and every piece has a slot, a number and a recipe',
+    problems.join('; '));
+
+  const sim = new Sim(606060, { difficulty: 1 });
+  const p = sim.addPlayer('p0', 'GEAR');
+  invGive(p, 'vest_hide', 1);
+  invGive(p, 'vest_iron', 1);
+  const bare = p.stats.armor;
+  equipItem(sim, p, 'vest_hide');
+  check(p.equip.body === 'vest_hide', 'you can put something on',
+    'the vest did not go on');
+  check(invCount(p, 'vest_hide') === 0, 'and it comes out of the pack',
+    'the vest is worn and still in the pack');
+  check(p.stats.armor > bare, 'and it cuts what gets through',
+    `armour went from ${bare} to ${p.stats.armor}`);
+
+  equipItem(sim, p, 'vest_iron');
+  check(p.equip.body === 'vest_iron' && invCount(p, 'vest_hide') === 1,
+    'swapping hands the old piece back rather than eating it',
+    'the hide vest vanished when the iron plate went on');
+
+  /* And it actually reduces damage taken. */
+  const naked = sim.addPlayer('p1', 'NAKED');
+  p.hp = p.maxHp; naked.hp = naked.maxHp;
+  /* Past the spawn grace, or nothing lands on either of them. */
+  p.invuln = 0; naked.invuln = 0;
+  damagePlayer(sim, p, 40, null);
+  damagePlayer(sim, naked, 40, null);
+  check(p.hp > naked.hp, 'a plated player takes less than a bare one',
+    `plated ${Math.round(p.hp)} against bare ${Math.round(naked.hp)}`);
+
+  /* Blocks: they stack, and then they stop. */
+  const blocks = Object.entries(BUILDINGS).filter(([, d]) => d.block);
+  check(blocks.length >= 3, 'there are blocks to build with', `${blocks.length} kinds`);
+  const [blockKey, blockDef] = blocks[0];
+  const b = sim.addPlayer('p2', 'MASON');
+  const w = sim.world;
+  let tile = null;
+  for (let k = 0; k < 4000 && !tile; k++) {
+    const tx = 20 + Math.floor(Math.random() * (w.size - 40));
+    const ty = 20 + Math.floor(Math.random() * (w.size - 40));
+    if (canPlace(sim, b, blockKey, tx, ty) === 'materials') tile = { tx, ty };
+  }
+  check(!!tile, 'and somewhere to put one', 'no buildable tile found');
+  if (tile) {
+    b.x = w.tileToWorldX(tile.tx); b.z = w.tileToWorldZ(tile.ty);
+    b.y = w.groundAt(b.x, b.z);
+    invGive(b, blockKey, 10);
+    let placed = 0;
+    for (let k = 0; k < 8; k++) if (place(sim, b, blockKey, tile.tx, tile.ty)) placed++;
+    const built = sim.buildings.filter(x => x.tx === tile.tx && x.ty === tile.ty);
+    check(built.length === 1, 'stacking makes one taller block, not a pile of them',
+      `${built.length} buildings on one tile`);
+    check(built[0] && built[0].stack === (blockDef.stackMax || 4),
+      'and it stacks exactly as high as it says it does',
+      `stack ${built[0] && built[0].stack} against a maximum of ${blockDef.stackMax}`);
+    check(placed === (blockDef.stackMax || 4), 'and refuses the one after that',
+      `${placed} of eight attempts were taken`);
+  }
+
+  /* Smelting has its own bench, and it comes before the forge. */
+  const smeltRecipes = allRecipes().filter(r => r.station === 'smelter');
+  check(smeltRecipes.length >= 3, 'ore has somewhere to be smelted',
+    `${smeltRecipes.length} recipes at the smelter`);
+  const smelterRecipe = allRecipes().find(r => r.out[0] === 'smelter');
+  check(smelterRecipe && smelterRecipe.station === 'workbench',
+    'and the smelter itself is a workbench job, before the forge',
+    smelterRecipe ? `it is made at the ${smelterRecipe.station}` : 'there is no way to make one');
+  const forgeNeeds = BUILDINGS.forge.cost.map(([it]) => it);
+  check(forgeNeeds.some(it => ITEMS[it]), 'and the forge is made of things the smelter gives you',
+    'the forge costs nothing smeltable');
+}
+
 /* --------------------------------------- 3a. make it, carry it, place it */
 console.log('\nthe building loop');
 {
@@ -798,6 +931,71 @@ console.log('\ncaves');
   ok('caves', sample.join('; '));
 }
 
+/* -------------------------------------------------- 2d. the year */
+console.log('\nseasons');
+{
+  /* A season has to be four different answers to the same question,
+     not four tints. Each one should change what grows, what is out
+     there and what the sky does. */
+  const seen = new Set();
+  for (let n = 0; n < 24; n++) seen.add(seasonFor(n).id);
+  check(seen.size === 4, 'the year has four seasons in it', [...seen].join(', '));
+  check(seasonFor(0).id !== seasonFor(SEASON_NIGHTS).id, 'and it turns over',
+    'the season did not change after a full season of nights');
+  check(seasonFor(0).id === seasonFor(SEASON_NIGHTS * 4).id, 'and comes back round',
+    'the year does not repeat');
+
+  const crops = SEASONS.map(s => s.crop);
+  check(Math.max(...crops) / Math.min(...crops) >= 2,
+    'growing is worth timing', `crop rates: ${crops.join(', ')}`);
+  const winter = SEASONS.find(s => s.id === 'winter');
+  const summer = SEASONS.find(s => s.id === 'summer');
+  check(winter.crop < summer.crop && winter.warmth < summer.warmth,
+    'winter is the hard one', 'winter is not colder or leaner than summer');
+
+  /* Weather is rolled per season, so a snowstorm in high summer is a
+     bug and a winter without one is a missed opportunity. */
+  const rollMany = (night) => {
+    const rng = makeRng(99);
+    const out = {};
+    for (let i = 0; i < 600; i++) {
+      const w = rollSeasonWeather(rng, night, WEATHER);
+      out[w.id] = (out[w.id] || 0) + 1;
+    }
+    return out;
+  };
+  const summerRolls = rollMany(SEASON_NIGHTS * 1 + 1);
+  const winterRolls = rollMany(SEASON_NIGHTS * 3 + 1);
+  check(!summerRolls.snowstorm, 'it does not snow in summer',
+    `summer rolled ${summerRolls.snowstorm} snowstorms`);
+  check((winterRolls.snowstorm || 0) > 60, 'and it does in winter',
+    `winter rolled ${winterRolls.snowstorm || 0} snowstorms in 600`);
+
+  /* And the woods hold a different population in each. */
+  let differs = false;
+  for (const type of ['wolf', 'deer', 'critter']) {
+    if (seasonAnimalWeight(0, type) !== seasonAnimalWeight(SEASON_NIGHTS * 3, type)) differs = true;
+  }
+  check(differs, 'and different things are out in it',
+    'spring and winter spawn the same population');
+
+  /* The whole thing has to run: a year of simulated nights without
+     throwing, with crops that still ripen. */
+  const sim = new Sim(8181, { difficulty: 1 });
+  const p = sim.addPlayer('p0', 'YEAR');
+  let thrown = null;
+  const seenSeasons = new Set();
+  for (let i = 0; i < 60 * 60 * 14 && !thrown; i++) {
+    sim.setInput(p.id, { ...emptyInput(), seq: i });
+    p.hp = p.maxHp; p.hunger = 90; p.warmth = 100;
+    try { sim.step(1 / 60); sim.drainEvents(); }
+    catch (err) { thrown = `${err.message} at step ${i}`; }
+    seenSeasons.add(sim.season.id);
+  }
+  check(!thrown, 'a year runs without throwing', thrown);
+  ok('seasons', `${seenSeasons.size} seasons in fourteen simulated minutes, night ${sim.night}`);
+}
+
 /* ------------------------------------------------- 2c. villages */
 console.log('\nvillages');
 {
@@ -874,6 +1072,77 @@ console.log('\nvillages');
   far.x = v.stallX + 40; far.z = v.stallZ;
   check(sim.tryTrade(far, v.id, 0) === false, 'and not from the other side of the valley',
     'a trade went through from forty tiles away');
+}
+
+/* ------------------------------------------------- 3b3. swimming */
+console.log('\nswimming');
+{
+  /* Deep water used to be a wall. It is now a place, which means it
+     has to be one you can get into, get out of, and not live in. */
+  /* A shoreline: deep water with dry, standable ground right beside
+     it. Looking three tiles off instead of one finds nothing at all,
+     because three tiles into a lake is still lake - and away from the
+     rim, because the map edge clamps movement and a swimmer pinned
+     against it proves nothing. */
+  let sim = null, p = null, w = null, spot = null;
+  for (const seed of [4545, 1212, 9001, 31337, 777]) {
+    sim = new Sim(seed, { difficulty: 1 });
+    p = sim.addPlayer('p0', 'SWIMMER');
+    w = sim.world;
+    for (let ty = 30; ty < w.size - 30 && !spot; ty++) {
+      for (let tx = 30; tx < w.size - 30 && !spot; tx++) {
+        const x = w.tileToWorldX(tx), z = w.tileToWorldZ(ty);
+        if (!w.deepAt(x, z)) continue;
+        /* Deep water never touches dry land - the generator rings it
+           with shallows - so the shore is a few tiles out through
+           them, and that is the swim. */
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          for (let k = 2; k <= 5; k++) {
+            const sx = w.tileToWorldX(tx + dx * k), sz = w.tileToWorldZ(ty + dy * k);
+            if (w.flagAt(sx, sz) & FLAG.WATER) continue;
+            const level = Math.round(w.groundAt(sx, sz) / LEVEL_STEP);
+            if (!canStand(w, sx, sz, PLAYER.radius, level)) break;
+            spot = { x, z, ox: dx * k, oy: dy * k };
+            break;
+          }
+          if (spot) break;
+        }
+      }
+    }
+    if (spot) break;
+  }
+  check(!!spot, 'the world has water deep enough to swim in', 'no deep water found');
+
+  if (spot) {
+    p.x = spot.x; p.z = spot.z; p.y = w.groundAt(p.x, p.z);
+    sim.setInput(p.id, { ...emptyInput(), seq: 0 });
+    sim.step(1 / 60); sim.drainEvents();
+    check(p.swimming === true, 'standing in it puts you in the water',
+      'the player is in deep water and not swimming');
+    const surface = w.waterSurfaceAt(p.x, p.z);
+    check(Math.abs(p.y - (surface - SURVIVAL.swimDepth)) < 0.01,
+      'and you ride at the surface rather than on the bottom',
+      `y ${p.y.toFixed(2)} against a surface of ${surface.toFixed(2)}`);
+
+    /* Swim for the shore. Stamina is watched at its lowest rather
+       than at the end, because it comes back the moment you are out. */
+    let lowStam = p.stamina;
+    let onLand = false;
+    for (let i = 1; i < 60 * 14 && !onLand; i++) {
+      sim.setInput(p.id, {
+        ...emptyInput(), seq: i,
+        mx: Math.sign(spot.ox), mz: Math.sign(spot.oy),
+        ax: p.x + spot.ox * 3, az: p.z + spot.oy * 3,
+      });
+      sim.step(1 / 60); sim.drainEvents();
+      lowStam = Math.min(lowStam, p.stamina);
+      if (!p.swimming && !(w.flagAt(p.x, p.z) & FLAG.WATER)) onLand = true;
+    }
+    check(onLand, 'and you can swim out of it again',
+      'fourteen seconds of swimming did not reach dry land');
+    check(lowStam < p.maxStamina, 'and it costs you to do it',
+      'swimming never dipped into the stamina bar');
+  }
 }
 
 /* ------------------------------------------ 3b2. nobody stays stuck */

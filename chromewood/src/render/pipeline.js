@@ -11,7 +11,7 @@
    ============================================================ */
 
 import * as THREE from '../../vendor/three.module.js';
-import { patchHeroFade } from './materials.js';
+import { patchHeroFade, patchWind } from './materials.js';
 import { FULLSCREEN_VERT, EDGE_FRAG, BRIGHT_FRAG, BLUR_FRAG, COMPOSITE_FRAG } from './shaders.js';
 import { RENDER } from '../core/config.js';
 
@@ -44,7 +44,10 @@ export class PixelPipeline {
     /* The normal and depth buffers have to lose the same pixels the
        lit pass does, or the edge pass traces a wall that is no
        longer drawn. */
-    this.normalMaterial.onBeforeCompile = (shader) => patchHeroFade(shader);
+    /* Wind as well as the fade: if the normal buffer sees a still
+       tree and the lit pass sees a moving one, the outline trails
+       behind the leaves. */
+    this.normalMaterial.onBeforeCompile = (shader) => { patchWind(shader); patchHeroFade(shader); };
     this.normalMaterial.customProgramCacheKey = () => 'normal-hero';
     this.normalCamera = null;
 
@@ -77,13 +80,13 @@ export class PixelPipeline {
         uTexel: { value: new THREE.Vector2() },
         uNear: { value: 0.1 }, uFar: { value: 200 },
         uLineAlpha: { value: RENDER.outlineAlpha },
-        uHighlight: { value: 0.34 },
-        uShadow: { value: 0.40 },
+        uHighlight: { value: 0.44 },
+        uShadow: { value: 0.50 },
         uDepthScale: { value: 1.0 },
         uDepthBias: { value: 0.3 },
         /* Not white: a cool, slightly desaturating multiplier, so a
            shadowed edge stays the colour of the thing it is on. */
-        uShadowTint: { value: new THREE.Color(0.46, 0.45, 0.56) },
+        uShadowTint: { value: new THREE.Color(0.36, 0.35, 0.46) },
         uOutlineWhite: { value: 0.10 },
       },
     });

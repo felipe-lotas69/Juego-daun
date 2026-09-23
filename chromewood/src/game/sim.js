@@ -23,15 +23,19 @@ import {
   PLAYER, BEACON, WAVE, DAY, COMBAT, XP_CURVE, WORLD_HALF, SURVIVAL, RESONANCE, GATE,
 } from '../core/config.js';
 import { ENEMIES, ELITE, SKILLS, BEACON_UPGRADES, STATUS, BOONS, PRIMARY_ID } from './defs.js';
-import { ITEMS, BUILDINGS, BEACON_REPAIR } from './items.js';
+import { ITEMS, BUILDINGS, BEACON_REPAIR, SLOTS } from './items.js';
 import { ANIMALS, EXTRA_ENEMIES, FACTION, animalsForBiome } from './creatures.js';
 import { NIGHTS, WEATHER, buildNightDeck, rollWeather, CONTRACTS } from './nights.js';
+import { seasonFor, rollSeasonWeather, seasonAnimalWeight } from './seasons.js';
 import {
   ResonanceField, swing, tickCraft, tickBody, place, invGive, invTake, invCount, invRoom,
   heldItem, depositToBeacon, beaconRepairProgress,
 } from './survival.js';
 import { villageOffers } from './trade.js';
 import { makeRng } from '../core/rng.js';
+
+/* How far you can climb hauling yourself out of water. */
+const CLIMB_OUT = 3;
 import { clamp, clamp01, lerp, dist2, dist, damp, TAU } from '../core/util.js';
 import { castAbility, stepProjectiles, damageEnemy, damagePlayer, explode } from './combat.js';
 import { stepEnemy } from './enemyai.js';
@@ -124,6 +128,7 @@ export class Sim {
       craft: null, buildKey: null, swingCd: 0,
       dashCharges: 1, dashMax: 1, dashTimer: 0, dashCd: 0, dashDirX: 0, dashDirZ: 0,
       state: 'alive', downTimer: 0, respawnTimer: 0, reviveProgress: 0,
+      equip: { head: null, body: null, legs: null }, plate: 0,
       invuln: PLAYER.invulnOnSpawn,
       buffs: [], statuses: [],
       kills: 0, damageDealt: 0, deaths: 0, revives: 0, tookDamageTonight: false,
@@ -196,6 +201,20 @@ export class Sim {
     };
     for (const key of Object.keys(p.skills)) add(SKILLS[key] && SKILLS[key].mods);
     for (const b of p.buffs) add(b.mods);
+
+    /* What you are wearing. Armour points go through a curve rather
+       than straight into the cut, so a full set is worth having and
+       is nowhere near immunity: fifty points is a third off. */
+    let plate = 0;
+    for (const slot of SLOTS) {
+      const worn = p.equip && p.equip[slot];
+      const def = worn && ITEMS[worn];
+      if (!def) continue;
+      plate += def.armor || 0;
+      m.warmth += def.warmth || 0;
+    }
+    p.plate = plate;
+    m.armor += plate / (plate + 100);
     const forge = this.beacon.upgrades.forge;
     if (forge) m.power += forge * 0.08;
 
@@ -343,6 +362,8 @@ export class Sim {
     this._stepLures(dt);
   }
 
+  get season() { return seasonFor(this.night); }
+
   get isNight() { return this.dayTime % this.cycleLength >= DAY.dayLength; }
   get timeToPhaseChange() {
     const t = this.dayTime % this.cycleLength;
@@ -367,7 +388,7 @@ export class Sim {
     this.weatherTimer -= dt;
     if (this.weatherTimer > 0) return;
     this.weatherTimer = 110 + this.rng() * 170;
-    const next = rollWeather(this.rng, this.night);
+    const next = rollSeasonWeather(this.rng, this.night, WEATHER);
     if (next !== this.weather) {
       this.weather = next;
       this.emit({ t: 'weather', id: next.id, name: next.name, blurb: next.blurb || '' });
@@ -611,15 +632,45 @@ export class Sim {
       * (p.killHaste > 0 ? 1 + s.killHaste : 1);
     if (p.warmth <= 0) speed *= 0.72;
     const f = this.world.flagAt(p.x, p.z);
-    if (f & FLAG.WATER) speed *= 0.55;
+
+    /* What you are walking on. A road is the only thing in the world
+       that makes you faster, which is what makes it worth building
+       one, and a marsh is the only ground that reads as an obstacle
+       without anything standing in it. */
+    p.swimming = this.world.deepAt(p.x, p.z);
+    if (p.swimming) {
+      speed *= SURVIVAL.swimSpeed;
+      /* Swimming costs: you cannot cross the bay without stopping,
+         and out of breath you barely move. */
+      p.stamina = Math.max(0, p.stamina - SURVIVAL.swimStamina * dt);
+      if (p.stamina <= 0) speed *= 0.55;
+      p.sprinting = false;
+    } else if (f & FLAG.WATER) {
+      speed *= 0.62;                     /* wading */
+    } else if (f & FLAG.ROAD) {
+      speed *= 1.14;
+    } else if (this.world.biomeAt(p.x, p.z) === BIOME.MARSH) {
+      speed *= 0.78;
+    } else if (this.season.snow > 0.4) {
+      speed *= 0.92;                     /* snow underfoot */
+    }
     if (p.craft) speed *= 0.35;
 
     if (p.dashTimer > 0) p.invuln = Math.max(p.invuln, 0.05);
     if (applyLocomotion(p, input, speed, dt)) {
       this.emit({ t: 'dash', id: p.id, x: p.x, y: p.y, z: p.z, dx: p.dashDirX, dz: p.dashDirZ });
     }
-    moveEntity(this.world, p, PLAYER.radius, dt);
-    p.y = this.world.groundAt(p.x, p.z);
+    /* Out of the water you may haul yourself up a step you could not
+       walk up, which is what stops a swim ending at a shore you can
+       reach and cannot climb - a trap the shallows put in front of
+       every beach on the map. */
+    const inWater = !!(f & FLAG.WATER);
+    moveEntity(this.world, p, PLAYER.radius, dt, true, inWater ? CLIMB_OUT : undefined);
+    /* Afloat you sit at the surface, not on the bottom. */
+    const surface = p.swimming ? this.world.waterSurfaceAt(p.x, p.z) : null;
+    p.y = surface !== null && surface !== undefined
+      ? surface - SURVIVAL.swimDepth
+      : this.world.groundAt(p.x, p.z);
 
     if (input.ax !== undefined) { p.aimX = input.ax; p.aimZ = input.az; }
     const adx = p.aimX - p.x, adz = p.aimZ - p.z;
@@ -630,7 +681,7 @@ export class Sim {
     p.anim.hurt = Math.max(0, p.anim.hurt - dt * 3);
 
     /* ---- what the mouse does depends on what you are holding ---- */
-    if (input.fire && !p.craft) {
+    if (input.fire && !p.craft && !p.swimming) {
       const held = heldItem(p);
       const def = held && ITEMS[held];
       if (p.buildKey) this._tryBuildAtAim(p);
@@ -1034,7 +1085,7 @@ export class Sim {
       const options = animalsForBiome(name, this.isNight);
       if (!options.length) continue;
       const def = options[Math.floor(this.rng() * options.length)];
-      if (this.rng() > def.density) continue;
+      if (this.rng() > def.density * seasonAnimalWeight(this.night, def.id)) continue;
       const count = def.pack ? def.pack : 1;
       for (let k = 0; k < count; k++) {
         this.spawnAnimal(def.id, x + (this.rng() - 0.5) * 3, z + (this.rng() - 0.5) * 3);
@@ -1287,7 +1338,7 @@ export class Sim {
       id: newId(), key, def, tx, ty,
       x: w.tileToWorldX(tx), z: w.tileToWorldZ(ty), y: w.heightAtTile(tx, ty),
       hp: def.hp, maxHp: def.hp, owner, open: false, cd: 0, angle: 0, store: {},
-      seed: null, grow: 0,
+      seed: null, grow: 0, stack: def.block ? 1 : 0,
     };
     this.buildings.push(b);
     w.flags[w.idx(tx, ty)] |= FLAG.BUILT;
@@ -1339,7 +1390,8 @@ export class Sim {
          news rather than something to shelter from. */
       if (b.def.farm && b.seed && b.grow < 1) {
         const wet = this.weather && (this.weather.id === 'rain' || this.weather.id === 'storm');
-        b.grow = Math.min(1, b.grow + (dt / b.def.farm.time) * (wet ? 1.6 : 1));
+        b.grow = Math.min(1, b.grow
+          + (dt / b.def.farm.time) * (wet ? 1.6 : 1) * this.season.crop);
         if (b.grow >= 1) this.emit({ t: 'ripe', id: b.id, x: b.x, y: b.y, z: b.z, seed: b.seed });
       }
       if (!b.def.turret) continue;
@@ -1379,7 +1431,9 @@ export class Sim {
     if (biome === BIOME.SNOW) c += SURVIVAL.coldSnow;
     if (this.weather.cold) c += this.weather.cold;
     if (this.world.flagAt(x, z) & FLAG.WATER) c += 3;
-    return c;
+    /* Summer takes the edge off a night; winter is the night. */
+    c -= this.season.warmth;
+    return Math.max(0, c);
   }
 
   /* ------------------------------------------- turrets and traps */

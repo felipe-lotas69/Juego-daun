@@ -45,6 +45,25 @@ export const ANIMALS = {
     drops: [['meat', 3], ['hide', 3], ['bone', 2]], biomes: ['PINE', 'SNOW', 'FOREST'],
     density: 0.35, nightOnly: true, pack: 3,
   },
+  hare: {
+    id: 'hare', name: 'Bolt Hare', faction: FACTION.WILD, ai: 'flee',
+    hp: 14, speed: 7.4, radius: 0.24, height: 0.5, mass: 0.4,
+    color: 0xb6a489, accent: 0xf0e6d6, xp: 4, flee: 12,
+    drops: [['meat', 2], ['hide', 1]], biomes: ['MEADOW', 'FOREST', 'PINE', 'SNOW'], density: 0.8,
+  },
+  fowl: {
+    id: 'fowl', name: 'Marsh Fowl', faction: FACTION.WILD, ai: 'graze',
+    hp: 18, speed: 4.4, radius: 0.24, height: 0.55, mass: 0.4,
+    color: 0x6f6152, accent: 0xd9603f, xp: 5, flee: 8,
+    drops: [['meat', 2], ['fiber', 2]], biomes: ['MARSH', 'MEADOW', 'BEACH'], density: 0.7,
+  },
+  fox: {
+    id: 'fox', name: 'Emberfox', faction: FACTION.WILD, ai: 'defend',
+    hp: 38, speed: 7.0, radius: 0.28, height: 0.6, mass: 0.6,
+    color: 0xc06a33, accent: 0xf0e6d6, xp: 16, damage: 9, attackCd: 0.9, range: 1.1,
+    drops: [['meat', 2], ['hide', 3], ['bone', 1]],
+    biomes: ['FOREST', 'PINE', 'MEADOW'], density: 0.45,
+  },
   lumen: {
     id: 'lumen', name: 'Lumen', faction: FACTION.WILD, ai: 'drift',
     hp: 20, speed: 2.2, radius: 0.25, height: 0.6, mass: 0.4,

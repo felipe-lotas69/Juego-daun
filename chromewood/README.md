@@ -120,6 +120,38 @@ clock and their own index and the simulation never hears about them.
 The one who keeps the stall stands at it, because a shopkeeper who
 wanders off is a shop you cannot find.
 
+### The year
+
+Four seasons, three nights each. A season that only changes the colour
+of the grass is a filter; this one decides how fast a crop grows
+(winter is a third of spring), what is out in the woods (wolves and
+foxes in winter, hares and fawns in spring), what the sky does (it
+cannot snow in summer and it usually does in winter), and how cold
+the night gets. In winter everything facing up collects snow — only
+what faces the sky, and not sheer faces, because snow sits, it does
+not stick to walls. Like the trade boards it is a pure function of the
+night count, so nothing about it goes on the wire.
+
+### Water
+
+Deep water is somewhere to go, not a wall. You float at the surface,
+move at three fifths speed, cannot swing or build, and it costs
+stamina the whole time — and you do not get your breath back until you
+are out. Hauling yourself out allows a bigger step up than walking
+does, because the generator rings deep water with shallows and the
+beach behind them is a terrace step up.
+
+### Blocks, gear and the smelter
+
+A wall is a thing with a job; a block has no job at all, which is the
+point. Wood, stone and iron, stacking four high at one terrain step
+each. Armour comes in three tiers of three — hide, iron, riftglass,
+worn on head, body and legs — and it shows on the character, because
+the sprite sheet takes the worn colours. Each piece holds some cold
+off, which is what makes a hide vest worth making in autumn. Smelting
+has its own building between the workbench and the forge, so the ore
+you mine on the first day has somewhere to go.
+
 ### Caves
 
 Half a dozen per world, cut into the side of a hill one terrace below the
@@ -401,6 +433,20 @@ Six groups, all of which have caught something real:
   trade, every offer is in real goods, tonight's deal is different
   from last night's, and a trade at the counter moves the goods while
   one from forty tiles away does not.
+- **The year.** Four seasons that turn over, growing worth timing,
+  winter the hard one, no snow in summer, and a different population
+  in the woods in each.
+- **Swimming.** There is water deep enough to swim in, it puts you in
+  the water, you ride at the surface, you can get out again, and it
+  costs you.
+- **Gear and blocks.** A full set of armour to make, every piece with
+  a slot and a number and a recipe, swapping hands the old one back, a
+  plated player takes less than a bare one, blocks stack exactly as
+  high as they say and refuse the one after that, and ore has
+  somewhere to be smelted before the forge exists.
+- **The wildlife.** Nine species, each with somewhere to live,
+  something to give, a drawn shape of its own, and some part of the
+  year it is worth looking for.
 - **Caves.** Every world has them, you can walk in from the mouth and reach
   the back of one, there is rock over your head and enough of it to stand up
   in, there is ore or crystal down there, and a framed doorway outside.

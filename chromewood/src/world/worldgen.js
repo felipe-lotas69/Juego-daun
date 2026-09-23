@@ -212,15 +212,40 @@ export class World {
 
   /* Can a body at `fromLevel` stand here? Deep water and cliffs of
      more than CLIMB steps are the two things that say no. */
-  blockedAt(x, z, fromLevel) {
+  /* `swim` is what a player has and a boar does not: with it, deep
+     water is somewhere you can go, and the climb rule does not apply
+     while you are in it, because you are not standing on the bottom. */
+  blockedAt(x, z, fromLevel, swim = false, climb = CLIMB) {
     const tx = this.worldToTileX(x), ty = this.worldToTileZ(z);
     if (!this.inBounds(tx, ty)) return true;
     const i = this.idx(tx, ty);
     const f = this.flags[i];
     if (f & FLAG.SOLID) return true;
-    if ((f & FLAG.WATER) && !(f & FLAG.SHALLOW)) return true;
-    if (fromLevel !== undefined && Math.abs(this.height[i] - fromLevel) > CLIMB) return true;
+    const deep = (f & FLAG.WATER) && !(f & FLAG.SHALLOW);
+    if (deep) return !swim;
+    if (fromLevel !== undefined && Math.abs(this.height[i] - fromLevel) > climb) return true;
     return false;
+  }
+
+  /* The height of the water surface over a point, or null on dry
+     land. Rivers sit just over their own bed; the sea is one sheet. */
+  waterSurfaceAt(x, z) {
+    const tx = this.worldToTileX(x), ty = this.worldToTileZ(z);
+    if (!this.inBounds(tx, ty)) return null;
+    const i = this.idx(tx, ty);
+    const f = this.flags[i];
+    if (!(f & FLAG.WATER)) return null;
+    return (f & FLAG.RIVER)
+      ? this.height[i] * LEVEL_STEP + 0.22
+      : SEA_LEVEL * LEVEL_STEP + 0.20;
+  }
+
+  /* True where the water is over your head. */
+  deepAt(x, z) {
+    const tx = this.worldToTileX(x), ty = this.worldToTileZ(z);
+    if (!this.inBounds(tx, ty)) return false;
+    const f = this.flags[this.idx(tx, ty)];
+    return !!(f & FLAG.WATER) && !(f & FLAG.SHALLOW);
   }
 
   /* Which cave, if any, is under this point. Zero is "outside". */

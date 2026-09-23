@@ -22,7 +22,7 @@ export const RENDER = {
   maxInternalW: 860,      /* clamp so huge monitors stay chunky            */
   toonBands: 4,
   outline: true,
-  outlineAlpha: 0.46,
+  outlineAlpha: 0.58,
   bloom: true,
   bloomStrength: 0.85,
   bloomThreshold: 0.62,
@@ -36,8 +36,11 @@ export const RENDER = {
 export const PLAYER = {
   radius: 0.34,
   speed: 6.2,
-  accel: 42,
-  friction: 26,
+  /* Crisper than it was. At 42 and 26 the character took a beat to
+     get going and slid a beat after you let go, which at this camera
+     angle reads as lag rather than as weight. */
+  accel: 56,
+  friction: 36,
   maxHp: 120,
   maxEnergy: 100,
   energyRegen: 9,          /* per second, ramps up when out of combat      */
@@ -61,6 +64,12 @@ export const XP_CURVE = (level) => Math.floor(38 * Math.pow(level, 1.42) + 22 * 
 
 /* ------------------------------------------------------- survival */
 export const SURVIVAL = {
+  /* Swimming. Slow enough that a boat would be nice and fast enough
+     that crossing a river is a decision rather than a detour, and
+     costly enough that the far side of the bay is a real distance. */
+  swimSpeed: 0.62,
+  swimStamina: 7.5,        /* per second in deep water */
+  swimDepth: 0.55,         /* how far under the surface you ride  */
   baseReach: 1.7,
   swingsPerSecond: 1.6,
   swingStamina: 7,

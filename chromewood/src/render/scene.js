@@ -10,7 +10,7 @@
 import * as THREE from '../../vendor/three.module.js';
 import { PALETTE, DAY, RENDER, WORLD_HALF } from '../core/config.js';
 import { clamp01, lerp, smoothstep, damp } from '../core/util.js';
-import { setRimLook, cloudUniforms } from './materials.js';
+import { setRimLook, cloudUniforms, windUniforms, seasonUniforms } from './materials.js';
 import { LAYER_NO_OUTLINE } from './pipeline.js';
 
 const POINT_LIGHT_POOL = 10;
@@ -76,6 +76,8 @@ export class SceneRig {
     this._fogNight = new THREE.Color(PALETTE.fogNight);
     this._fogDusk = new THREE.Color(0xd98a6a);
     this._rock = new THREE.Color(0x120f18);
+    this._seasonA = new THREE.Color();
+    this._seasonB = new THREE.Color();
     this.under = 0;
     this._tmp = new THREE.Color();
 
@@ -154,7 +156,7 @@ export class SceneRig {
   setTime(t) { this.time = t; }
 
   update(dt, cameraTarget, grade, cameraDistance = 52, weather = null, zoom = RENDER.fov,
-    underground = 0) {
+    underground = 0, season = null, nextSeason = null, progress = 0) {
     /* Eased rather than snapped: walking through a doorway should
        feel like the light going, not like a switch. */
     this.under = damp(this.under === undefined ? 0 : this.under, clamp01(underground), 3.4, dt);
@@ -211,9 +213,9 @@ export class SceneRig {
     /* More sun, less sky. The hemisphere light fills every face
        evenly, which is exactly what flattens a stack of cubes, so
        the balance moves toward the direction that has a direction. */
-    this.sun.intensity = lerp(2.55, 0.74, night) * lerp(1, 0.10, under);
+    this.sun.intensity = lerp(2.80, 0.78, night) * lerp(1, 0.10, under);
 
-    this.hemi.intensity = lerp(1.05, 0.60, night) * lerp(1, 0.34, under);
+    this.hemi.intensity = lerp(0.94, 0.56, night) * lerp(1, 0.34, under);
     this.hemi.color.set(PALETTE.skyDay).lerp(new THREE.Color(0x3a4a80), night);
     this.hemi.groundColor.set(PALETTE.grassDark).lerp(new THREE.Color(0x19203a), night);
     this.fill.intensity = lerp(0.42, 0.58, night) * lerp(1, 0.30, under);
@@ -249,6 +251,28 @@ export class SceneRig {
 
     this.starField.material.opacity = Math.max(0, night * night * 0.9) * (1 - under);
     this.starField.position.set(cameraTarget.x, 0, cameraTarget.z);
+
+    /* The year. Cross-faded over the last fifth of a season so the
+       world turns rather than snapping between two pictures. */
+    if (season) {
+      const t = Math.max(0, (progress - 0.8) / 0.2);
+      this._seasonA.set(season.tint);
+      this._seasonB.set((nextSeason || season).tint);
+      seasonUniforms.uSeasonTint.value.copy(this._seasonA).lerp(this._seasonB, t);
+      seasonUniforms.uSeasonAmount.value =
+        lerp(season.tintAmount, (nextSeason || season).tintAmount, t);
+      seasonUniforms.uSeasonSnow.value =
+        lerp(season.snow, (nextSeason || season).snow, t) * (1 - under);
+    }
+
+    /* Wind. The direction turns slowly over the day so a fixed lean
+       never sets in, and the strength is where weather is felt most:
+       a storm is a loud wind before it is anything else. */
+    windUniforms.uWindTime.value += dt;
+    const turn = this.time * 0.006;
+    windUniforms.uWindDir.value.set(Math.cos(turn), Math.sin(turn));
+    const gustiness = weather && weather.wind !== undefined ? weather.wind : 1;
+    windUniforms.uWindStrength.value = gustiness * (0.85 + Math.sin(this.time * 0.11) * 0.25);
 
     /* Cloud shadows drift on a slow diagonal. Overcast weather makes
        them heavier; at night there is no sun to cast them. */
@@ -292,12 +316,17 @@ export class SceneRig {
          saturated colours; pushing contrast and saturation on top of
          that is what made it shout. Lifting the blacks a little and
          leaving the midtones alone is what lets the shapes carry it. */
+      /* A midpoint. Flattening the grade fixed a picture that was
+         shouting and left one that was mumbling: the world is made
+         of saturated blocks and wants some snap, just not the 1.05
+         contrast and 1.14 saturation it had before. Half way back,
+         with the blacks still lifted so nothing crushes. */
       grade.exposure = lerp(1.02, 1.03, night);
-      grade.contrast = lerp(0.94, 1.02, night);
-      grade.saturation = lerp(0.98, 0.92, night);
+      grade.contrast = lerp(1.00, 1.06, night);
+      grade.saturation = lerp(1.07, 0.97, night);
       grade.tint.setRGB(lerp(1, 0.88, night), lerp(1, 0.92, night), lerp(1.01, 1.12, night));
-      grade.lift.setRGB(lerp(0.016, 0.030, night), lerp(0.018, 0.034, night), lerp(0.026, 0.052, night));
-      grade.vignette = lerp(lerp(0.34, 0.70, night), 0.92, under);
+      grade.lift.setRGB(lerp(0.010, 0.026, night), lerp(0.011, 0.029, night), lerp(0.018, 0.046, night));
+      grade.vignette = lerp(lerp(0.40, 0.74, night), 0.92, under);
       grade.exposure *= lerp(1, 0.86, under);
       grade.saturation *= lerp(1, 0.80, under);
     }

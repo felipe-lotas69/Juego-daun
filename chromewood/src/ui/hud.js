@@ -14,6 +14,10 @@ import { ITEMS } from '../game/items.js';
 import { ABILITIES } from '../game/defs.js';
 import { ALL_CREATURES, PLAYER_COLORS } from '../render/actors.js';
 import { RESONANCE, SURVIVAL, DAY } from '../core/config.js';
+
+const SEASON_COLOR = {
+  spring: '#9be05a', summer: '#ffd24a', autumn: '#e09a4a', winter: '#bfe0f0',
+};
 import { clamp01, formatTime } from '../core/util.js';
 
 /* One colour per biome for the minimap, keyed by the world's enum. */
@@ -165,6 +169,12 @@ export class Hud {
       drawText(c, sim.weather.name, x + 5 * S, y + 23 * S, { scale: S, color: PAL.chrome });
     } else {
       drawText(c, 'CLEAR', x + 5 * S, y + 23 * S, { scale: S, color: PAL.faint });
+    }
+    /* The season sits opposite the weather, because between them
+       they are the two things that decide what today is for. */
+    if (sim.season) {
+      drawText(c, sim.season.name.toUpperCase(), x + w - 5 * S, y + 23 * S,
+        { scale: S, align: 'right', color: SEASON_COLOR[sim.season.id] || PAL.dim });
     }
 
     /* Resonance: the one gauge that is about the world hearing you. */

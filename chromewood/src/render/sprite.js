@@ -48,7 +48,8 @@ function shade(n, t) {
 const sheets = new Map();
 
 export function characterSheet(colors) {
-  const key = colors.body + ':' + colors.trim + ':' + colors.core;
+  const key = [colors.body, colors.trim, colors.core,
+    colors.plateHead || 0, colors.plateBody || 0, colors.plateLegs || 0].join(':');
   if (sheets.has(key)) return sheets.get(key);
 
   const cv = document.createElement('canvas');
@@ -61,14 +62,18 @@ export function characterSheet(colors) {
      work trousers and boots. The player's colour shows up twice -
      the shirt and the kerchief - which is enough to tell four of
      them apart in co-op without anyone glowing. */
-  const SHIRT = colors.body;
+  /* What you are wearing goes straight into the palette: a hide vest
+     makes the shirt hide-coloured, iron greaves make the trousers
+     iron. Cheaper than drawing a second layer, and at twenty pixels
+     across it reads exactly the same. */
+  const SHIRT = colors.plateBody || colors.body;
   const SHIRT_D = shade(SHIRT, -0.42);
   const SHIRT_L = shade(SHIRT, 0.24);
-  const PANT = 0x4c4455;
+  const PANT = colors.plateLegs || 0x4c4455;
   const PANT_D = shade(PANT, -0.34);
   const BOOT = 0x3b2c22;
   const BOOT_D = shade(BOOT, -0.3);
-  const HAIR = 0x4b3626;
+  const HAIR = colors.plateHead || 0x4b3626;
   const HAIR_D = shade(HAIR, -0.38);
   const SKIN = 0xe0ab88;
   const SKIN_D = shade(SKIN, -0.26);
@@ -82,6 +87,7 @@ export function characterSheet(colors) {
       drawFrame(c, d * CELL_W, f * CELL_H, d, f, {
         SHIRT, SHIRT_D, SHIRT_L, PANT, PANT_D, BOOT, BOOT_D,
         HAIR, HAIR_D, SKIN, SKIN_D, BELT, SCARF, EYE, LINE,
+        HELM: !!colors.plateHead, PLATE: !!colors.plateBody,
       });
     }
   }
@@ -149,6 +155,11 @@ function drawFrame(c, ox, oy, dir, frame, P) {
   R(tx, TT + 1, 1, 8, P.SHIRT_D);
   /* shoulders */
   R(tx - 1, TT, tw + 2, 2, P.SHIRT_D);
+  /* Pauldrons, if there is plate on. */
+  if (P.PLATE) {
+    R(tx - 1, TT + 2, 2, 2, P.SHIRT_L);
+    R(tx + tw - 1, TT + 2, 2, 2, P.SHIRT_L);
+  }
   /* belt, then the waistband under it */
   R(tx, TT + 7, tw, 2, P.BELT);
 
@@ -187,6 +198,12 @@ function drawFrame(c, ox, oy, dir, frame, P) {
   R(hx, HT, hw, 2, P.HAIR);               /* crown */
   R(hx, HT, hw, 1, P.HAIR_D);
   R(hx - 1, HT + 1, hw + 2, 1, P.HAIR);   /* it overhangs the ears */
+  if (P.HELM) {
+    /* A brow band and a nasal: two rows and one pixel, and a hood
+       becomes a helmet. */
+    R(hx - 1, HT + 2, hw + 2, 1, P.HAIR_D);
+    R(hx + Math.floor(hw / 2), HT + 2, 1, 3, P.HAIR_D);
+  }
 
   if (back) {
     /* Nothing but the back of a head. */
