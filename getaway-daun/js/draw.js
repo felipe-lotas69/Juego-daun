@@ -89,7 +89,8 @@
     if (L.theme === 'desert') drawScrub(L, cam, sc);
     else {
       drawSkyline(L, cam, sc);
-      if (L.theme !== 'indoor') { drawStreet(L, cam); drawPosts(L, cam, sc); }
+      if (L.theme === 'indoor') drawGlazing(L, cam);
+      else { drawStreet(L, cam); drawPosts(L, cam, sc); }
     }
   }
 
@@ -116,6 +117,9 @@
      nothing, which is the point - it leaves the freight cars to carry
      the frame instead of competing with a skyline. */
   function drawScrub(L, cam, sc) {
+    /* The horizon is a backdrop, not the sand you land on: the desert
+       floor of this course sits well below the frame, and pinning the
+       haze to it would put the whole horizon off the bottom. */
     var baseY = Math.round(Pixel.H - 26 - cam.y * 0.10);
     var bands = [
       { p: 0.06, col: L.city[0], drop: 0 },
@@ -123,9 +127,9 @@
     ];
     for (var b = 0; b < bands.length; b++) {
       var bn = bands[b], y0 = baseY + bn.drop;
-      Pixel.rect(P, 0, y0, Pixel.W, Pixel.H, bn.col);
+      Pixel.rect(P, -170, y0, Pixel.W + 340, 240, bn.col);
       /* a soft rolling edge rather than a ruled line */
-      for (var x = -2; x < Pixel.W + 2; x += 2) {
+      for (var x = -172; x < Pixel.W + 172; x += 2) {
         var wob = Math.sin((x + cam.x * bn.p) * 0.05 + b * 2.1) * 2;
         Pixel.rect(P, x, y0 + Math.round(wob) - 1, 2, 2, bn.col);
       }
@@ -167,6 +171,26 @@
 
   /* The street the whole skyline stands on: a flat pale strip with one
      darker curb line, running under everything. */
+  function drawGlazing(L, cam) {
+    /* The city belongs OUTSIDE. Drawn without a frame around it, the
+       skyline read as though the office had no walls at all and the
+       desks were standing in the open air. A full-height glass wall it
+       is, then: mullions off the top of the frame, and a sill on the
+       same line the floor is. */
+    var base = L.groundY !== undefined ? Math.round(L.groundY - cam.y)
+                                       : Math.round(Pixel.H * 0.88);
+    var frame = '#1b1b27';
+    var step = 30, first = -(Math.round(cam.x) % step);
+    for (var mx = first - step; mx < Pixel.W + step; mx += step) {
+      Pixel.rect(P, mx, base - 240, 2, 240, frame);
+    }
+    for (var ty = base - 46; ty > base - 240; ty -= 46) {
+      Pixel.rect(P, -170, ty, Pixel.W + 340, 1, '#2b2b3e');
+    }
+    Pixel.rect(P, -170, base - 3, Pixel.W + 340, 4, frame);       /* sill */
+    Pixel.rect(P, -170, base - 4, Pixel.W + 340, 1, '#36364c');
+  }
+
   function drawStreet(L, cam) {
     /* One line. Everything in the picture stands on it - the racers, the
        bus, the far skyline - and nothing is ever drawn below it except
@@ -557,8 +581,14 @@
         Pixel.rect(P, gx - 1, y - 2, 3, 1, '#7f9a5c');
       }
     } else if (d.kind === 'carpet') {
-      Pixel.rect(P, x, y, d.w, 3, '#4a3550');
-      Pixel.rect(P, x, y + 3, d.w, 30, '#33253a');
+      /* the office floor, drawn here rather than as a generic slab so it
+         gets a skirting and the tile joints you actually see */
+      Pixel.rect(P, x, y, d.w, 34, '#3a2c42');
+      Pixel.rect(P, x, y, d.w, 2, '#544064');
+      Pixel.rect(P, x, y + 2, d.w, 1, '#2c2136');
+      for (var tj = x - (Math.round(cam.x) % 18); tj < x + d.w; tj += 18) {
+        Pixel.rect(P, tj, y + 3, 1, 31, '#33263c');
+      }
     } else if (d.kind === 'desk') {
       drawDesks(d, x, y);
     } else if (d.kind === 'shelf') {

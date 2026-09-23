@@ -82,17 +82,21 @@
       sky: ['#49c3ea', '#95dcee', '#cfe6cf'],
       city: ['#d9e0ae', '#cdd69e', '#c0ca8e'],
       cityWarm: '#e6ebc2', cityCool: '#c2e0d8',
-      spawn: { x: 22, y: 112 },
-      goal: { x: 2390, y: 116, w: 26, h: 26 },
+      spawn: { x: 22, y: 126 },
+      goal: { x: 2390, y: 130, w: 26, h: 26 },
       solids: [], items: [], checkpoints: [], decor: []
     };
     /* the train: cars of two heights, with the couplings as the gaps */
+    /* Roofs sit 30-odd units over the rail rather than sixty: a wagon
+       two and a half characters tall filled half the frame and left no
+       room for the yard it is standing in. The heights relative to each
+       other are unchanged, so the run over the train is the same one. */
     var cars = [
-      [0, 150, 142, 'box'], [176, 132, 142, 'tank'], [334, 150, 142, 'box'],
-      [510, 120, 130, 'stack'], [656, 150, 142, 'box'], [832, 132, 142, 'tank'],
-      [990, 150, 128, 'stack'], [1166, 132, 142, 'box'], [1324, 150, 142, 'tank'],
-      [1500, 120, 128, 'stack'], [1646, 150, 142, 'box'], [1822, 132, 142, 'tank'],
-      [1980, 150, 140, 'box'], [2156, 150, 130, 'stack'], [2332, 188, 142, 'box']
+      [0, 150, 156, 'box'], [176, 132, 156, 'tank'], [334, 150, 156, 'box'],
+      [510, 120, 144, 'stack'], [656, 150, 156, 'box'], [832, 132, 156, 'tank'],
+      [990, 150, 142, 'stack'], [1166, 132, 156, 'box'], [1324, 150, 156, 'tank'],
+      [1500, 120, 142, 'stack'], [1646, 150, 156, 'box'], [1822, 132, 156, 'tank'],
+      [1980, 150, 154, 'box'], [2156, 150, 144, 'stack'], [2332, 188, 156, 'box']
     ];
     for (var i = 0; i < cars.length; i++) {
       var c = cars[i];
@@ -112,9 +116,9 @@
        looking like they are floating over the sand */
     L.decor.push({ kind: 'rail', x: 0, w: L.width, y: 186 });
 
-    L.items.push({ x: 250, y: 124 }, { x: 560, y: 110 }, { x: 900, y: 124 },
-                  { x: 1220, y: 124 }, { x: 1545, y: 108 }, { x: 1880, y: 124 },
-                  { x: 2200, y: 110 });
+    L.items.push({ x: 250, y: 138 }, { x: 560, y: 124 }, { x: 900, y: 138 },
+                  { x: 1220, y: 138 }, { x: 1545, y: 122 }, { x: 1880, y: 138 },
+                  { x: 2200, y: 124 });
     return L;
   }
 
@@ -145,7 +149,8 @@
       [150, 260], [560, 200], [900, 240], [1270, 220], [1580, 240], [1930, 260]
     ];
 
-    L.solids.push(block(0, L.width, FLOOR, FLOOR + 26));
+    L.solids.push(block(0, L.width, FLOOR, FLOOR + 26, 'prop'));
+    L.groundY = FLOOR;            /* the window wall stands on it */
     L.decor.push({ kind: 'carpet', x: 0, w: L.width, y: FLOOR });
 
     for (var i = 0; i < desks.length; i++) {
