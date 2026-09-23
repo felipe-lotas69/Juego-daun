@@ -41,6 +41,12 @@ import {
 } from '../src/net/protocol.js';
 import { Mirror } from '../src/net/mirror.js';
 import { brokerConfig, brokerIdForRoom } from '../src/net/peer.js';
+import { hasGlyph } from '../src/ui/font.js';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const UI_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'ui');
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf('--' + name);
@@ -316,7 +322,7 @@ console.log('\nsimulated runs');
    but now that cover and woodland cluster separately it would settle
    into a meadow pulling grass forever and never walk to the trees -
    which a person obviously would. */
-function findResource(sim, p, kinds, wanted) {
+function findResource(sim, p, kinds, wanted, ignore) {
   const w = sim.world;
   const ctx = w.worldToTileX(p.x), cty = w.worldToTileZ(p.z);
   let best = null, bestD = 1e9;
@@ -325,6 +331,7 @@ function findResource(sim, p, kinds, wanted) {
       const ang = (a / (r * 8)) * Math.PI * 2;
       const tx = ctx + Math.round(Math.cos(ang) * r), ty = cty + Math.round(Math.sin(ang) * r);
       if (!w.inBounds(tx, ty)) continue;
+      if (ignore && ignore.has(tx * 4096 + ty)) continue;
       const h = HARVEST[w.prop[w.idx(tx, ty)]];
       if (!h || !kinds.includes(h.tool)) continue;
       if (h.tier > bestToolTier(p, h.tool === 'hand' ? 'blunt' : h.tool)) continue;
@@ -332,7 +339,7 @@ function findResource(sim, p, kinds, wanted) {
       let d = (x - p.x) ** 2 + (z - p.z) ** 2;
       /* Something we actually need is worth a long walk. */
       if (wanted && wanted.size && h.yield.some(([item]) => wanted.has(item))) d *= 0.05;
-      if (d < bestD) { bestD = d; best = { x, z }; }
+      if (d < bestD) { bestD = d; best = { x, z, tx, ty }; }
     }
   }
   return best;
@@ -413,7 +420,21 @@ function driveBot(sim, p, i, seq, recipes) {
       }
       if (short) break;
     }
-    const node = findResource(sim, p, ['axe', 'pick', 'hand'], wanted);
+    /* The bot walks in a straight line at whatever it picked, so a
+       target across a cliff or a lake is a target it will lean on
+       forever. Give up on one that is not getting any closer. */
+    if (!p._ignore) { p._ignore = new Set(); p._lastD = Infinity; p._stuck = 0; }
+    const node = findResource(sim, p, ['axe', 'pick', 'hand'], wanted, p._ignore);
+    if (node) {
+      const d = Math.hypot(node.x - p.x, node.z - p.z);
+      if (d > p._lastD - 0.02) p._stuck += 1; else p._stuck = 0;
+      p._lastD = d;
+      if (p._stuck > 240) {
+        p._ignore.add(node.tx * 4096 + node.ty);
+        p._stuck = 0; p._lastD = Infinity;
+        if (p._ignore.size > 400) p._ignore.clear();
+      }
+    } else { p._stuck = 0; p._lastD = Infinity; }
     if (node) { tx = node.x; tz = node.z; fire = true; }
     else { tx = sim.beacon.x; tz = sim.beacon.z; }
   }
@@ -549,6 +570,86 @@ console.log('\nthe building loop');
   ok('building loop', `${rec.in.map(([i, n]) => n + ' ' + i).join(' + ')} -> campfire -> placed`);
 }
 
+/* ------------------------------------------------- 3a2. farming */
+console.log('\ngrowing things');
+{
+  /* Seeds have to be gettable from the world, a plot has to accept
+     one, it has to come up on its own, and pulling it has to give
+     back more than it cost - otherwise a garden is a decoration. */
+  const seedProps = Object.entries(HARVEST)
+    .filter(([, h]) => h.yield.some(([id]) => id.startsWith('seed_')));
+  check(seedProps.length >= 3, 'seeds come off plants you can already pull up',
+    `only ${seedProps.length} props drop seeds`);
+
+  const def = BUILDINGS.plot;
+  check(!!def && !!def.farm, 'there is something to plant in', 'no garden plot');
+
+  /* One clean world per crop. Sharing a plot across three cycles
+     means the previous harvest's seeds, seven minutes of night and
+     a replant all get a vote in whether the next one worked, and a
+     test that can fail for three reasons tells you nothing. */
+  const seeds = Object.keys(def.farm.crops);
+  let grewAll = true, paidBack = true;
+  let lastSnap = null, lastPlot = null;
+
+  for (const seed of seeds) {
+    const sim = new Sim(606, { difficulty: 1 });
+    const p = sim.addPlayer('p', 'FARMER');
+    const w = sim.world;
+    const tx = w.worldToTileX(p.x) + 1, ty = w.worldToTileZ(p.z);
+    w.clearProp(tx, ty);
+    const plot = sim.addBuilding('plot', tx, ty, 'p');
+    lastPlot = plot;
+    /* This is a test of farming, not of surviving the night. */
+    const keep = () => { p.hp = p.maxHp; p.state = 'alive'; plot.hp = plot.maxHp; };
+
+    invGive(p, seed, 1);
+    p.hotbar[0] = seed; p.hotbarIndex = 0;
+    for (let i = 0; i < 90; i++) {
+      p.x = plot.x - 1.2; p.z = plot.z; keep();
+      sim.setInput('p', { seq: i, mx: 0, mz: 0, ax: plot.x, az: plot.z, interact: true });
+      sim.step(1 / 60); sim.drainEvents();
+    }
+    if (plot.seed !== seed || invCount(p, seed) !== 0) {
+      grewAll = `planting ${seed} gave ${plot.seed} and left ${invCount(p, seed)} in the pack`;
+      break;
+    }
+
+    for (let i = 0; i < 60 * (def.farm.time + 8) && plot.grow < 1; i++) {
+      keep();
+      sim.step(1 / 60); sim.drainEvents();
+    }
+    if (plot.grow < 1) { grewAll = `${seed} only reached ${plot.grow.toFixed(2)}`; break; }
+
+    const want = def.farm.crops[seed].yield[0][0];
+    const had = invCount(p, want);
+    let pulled = false;
+    for (let i = 0; i < 400 && !pulled; i++) {
+      p.x = plot.x - 1.2; p.z = plot.z; keep();
+      sim.setInput('p', { seq: i, mx: 0, mz: 0, ax: plot.x, az: plot.z, interact: true });
+      sim.step(1 / 60);
+      for (const ev of sim.drainEvents()) if (ev.t === 'harvested') pulled = true;
+    }
+    for (let i = 0; i < 180; i++) {
+      keep();
+      sim.setInput('p', { seq: i, mx: 0, mz: 0, ax: p.x + 1, az: p.z });
+      sim.step(1 / 60); sim.drainEvents();
+    }
+    if (!pulled || invCount(p, want) <= had) {
+      paidBack = `${seed} ripened but gave no ${want}`;
+      break;
+    }
+    lastSnap = encodeSnapshot(sim);
+  }
+  check(grewAll === true, 'every seed can be planted and comes up', String(grewAll));
+  check(paidBack === true, 'pulling a crop pays out', String(paidBack));
+
+  const row = lastSnap && lastPlot && lastSnap.B.find(r => r[0] === lastPlot.id);
+  check(!!row && row.length >= 11, 'crop state is on the wire',
+    'a building row has no room for what is planted in it');
+  ok('farming', `${seeds.length} crops, ${def.farm.time}s to come up`);
+}
+
 /* ------------------------------------------- 3b. same seed, same run */
 console.log('\ndeterminism');
 {
@@ -667,6 +768,37 @@ console.log('\nthe optional content');
   }
   ok('arc', seenArcs.join(' -> ') + ` then ${sim.arc}, ${sim.night} nights, ` +
     `${sim.stats.gatesSealed}/${sim.gates.length} gates`);
+}
+
+/* ------------------------------------------------ 3c. the interface */
+console.log('\nthe interface');
+{
+  /* Every character the UI prints has to exist in the font. It does
+     not throw when one does not - it draws a blank - so a missing
+     glyph is invisible in code and obvious on screen, which is the
+     worst way round. "HOLD [G] - BEACON CONSOLE" shipped with a hole
+     in the middle of it for exactly this reason. */
+  /* menus.js is the only part of the interface that is DOM rather
+     than canvas, so it draws with real fonts and is not bound by
+     this one. Everything else goes through the bitmap. */
+  const files = readdirSync(UI_DIR).filter(f => f.endsWith('.js') && f !== 'menus.js');
+  const holes = new Map();
+  for (const f of files) {
+    const text = readFileSync(join(UI_DIR, f), 'utf8');
+    for (const m of text.matchAll(/'([^'\\]*)'|`([^`\\$]*)`/g)) {
+      const lit = m[1] ?? m[2] ?? '';
+      for (const ch of lit) {
+        if (ch === ' ' || hasGlyph(ch)) continue;
+        /* Only letters and punctuation people would read, not the
+           odd byte inside a regex or a colour string. */
+        if (ch.codePointAt(0) < 0x80) continue;
+        holes.set(ch, (holes.get(ch) || '') + (holes.get(ch) ? '' : f));
+      }
+    }
+  }
+  check(holes.size === 0, 'every character the interface prints exists in the font',
+    [...holes].map(([ch, f]) => `${JSON.stringify(ch)} (U+${ch.codePointAt(0).toString(16).toUpperCase()}) in ${f}`).join(', '));
+  ok('interface', `${files.length} ui files scanned`);
 }
 
 /* ------------------------------------- 4b. the peer-to-peer address */

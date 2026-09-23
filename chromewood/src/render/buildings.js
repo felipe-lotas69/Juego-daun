@@ -109,6 +109,42 @@ export function buildStructureMesh(b, g, key, x, y, z, state = {}) {
       b.at(x - 0.3, y + 0.16, z).box(0.24, 0.12, 0.5, 0xd8cfc0, { topColor: 0xefe8dc, tex: TEX.CLOTH });
       break;
     }
+    case 'plot': {
+      /* Turned earth with a low board round it, and whatever is
+         coming up rising out of it as it grows - a plot you planted
+         an hour ago should not look like one you planted just now. */
+      b.at(x, y, z).rot(0);
+      b.box(1.0, 0.10, 1.0, 0x4a3524, { topColor: 0x5e442d, tex: TEX.DIRT || TEX.ROCK });
+      for (const [ox, oz, w, d] of [[0, -0.5, 1.04, 0.08], [0, 0.5, 1.04, 0.08],
+        [-0.5, 0, 0.08, 1.04], [0.5, 0, 0.08, 1.04]]) {
+        b.at(x + ox, y + 0.10, z + oz).box(w, 0.09, d, 0x6b4f33, { topColor: 0x8a6742, tex: TEX.PLANK });
+      }
+      /* Three furrows, so bare soil still reads as worked ground. */
+      for (let i = -1; i <= 1; i++) {
+        b.at(x, y + 0.10, z + i * 0.3).box(0.86, 0.03, 0.10, 0x3b2a1c, { topColor: 0x48331f });
+      }
+
+      const grow = Math.max(0, Math.min(1, state.grow || 0));
+      const tint = state.cropTint || 0x6fbf4a;
+      if (state.seed && grow > 0.02) {
+        /* Nine shoots on a grid, taller and wider as they come on. */
+        const h = 0.10 + grow * 0.62;
+        const wdt = 0.05 + grow * 0.07;
+        for (let gz = -1; gz <= 1; gz++) {
+          for (let gx = -1; gx <= 1; gx++) {
+            const sx = x + gx * 0.28, sz = z + gz * 0.28;
+            b.at(sx, y + 0.13, sz).box(wdt, h, wdt, 0x4e7a34, { topColor: 0x6b9c46, tex: TEX.LEAF || TEX.GRASS });
+            if (grow > 0.55) {
+              /* The head of it, which is the bit you are waiting for. */
+              const hs = 0.07 + (grow - 0.55) * 0.22;
+              b.at(sx, y + 0.13 + h, sz).box(hs, hs, hs, tint, { topColor: tint, centered: false });
+            }
+          }
+        }
+      }
+      break;
+    }
+
     case 'chest': {
       b.at(x, y, z).rot(0);
       b.box(0.74, 0.44, 0.56, 0x7a5a3c, { topColor: 0x9a7550, tex: TEX.PLANK });

@@ -210,6 +210,7 @@ export class Mirror {
         this.buildings.push(b);
       }
       b.y = a[4]; b.hp = a[5]; b.maxHp = a[6]; b.open = !!a[7]; b.angle = a[8];
+      b.seed = a[9] || null; b.grow = a[10] || 0;
     }
     for (let i = this.buildings.length - 1; i >= 0; i--) {
       if (!liveB.has(this.buildings[i].id)) {

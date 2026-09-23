@@ -17,6 +17,10 @@ const W = 5, H = 7, PAD = 1;
 /* Each glyph is seven rows of five: '#' is ink. */
 const GLYPHS = {
   ' ': '..... ..... ..... ..... ..... ..... .....',
+  /* The interface reaches for these two and the font never had them,
+     so every "HOLD [G] - BEACON CONSOLE" drew a blank box mid-line. */
+  '\u2014': '..... ..... ..... ##### ..... ..... .....',
+  '\u00b7': '..... ..... ..... ..#.. ..... ..... .....',
   'A': '.###. #...# #...# ##### #...# #...# #...#',
   'B': '####. #...# #...# ####. #...# #...# ####.',
   'C': '.###. #...# #.... #.... #.... #...# .###.',
@@ -141,6 +145,14 @@ function tintedAtlas(color) {
 
 export const GLYPH_W = W;
 export const GLYPH_H = H;
+
+/* Does the font actually have this character? The checks use it,
+   because a missing glyph does not throw - it draws a blank, which
+   is invisible in code and obvious on screen. */
+export function hasGlyph(ch) {
+  return Object.prototype.hasOwnProperty.call(GLYPHS, ch)
+    || Object.prototype.hasOwnProperty.call(GLYPHS, ch.toUpperCase());
+}
 
 export function textWidth(str, scale = 1, tracking = 1) {
   return str.length * (W + tracking) * scale - tracking * scale;

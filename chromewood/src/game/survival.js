@@ -11,7 +11,7 @@
    on the host only; clients see the results in snapshots.
    ============================================================ */
 
-import { ITEMS, BUILDINGS, RECIPES, SMELTING, BEACON_REPAIR } from './items.js';
+import { ITEMS, BUILDINGS, RECIPES, FARM_RECIPES, SMELTING, BEACON_REPAIR } from './items.js';
 import { HARVEST, PROP, FLAG, CLIMB } from '../world/worldgen.js';
 import { SURVIVAL, RESONANCE, TILE } from '../core/config.js';
 import { clamp, dist2 } from '../core/util.js';
@@ -367,7 +367,7 @@ export function tickCraft(sim, p, dt) {
 
 let _allRecipes = null;
 export function allRecipes() {
-  if (!_allRecipes) _allRecipes = RECIPES.concat(SMELTING.map(r => ({ ...r, station: 'forge', smelt: true })));
+  if (!_allRecipes) _allRecipes = RECIPES.concat(FARM_RECIPES).concat(SMELTING.map(r => ({ ...r, station: 'forge', smelt: true })));
   return _allRecipes;
 }
 

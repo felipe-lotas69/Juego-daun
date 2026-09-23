@@ -16,7 +16,7 @@ import { EXTRA_ENEMIES, ANIMALS } from '../game/creatures.js';
 import { BUILDINGS } from '../game/items.js';
 import { q } from '../core/util.js';
 
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 export const ENEMY_TYPES = Object.keys({ ...ENEMIES, ...EXTRA_ENEMIES });
 export const ENEMY_INDEX = Object.fromEntries(ENEMY_TYPES.map((k, i) => [k, i]));
@@ -110,7 +110,7 @@ export function encodeSnapshot(sim) {
   const B = [];
   for (const b of sim.buildings) {
     B.push([b.id, BUILD_INDEX[b.key], b.tx, b.ty, q(b.y), q(b.hp), b.maxHp,
-      b.open ? 1 : 0, q(b.angle || 0)]);
+      b.open ? 1 : 0, q(b.angle || 0), b.seed || '', q(b.grow || 0)]);
   }
 
   const R = [];

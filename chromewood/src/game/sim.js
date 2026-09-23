@@ -684,7 +684,7 @@ export class Sim {
     for (const g of this.gates) if (!g.sealed) consider('gate', g, g.x, g.z, GATE.radius * 0.5);
     for (const b of this.buildings) {
       if (b.hp <= 0) continue;
-      if (b.def.door || b.def.storage || b.def.respawn) consider('build', b, b.x, b.z, 2.2);
+      if (b.def.door || b.def.storage || b.def.respawn || b.def.farm) consider('build', b, b.x, b.z, 2.2);
     }
     p.interactTarget = best;
 
@@ -729,6 +729,49 @@ export class Sim {
           p.interactProgress = 0;
           invTake(p, 'sealpylon', 1);
           this._beginSeal(g, p);
+        }
+      }
+    } else if (best.kind === 'build' && best.obj.def.farm) {
+      const b = best.obj;
+      if (b.grow >= 1 && b.seed) {
+        /* Ripe: pull it. */
+        p.interactProgress += dt / 0.8;
+        if (p.interactProgress >= 1) {
+          p.interactProgress = 0;
+          const crop = b.def.farm.crops[b.seed];
+          const bonus = 1 + (p.stats.harvest || 0);
+          const got = crop.yield.map(([item, n]) => [item, Math.max(1, Math.round(n * bonus))]);
+          this.spawnDrops(b.x, b.z, got, p.id);
+          this.emit({ t: 'harvested', id: b.id, x: b.x, y: b.y, z: b.z, seed: b.seed });
+          this.noteProgress(p, 'gather', 'crop');
+          b.seed = null;
+          b.grow = 0;
+        }
+      } else if (!b.seed) {
+        /* Empty: plant whatever seed is in hand, else any seed at all. */
+        /* What you are holding, if it is a seed. Otherwise whichever
+           seed you have most of, rather than whichever happens to be
+           first in the table - with a pack full of grain and one
+           lonely spore, you meant the grain. */
+        const held = heldItem(p);
+        let use = held && b.def.farm.crops[held] ? held : null;
+        if (!use) {
+          let bestN = 0;
+          for (const k of Object.keys(b.def.farm.crops)) {
+            const n = invCount(p, k);
+            if (n > bestN) { bestN = n; use = k; }
+          }
+        }
+        if (use) {
+          p.interactProgress += dt / 0.6;
+          if (p.interactProgress >= 1) {
+            p.interactProgress = 0;
+            if (invTake(p, use, 1)) {
+              b.seed = use;
+              b.grow = 0;
+              this.emit({ t: 'planted', id: b.id, x: b.x, y: b.y, z: b.z, seed: use });
+            }
+          }
         }
       }
     } else if (best.kind === 'build') {
@@ -1209,6 +1252,7 @@ export class Sim {
       id: newId(), key, def, tx, ty,
       x: w.tileToWorldX(tx), z: w.tileToWorldZ(ty), y: w.heightAtTile(tx, ty),
       hp: def.hp, maxHp: def.hp, owner, open: false, cd: 0, angle: 0, store: {},
+      seed: null, grow: 0,
     };
     this.buildings.push(b);
     w.flags[w.idx(tx, ty)] |= FLAG.BUILT;
@@ -1255,6 +1299,14 @@ export class Sim {
 
   _stepBuildings(dt) {
     for (const b of this.buildings) {
+      /* Anything planted comes on whether you watch it or not, and
+         faster in the rain, which is the one time weather is good
+         news rather than something to shelter from. */
+      if (b.def.farm && b.seed && b.grow < 1) {
+        const wet = this.weather && (this.weather.id === 'rain' || this.weather.id === 'storm');
+        b.grow = Math.min(1, b.grow + (dt / b.def.farm.time) * (wet ? 1.6 : 1));
+        if (b.grow >= 1) this.emit({ t: 'ripe', id: b.id, x: b.x, y: b.y, z: b.z, seed: b.seed });
+      }
       if (!b.def.turret) continue;
       b.cd -= dt;
       const target = this._nearestEnemy(b.x, b.z, b.def.turret.range);
