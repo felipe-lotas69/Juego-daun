@@ -103,7 +103,34 @@ export function propLight(prop) {
 }
 
 /* ------------------------------------------------------------ recipes */
+/* How much wind each thing takes, and the height the weight ramps
+   up over. Grass whips, a canopy leans, a trunk does not move, and
+   nothing made of rock moves at all. The height is what keeps a tree
+   planted: the sway weight is scaled by how far up its own shape a
+   vertex is, so the base is always still. */
+const WIND = {
+  [PROP.GRASS]: [0.22, 0.40], [PROP.FLOWER]: [0.15, 0.30],
+  [PROP.FERN]: [0.18, 0.46], [PROP.REED]: [0.28, 0.62],
+  [PROP.BUSH]: [0.11, 0.80], [PROP.BERRY_BUSH]: [0.11, 0.80],
+  [PROP.MUSHROOM]: [0.04, 0.28],
+  [PROP.TREE_OAK]: [0.15, 2.0], [PROP.TREE_BIRCH]: [0.17, 2.1],
+  [PROP.TREE_PINE]: [0.10, 2.2], [PROP.TREE_BLOOM]: [0.14, 1.9],
+  [PROP.TREE_SNOW]: [0.08, 1.9], [PROP.TREE_DEAD]: [0.07, 1.8],
+  [PROP.STUMP]: [0, 1], [PROP.LOG]: [0, 1],
+};
+
 export function buildProp(b, g, prop, x, y, z, variant, biome) {
+  const wind = WIND[prop];
+  if (wind) { b.windy(wind[0], wind[1]); g.windy(wind[0], wind[1]); }
+  else { b.windy(0); g.windy(0); }
+  try {
+    _buildProp(b, g, prop, x, y, z, variant, biome);
+  } finally {
+    b.windy(0); g.windy(0);
+  }
+}
+
+function _buildProp(b, g, prop, x, y, z, variant, biome) {
   const r1 = vrand(variant, 1), r2 = vrand(variant, 2), r3 = vrand(variant, 3);
   /* On the grid, not scattered around it. Props used to sit at a
      random offset of up to a fifth of a tile and at any angle at

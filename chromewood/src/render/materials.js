@@ -132,6 +132,105 @@ export const detailUniforms = {
   uDetailRange: { value: RANGE },
 };
 
+/* ----------------------------------------------------- seasons
+
+   The year is a shader uniform rather than a world rebuild. Two
+   things happen to a fragment: whatever is green in it moves toward
+   the season's colour, and in winter everything facing up collects
+   snow.
+
+   Tinting by how green a colour already is, rather than tinting
+   everything, is what keeps bark brown and stone grey while the
+   leaves turn - and it means a new prop gets the season for free
+   without anybody remembering to add it to a list. */
+export const seasonUniforms = {
+  uSeasonTint: { value: new THREE.Color(0.55, 0.78, 0.35) },
+  uSeasonAmount: { value: 0.0 },
+  uSeasonSnow: { value: 0.0 },
+};
+
+const SEASON_FRAG_PARS = /* glsl */`
+  uniform vec3  uSeasonTint;
+  uniform float uSeasonAmount;
+  uniform float uSeasonSnow;
+`;
+
+const SEASON_FRAG = /* glsl */`
+  {
+    vec3 c = diffuseColor.rgb;
+    /* How green is this, really: the green channel's lead over the
+       stronger of the other two. Grass and leaves score high, wood,
+       rock, metal and skin score nothing. */
+    float green = clamp((c.g - max(c.r, c.b)) * 3.2, 0.0, 1.0);
+    float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    diffuseColor.rgb = mix(c, uSeasonTint * (0.45 + lum * 1.05), green * uSeasonAmount);
+
+    if (uSeasonSnow > 0.001) {
+      /* Only what faces the sky, and not sheer faces: snow sits, it
+         does not stick to walls. */
+      float up = clamp((vNormal.y - 0.45) * 2.6, 0.0, 1.0);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.92, 0.95, 1.0), up * uSeasonSnow);
+    }
+  }
+`;
+
+export function patchSeason(shader) {
+  shader.uniforms.uSeasonTint = seasonUniforms.uSeasonTint;
+  shader.uniforms.uSeasonAmount = seasonUniforms.uSeasonAmount;
+  shader.uniforms.uSeasonSnow = seasonUniforms.uSeasonSnow;
+  shader.fragmentShader = `${SEASON_FRAG_PARS}\n${shader.fragmentShader}`
+    .replace('#include <color_fragment>', `#include <color_fragment>\n${SEASON_FRAG}`);
+}
+
+/* ------------------------------------------------------- wind
+
+   A still world reads as a diorama however good the light is. Every
+   vertex carries a sway weight - one on a leaf, nothing on a trunk -
+   and gets pushed along the wind by it, with a phase taken from its
+   own world position so a hedge does not move as one object.
+
+   Two frequencies: a slow lean that passes across the map like a
+   gust, and a faster flutter on top, because a single sine is a
+   metronome and grass does not keep time. */
+export const windUniforms = {
+  uWindTime: { value: 0 },
+  uWindDir: { value: new THREE.Vector2(0.78, 0.62) },
+  uWindStrength: { value: 1.0 },
+};
+
+const WIND_VERT_PARS = /* glsl */`
+  attribute float sway;
+  uniform float uWindTime;
+  uniform vec2  uWindDir;
+  uniform float uWindStrength;
+`;
+
+const WIND_VERT = /* glsl */`
+  if (sway > 0.001) {
+    vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
+    float phase = wp.x * 0.42 + wp.z * 0.31;
+    /* The gust: a long wave rolling along the wind direction. */
+    float gust = sin(uWindTime * 0.55 + (wp.x * uWindDir.x + wp.z * uWindDir.y) * 0.09);
+    gust = gust * 0.5 + 0.5;
+    float lean = sin(uWindTime * 1.35 + phase) * 0.55 + sin(uWindTime * 2.7 + phase * 1.7) * 0.22;
+    float amt = sway * uWindStrength * (0.35 + gust * 0.65) * lean;
+    transformed.x += uWindDir.x * amt;
+    transformed.z += uWindDir.y * amt;
+    /* A leaf that leans also drops a little, which is what stops it
+       looking like the whole tree is sliding sideways. */
+    transformed.y -= abs(amt) * 0.25;
+  }
+`;
+
+export function patchWind(shader) {
+  shader.uniforms.uWindTime = windUniforms.uWindTime;
+  shader.uniforms.uWindDir = windUniforms.uWindDir;
+  shader.uniforms.uWindStrength = windUniforms.uWindStrength;
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', `#include <common>\n${WIND_VERT_PARS}`)
+    .replace('#include <begin_vertex>', `#include <begin_vertex>\n${WIND_VERT}`);
+}
+
 /* ---------------------------------------------------- hero fade
 
    In an isometric view the thing between the camera and the player
@@ -262,10 +361,12 @@ export function makeToonMaterial(opts = {}) {
     detail = true,
     clouds = true,
     hero = false,
+    wind = false,
+    season = false,
   } = opts;
 
   const key = [color, vertexColors, emissive, emissiveIntensity, rim, transparent,
-    opacity, side, depthWrite, bands, fog, detail, clouds, hero].join('|');
+    opacity, side, depthWrite, bands, fog, detail, clouds, hero, wind, season].join('|');
   if (materialCache.has(key)) return materialCache.get(key);
 
   const mat = new THREE.MeshToonMaterial({
@@ -304,6 +405,8 @@ export function makeToonMaterial(opts = {}) {
         .replace('#include <common>', `#include <common>\n${DETAIL_FRAG_PARS}`)
         .replace('#include <color_fragment>', `#include <color_fragment>\n${DETAIL_FRAG}`);
     }
+    if (season) patchSeason(shader);
+    if (wind) patchWind(shader);
     if (hero) patchHeroFade(shader);
     if (clouds) {
       shader.uniforms.uCloudDrift = cloudUniforms.uCloudDrift;
@@ -318,7 +421,7 @@ export function makeToonMaterial(opts = {}) {
   };
   /* Materials that differ only in their patch still need distinct
      programs, which this key gives them. */
-  mat.customProgramCacheKey = () => `toon-rim-${bands}-${detail ? 'd' : 'p'}-${clouds ? 'c' : 'x'}-${hero ? 'h' : 'n'}`;
+  mat.customProgramCacheKey = () => `toon-rim-${bands}-${detail ? 'd' : 'p'}-${clouds ? 'c' : 'x'}-${hero ? 'h' : 'n'}-${wind ? 'w' : 's'}-${season ? 'y' : 'n'}`;
 
   materialCache.set(key, mat);
   return mat;

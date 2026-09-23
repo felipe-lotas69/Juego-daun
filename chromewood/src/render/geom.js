@@ -63,6 +63,11 @@ export class MeshBuilder {
     this.col = [];
     this.uv = [];
     this.cell = [];
+    /* How much the wind moves this vertex. Leaves and grass get one,
+       trunks and rock get zero, and it is per vertex rather than per
+       object so a tree can bend at the top and stay planted at the
+       bottom without being two meshes. */
+    this.sway = [];
     this.index = [];
     this.vertCount = 0;
     /* Which atlas cell the next shape writes. Shapes override it
@@ -73,11 +78,14 @@ export class MeshBuilder {
     this.tx = 0; this.ty = 0; this.tz = 0;
     this.ry = 0;
     this.scale = 1;
+    this._sway = 0;
+    this._swayH = 1;
   }
 
   reset() {
     this.pos.length = 0; this.norm.length = 0; this.col.length = 0;
-    this.uv.length = 0; this.cell.length = 0; this.index.length = 0; this.vertCount = 0;
+    this.uv.length = 0; this.cell.length = 0; this.sway.length = 0;
+    this.index.length = 0; this.vertCount = 0;
     this.texture = TEX.FLAT;
     this.tx = this.ty = this.tz = 0; this.ry = 0; this.scale = 1;
     return this;
@@ -103,12 +111,23 @@ export class MeshBuilder {
     this.col.push(r, g, b);
     this.uv.push(u, v);
     this.cell.push(this._faceTex === undefined ? this.texture : this._faceTex);
+    /* Scaled by height off the shape's own base, so the top of a
+       canopy swings and the underside of it barely does. */
+    this.sway.push(this._sway ? this._sway * Math.max(0, Math.min(1, y / this._swayH)) : 0);
     return this.vertCount++;
   }
 
   _quad(verts) {
     const [a, b, c, d] = verts;
     this.index.push(a, b, c, a, c, d);
+  }
+
+  /* How much wind the next shapes take, and over what height the
+     weight ramps up. `windy(0)` turns it off again. */
+  windy(amount, height = 1) {
+    this._sway = amount;
+    this._swayH = Math.max(0.05, height);
+    return this;
   }
 
   /* ---------------------------------------------------------- shapes */
@@ -274,6 +293,7 @@ export class MeshBuilder {
     for (let i = 0; i < other.col.length; i++) this.col.push(other.col[i]);
     for (let i = 0; i < other.uv.length; i++) this.uv.push(other.uv[i]);
     for (let i = 0; i < other.cell.length; i++) this.cell.push(other.cell[i]);
+    for (let i = 0; i < other.sway.length; i++) this.sway.push(other.sway[i]);
     for (let i = 0; i < other.index.length; i++) this.index.push(other.index[i] + base);
     this.vertCount += other.vertCount;
     return this;
@@ -328,6 +348,7 @@ export class MeshBuilder {
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
     g.setAttribute('texCell', new THREE.Float32BufferAttribute(this.cell, 1));
+    g.setAttribute('sway', new THREE.Float32BufferAttribute(this.sway, 1));
     g.setIndex(this.vertCount > 65535
       ? new THREE.Uint32BufferAttribute(this.index, 1)
       : new THREE.Uint16BufferAttribute(this.index, 1));

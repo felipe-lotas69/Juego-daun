@@ -8,21 +8,24 @@
    ============================================================ */
 
 import { PLAYER, WORLD_HALF, LEVEL_STEP } from '../core/config.js';
+import { CLIMB } from '../world/worldgen.js';
 import { clamp, damp } from '../core/util.js';
 
 /* Four probes around the circle: enough at one-metre tiles, and
    cheap enough to call for every enemy every frame. */
-export function canStand(world, x, z, radius, level) {
+export function canStand(world, x, z, radius, level, swim = false, climb = CLIMB) {
   for (let i = 0; i < 4; i++) {
     const a = i * Math.PI / 2 + Math.PI / 4;
-    if (world.blockedAt(x + Math.cos(a) * radius, z + Math.sin(a) * radius, level)) return false;
+    if (world.blockedAt(x + Math.cos(a) * radius, z + Math.sin(a) * radius, level, swim, climb)) {
+      return false;
+    }
   }
-  return !world.blockedAt(x, z, level);
+  return !world.blockedAt(x, z, level, swim, climb);
 }
 
 /* Axis-separated so a body slides along a wall instead of sticking
    to it. The level argument makes a two-step cliff a wall. */
-export function moveEntity(world, ent, radius, dt) {
+export function moveEntity(world, ent, radius, dt, swim = false, climb = CLIMB) {
   const level = Math.round(ent.y / LEVEL_STEP);
   let nx = ent.x + ent.vx * dt;
   let nz = ent.z + ent.vz * dt;
@@ -39,14 +42,14 @@ export function moveEntity(world, ent, radius, dt) {
      Being stuck is worse than being briefly somewhere illegal, so
      while stuck, collision is off and the body walks out. One frame
      later it is standing somewhere legal and the rules apply again. */
-  if (!canStand(world, ent.x, ent.z, radius, level)) {
+  if (!canStand(world, ent.x, ent.z, radius, level, swim, climb)) {
     ent.x = clamp(nx, -WORLD_HALF + 1, WORLD_HALF - 1);
     ent.z = clamp(nz, -WORLD_HALF + 1, WORLD_HALF - 1);
     return;
   }
 
-  if (!canStand(world, nx, ent.z, radius, level)) { nx = ent.x; ent.vx *= 0.2; }
-  if (!canStand(world, nx, nz, radius, level)) { nz = ent.z; ent.vz *= 0.2; }
+  if (!canStand(world, nx, ent.z, radius, level, swim, climb)) { nx = ent.x; ent.vx *= 0.2; }
+  if (!canStand(world, nx, nz, radius, level, swim, climb)) { nz = ent.z; ent.vz *= 0.2; }
   ent.x = clamp(nx, -WORLD_HALF + 1, WORLD_HALF - 1);
   ent.z = clamp(nz, -WORLD_HALF + 1, WORLD_HALF - 1);
 }

@@ -45,7 +45,7 @@ export class WorldView {
     this.buildBudget = 2;
     this.radius = 4;
 
-    this.solidMat = makeToonMaterial({ vertexColors: true, rim: 0.55, hero: true });
+    this.solidMat = makeToonMaterial({ vertexColors: true, rim: 0.55, hero: true, wind: true, season: true });
     this.glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, fog: false });
     this.waterMat = makeToonMaterial({
       vertexColors: true, transparent: true, opacity: 0.80,

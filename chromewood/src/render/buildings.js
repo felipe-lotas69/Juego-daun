@@ -83,6 +83,45 @@ export function buildStructureMesh(b, g, key, x, y, z, state = {}) {
       g.at(x, y + 1.62, z + 0.28).box(0.5, 0.04, 0.03, 0x3fe0ff, { centered: true });
       break;
     }
+    /* Blocks: a stack of cubes, each one a terrain step tall, with the
+       courses offset a hair so the joints read from a distance. */
+    case 'block_wood': case 'block_stone': case 'block_iron': {
+      const n = Math.max(1, state.stack || 1);
+      const skin = {
+        block_wood: { side: 0x7a5a3c, top: 0xa07c52, tex: TEX.PLANK, edge: 0x5c432c },
+        block_stone: { side: 0x8a857b, top: 0xa8a399, tex: TEX.BRICK, edge: 0x6f6a61 },
+        block_iron: { side: 0x6d7583, top: 0x99a2b0, tex: TEX.METAL, edge: 0x4e5663 },
+      }[key];
+      for (let i = 0; i < n; i++) {
+        const cy = y + i * 0.8;
+        b.at(x, cy, z).rot(0);
+        b.box(0.98, 0.8, 0.98, skin.side, { topColor: skin.top, tex: skin.tex });
+        /* A darker band at each joint: without it a stack of four is
+           one tall box and the whole point is lost. */
+        if (i > 0) {
+          b.at(x, cy, z).rot(0);
+          b.box(1.0, 0.08, 1.0, skin.edge, { tex: TEX.FLAT });
+        }
+      }
+      break;
+    }
+
+    case 'smelter': {
+      b.at(x, y, z).rot(0);
+      b.box(1.0, 0.22, 1.0, 0x6d6960, { topColor: 0x8a857b, tex: TEX.GRAVEL });
+      b.at(x, y + 0.22, z).rot(0);
+      b.box(0.86, 0.95, 0.86, 0x8a857b, { topColor: 0x9a958b, tex: TEX.BRICK });
+      /* The mouth, and what is going on inside it. */
+      b.at(x, y + 0.34, z + 0.44).rot(0);
+      b.box(0.44, 0.44, 0.06, 0x241c18, { centered: true, tex: TEX.FLAT });
+      g.at(x, y + 0.34, z + 0.46).rot(0);
+      g.box(0.34, 0.34, 0.04, 0xff9b4a, { centered: true });
+      /* Chimney. */
+      b.at(x - 0.22, y + 1.17, z - 0.22).rot(0);
+      b.box(0.34, 0.5, 0.34, 0x7d7669, { topColor: 0x99948a, tex: TEX.STONE });
+      break;
+    }
+
     case 'door': {
       b.at(x, y, z).rot(0);
       for (const s of [-1, 1]) {

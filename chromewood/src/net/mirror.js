@@ -157,10 +157,13 @@ export class Mirror {
       p.hotbarIndex = a[38];
       p.buildKey = a[39] || null;
       p.craft = a[40] >= 0 ? { time: 1 - a[40], total: 1 } : null;
-      p.skills = Object.fromEntries((a[41] ? a[41].split(',') : []).map(k => [k, true]));
-      if (!local) { p.vx = a[42]; p.vz = a[43]; }
-      else { p.serverVX = a[42]; p.serverVZ = a[43]; }
-      p.name = a[44] || p.name;
+      const worn = (a[41] || '').split('|');
+      p.equip = { head: worn[0] || null, body: worn[1] || null, legs: worn[2] || null };
+      p.swimming = !!a[42];
+      p.skills = Object.fromEntries((a[43] ? a[43].split(',') : []).map(k => [k, true]));
+      if (!local) { p.vx = a[44]; p.vz = a[45]; }
+      else { p.serverVX = a[44]; p.serverVZ = a[45]; }
+      p.name = a[46] || p.name;
       const held = p.hotbar[p.hotbarIndex];
       p.lightItem = held && ITEMS[held] && ITEMS[held].light ? ITEMS[held].light : null;
       if (local) this._resonanceHere = 0;
@@ -210,7 +213,7 @@ export class Mirror {
         this.buildings.push(b);
       }
       b.y = a[4]; b.hp = a[5]; b.maxHp = a[6]; b.open = !!a[7]; b.angle = a[8];
-      b.seed = a[9] || null; b.grow = a[10] || 0;
+      b.seed = a[9] || null; b.grow = a[10] || 0; b.stack = a[11] || 0;
     }
     for (let i = this.buildings.length - 1; i >= 0; i--) {
       if (!liveB.has(this.buildings[i].id)) {
@@ -376,6 +379,7 @@ function makeRemotePlayer(id) {
     kills: 0, deaths: 0,
     inv: {}, hotbar: [null, null, null, null, null, null], hotbarIndex: 0,
     buildKey: null, craft: null, skills: {},
+    equip: { head: null, body: null, legs: null }, plate: 0, swimming: false,
     dashCharges: 1, dashMax: 1, dashCd: 0, dashTimer: 0, dashDirX: 0, dashDirZ: 0,
     abilities: [null, null, null, null], cooldowns: {},
     interactTarget: null, interactProgress: 0, buffs: [], statuses: [],

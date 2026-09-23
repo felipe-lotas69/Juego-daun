@@ -10,8 +10,12 @@
 
 export const CAT = {
   RESOURCE: 'resource', FOOD: 'food', TOOL: 'tool', WEAPON: 'weapon',
-  BUILD: 'build', SPECIAL: 'special',
+  BUILD: 'build', SPECIAL: 'special', ARMOR: 'armor',
 };
+
+/* Three places to wear something. Any more and the panel turns into
+   a spreadsheet; any fewer and a set is not a set. */
+export const SLOTS = ['head', 'body', 'legs'];
 
 /* `icon` names a procedural pixel glyph drawn by the UI. */
 export const ITEMS = {
@@ -91,6 +95,32 @@ export const ITEMS = {
                  tool: { kind: 'blunt', tier: 3, power: 40, speed: 0.75, damage: 96, reach: 2.0, knock: 9 },
                  glow: true },
 
+  /* ---- what you wear ----
+     Armour cuts damage and holds the cold off, which is what makes a
+     hide vest worth making in autumn and worth wearing in winter.
+     Three tiers, three pieces each: nothing fancy, just the
+     difference between a bad night and a short one. */
+  cap_hide:    { name: 'Hide Cap', cat: CAT.ARMOR, stack: 1, icon: 'helm', tint: 0xa87a52,
+                 slot: 'head', armor: 4, warmth: 0.5 },
+  vest_hide:   { name: 'Hide Vest', cat: CAT.ARMOR, stack: 1, icon: 'vest', tint: 0xa87a52,
+                 slot: 'body', armor: 7, warmth: 1.1 },
+  legs_hide:   { name: 'Hide Leggings', cat: CAT.ARMOR, stack: 1, icon: 'greave', tint: 0xa87a52,
+                 slot: 'legs', armor: 5, warmth: 0.8 },
+
+  cap_iron:    { name: 'Iron Helm', cat: CAT.ARMOR, stack: 1, icon: 'helm', tint: 0xc9d2de,
+                 slot: 'head', armor: 10, warmth: 0.2 },
+  vest_iron:   { name: 'Iron Plate', cat: CAT.ARMOR, stack: 1, icon: 'vest', tint: 0xc9d2de,
+                 slot: 'body', armor: 16, warmth: 0.4 },
+  legs_iron:   { name: 'Iron Greaves', cat: CAT.ARMOR, stack: 1, icon: 'greave', tint: 0xc9d2de,
+                 slot: 'legs', armor: 12, warmth: 0.3 },
+
+  cap_rift:    { name: 'Rift Crown', cat: CAT.ARMOR, stack: 1, icon: 'helm', tint: 0xb07bff,
+                 slot: 'head', armor: 16, warmth: 0.6 },
+  vest_rift:   { name: 'Rift Mantle', cat: CAT.ARMOR, stack: 1, icon: 'vest', tint: 0xb07bff,
+                 slot: 'body', armor: 24, warmth: 1.4 },
+  legs_rift:   { name: 'Rift Greaves', cat: CAT.ARMOR, stack: 1, icon: 'greave', tint: 0xb07bff,
+                 slot: 'legs', armor: 19, warmth: 1.0 },
+
   torch:       { name: 'Torch', cat: CAT.TOOL, stack: 5, icon: 'torch', tint: 0xffb03a,
                  tool: { kind: 'blunt', tier: 0, power: 6, speed: 1.1, damage: 10, reach: 1.4 },
                  light: { color: 0xffb03a, intensity: 2.2, range: 9 } },
@@ -145,6 +175,34 @@ export const BUILDINGS = {
   floor: {
     name: 'Floor', icon: 'floor', cost: [['wood', 2]], hp: 60, solid: false, height: 0.08,
     desc: 'Marks out what is yours, and keeps the mud off.',
+  },
+
+  /* ---- blocks ----
+     A wall is a thing with a job. A block has no job at all, which is
+     the point: put another on top and it is a tower, put four in a
+     row and it is whatever you decided it was. They stack four high,
+     one terrain step each, so a stack stands exactly as tall as the
+     ground steps. */
+  block_wood: {
+    name: 'Wood Block', icon: 'block', cost: [['wood', 3]], hp: 120, solid: true,
+    height: 0.8, block: true, stackMax: 4,
+    desc: 'Stacks. Put another on top and keep going.',
+  },
+  block_stone: {
+    name: 'Stone Block', icon: 'block', cost: [['stone', 5]], hp: 340, solid: true,
+    height: 0.8, block: true, stackMax: 4, needs: 'workbench',
+    desc: 'Heavier, and stays where you put it.',
+  },
+  block_iron: {
+    name: 'Iron Block', icon: 'block', cost: [['iron', 3], ['stone', 3]], hp: 820, solid: true,
+    height: 0.8, block: true, stackMax: 4, needs: 'forge',
+    desc: 'Nothing out of the rift gets through this.',
+  },
+
+  smelter: {
+    name: 'Smelter', icon: 'smelt', cost: [['stone', 16], ['wood', 8]], hp: 180,
+    station: 'smelter', needs: 'workbench', height: 1.3, solid: true, light: 0xff9b4a,
+    desc: 'Ore goes in, metal comes out. Everything after this needs it.',
   },
   bed: {
     name: 'Bedroll', icon: 'bed', cost: [['fiber', 12], ['hide', 4]], hp: 50, solid: false, height: 0.3,
@@ -213,6 +271,7 @@ export const RECIPES = [
   { out: ['plot', 1], in: [['wood', 4], ['fiber', 6]], station: 'hand', time: 1.2, build: true },
   { out: ['campfire', 1], in: [['wood', 5], ['stone', 3]], station: 'hand', time: 1.5, build: true },
   { out: ['workbench', 1], in: [['wood', 12], ['stone', 4]], station: 'hand', time: 2.5, build: true },
+  { out: ['block_wood', 4], in: [['wood', 3]], station: 'hand', time: 0.8, build: true },
   { out: ['wall_wood', 1], in: [['wood', 4]], station: 'hand', time: 0.7, build: true },
 
   /* --- fire: cooking --- */
@@ -249,6 +308,23 @@ export const RECIPES = [
   { out: ['dampener', 1], in: [['iron', 8], ['essence', 14], ['wire', 4]], station: 'arcane', time: 4.0, build: true },
   { out: ['lure', 1], in: [['scrap', 10], ['wire', 6], ['riftglass', 2]], station: 'arcane', time: 4.0, build: true },
   { out: ['sealpylon', 1], in: [['riftglass', 4], ['gold', 6], ['essence', 30]], station: 'arcane', time: 6.0, build: true },
+
+  /* --- blocks, armour and the smelter --- */
+  { out: ['smelter', 1], in: [['stone', 16], ['wood', 8]], station: 'workbench', time: 3.0, build: true },
+  { out: ['block_stone', 4], in: [['stone', 5]], station: 'workbench', time: 1.0, build: true },
+  { out: ['block_iron', 2], in: [['iron', 3], ['stone', 3]], station: 'forge', time: 2.0, build: true },
+
+  { out: ['cap_hide', 1], in: [['hide', 4], ['fiber', 6]], station: 'workbench', time: 2.0 },
+  { out: ['vest_hide', 1], in: [['hide', 8], ['fiber', 10]], station: 'workbench', time: 3.0 },
+  { out: ['legs_hide', 1], in: [['hide', 6], ['fiber', 8]], station: 'workbench', time: 2.5 },
+
+  { out: ['cap_iron', 1], in: [['iron', 5], ['hide', 3]], station: 'forge', time: 3.0 },
+  { out: ['vest_iron', 1], in: [['iron', 9], ['hide', 4], ['cloth', 3]], station: 'forge', time: 4.5 },
+  { out: ['legs_iron', 1], in: [['iron', 7], ['hide', 3]], station: 'forge', time: 3.5 },
+
+  { out: ['cap_rift', 1], in: [['iron', 4], ['riftglass', 2], ['essence', 18]], station: 'arcane', time: 4.0 },
+  { out: ['vest_rift', 1], in: [['iron', 6], ['riftglass', 4], ['essence', 30]], station: 'arcane', time: 5.5 },
+  { out: ['legs_rift', 1], in: [['iron', 5], ['riftglass', 3], ['essence', 24]], station: 'arcane', time: 4.5 },
 ];
 
 /* Smelting is its own list because it consumes ore, not items with
@@ -261,15 +337,21 @@ export const FARM_RECIPES = [
   { out: ['bread', 2], in: [['grain', 4]], station: 'fire', time: 3.0 },
 ];
 
+/* Smelting has its own building now. It used to happen at the forge,
+   which meant the first ingot and the first iron axe unlocked
+   together and the ore you mined on day one sat in the pack until
+   then. A smelter is cheap, comes right after the workbench, and
+   gives the ore somewhere to go. */
 export const SMELTING = [
-  { out: ['copper', 2], in: [['copper_ore', 3], ['charcoal', 1]], station: 'forge', time: 2.0 },
-  { out: ['iron', 2], in: [['iron_ore', 3], ['charcoal', 1]], station: 'forge', time: 2.5 },
-  { out: ['gold', 2], in: [['gold_ore', 3], ['charcoal', 2]], station: 'forge', time: 3.0 },
+  { out: ['copper', 2], in: [['copper_ore', 3], ['charcoal', 1]], station: 'smelter', time: 2.0 },
+  { out: ['iron', 2], in: [['iron_ore', 3], ['charcoal', 1]], station: 'smelter', time: 2.5 },
+  { out: ['gold', 2], in: [['gold_ore', 3], ['charcoal', 2]], station: 'smelter', time: 3.0 },
+  { out: ['charcoal', 3], in: [['wood', 4]], station: 'smelter', time: 2.0 },
 ];
 
 export const STATION_NAME = {
   hand: 'By Hand', fire: 'Campfire', workbench: 'Workbench',
-  forge: 'Forge', arcane: 'Arcane Bench',
+  smelter: 'Smelter', forge: 'Forge', arcane: 'Arcane Bench',
 };
 
 /* What the beacon needs before it will light. This is the gate
