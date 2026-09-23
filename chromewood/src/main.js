@@ -99,6 +99,7 @@ const panels = new Panels(hud, {
   setBuild: (key) => setBuildKey(key),
   learnSkill: (key) => requestLearnSkill(key),
   buyUpgrade: (key) => requestBuyUpgrade(key),
+  trade: (index) => requestTrade(index),
 });
 
 const menus = new Menus(uiRoot, {
@@ -296,6 +297,7 @@ function applyRemoteAction(from, d) {
     case 'craft': startCraft(sim, p, d.i); break;
     case 'skill': sim.learnSkill(p, d.key); break;
     case 'upgrade': sim.buyBeaconUpgrade(d.key); break;
+    case 'trade': sim.tryTrade(p, d.v | 0, d.i | 0); break;
     case 'build': p.buildKey = d.key; break;
     case 'slot': p.hotbarIndex = clamp(d.i | 0, 0, p.hotbar.length - 1); break;
     case 'eat': eat(sim, p, d.item); break;
@@ -512,8 +514,70 @@ function syncActors(dt, sim) {
     if (w.def.glow) rig.addDynamicLight(w.x, w.y + 0.6, w.z, w.def.color, 1.1, 5);
   }
 
+  syncVillagers(dt, sim, live);
+
   for (const [key, a] of game.actors) {
     if (!live.has(key)) { a.dispose(); game.actors.delete(key); }
+  }
+}
+
+/* Villagers are scenery with legs. They do not fight, cannot be hit
+   and own nothing, so there is no reason for the simulation to know
+   about them at all: their walk is a function of the clock and their
+   own index, which means a host and every client draw the same
+   village doing the same thing with not one byte on the wire.
+
+   The one who keeps the stall stands at it, because a shopkeeper who
+   wanders off is a shop you cannot find. */
+const VILLAGER_STATE = { x: 0, y: 0, z: 0, facing: 0, state: 'alive',
+  anim: { move: 0, attack: 0, hurt: 0 }, vx: 0, vz: 0 };
+
+function syncVillagers(dt, sim, live) {
+  const w = sim.world;
+  if (!w.villages || !w.villages.length) return;
+  const anchor = cam.smoothed;
+  const t = sim.dayTime;
+
+  for (const v of w.villages) {
+    /* Only while anyone is near enough to see them. */
+    if (Math.abs(v.x - anchor.x) > 70 || Math.abs(v.z - anchor.z) > 70) continue;
+    const count = 4 + (v.variant % 3);
+    for (let i = 0; i <= count; i++) {
+      const key = actorKey('v', v.id * 16 + i);
+      live.add(key);
+      let a = game.actors.get(key);
+      if (!a) { a = new Actor(rig.scene, 'villager', v.variant + i * 3); game.actors.set(key, a); }
+
+      const e = VILLAGER_STATE;
+      if (i === 0) {
+        /* The trader, behind the counter, turning to whoever is at it. */
+        e.x = v.stallX; e.z = v.stallZ - 0.9;
+        const me = localPlayer();
+        const near = me && Math.hypot(me.x - v.stallX, me.z - v.stallZ) < 6;
+        e.facing = near ? Math.atan2(me.z - e.z, me.x - e.x) : Math.PI / 2;
+        e.anim.move = 0;
+      } else {
+        /* Two circles at different rates: one on its own is a
+           carousel, two is somebody going about their day. */
+        const seed = v.variant * 0.37 + i * 2.11;
+        const speed = 0.16 + ((v.variant + i * 7) % 5) * 0.03;
+        const r1 = 2.2 + ((v.variant + i * 13) % 4) * 0.7;
+        const a1 = t * speed + seed;
+        const a2 = t * speed * 1.7 + seed * 2.3;
+        const nx = v.x + Math.cos(a1) * r1 + Math.cos(a2) * 1.1;
+        const nz = v.z + Math.sin(a1) * r1 + Math.sin(a2 * 0.8) * 1.1;
+        const dx = nx - (a.lastX === undefined ? nx : a.lastX);
+        const dz = nz - (a.lastZ === undefined ? nz : a.lastZ);
+        e.x = nx; e.z = nz;
+        if (Math.hypot(dx, dz) > 1e-4) e.facing = Math.atan2(dz, dx);
+        else e.facing = a.lastFacing || 0;
+        e.anim.move = Math.min(1, Math.hypot(dx, dz) / Math.max(1e-4, dt) / 4);
+        a.lastX = nx; a.lastZ = nz; a.lastFacing = e.facing;
+      }
+      e.y = w.groundAt(e.x, e.z);
+      a.setVisible(true);
+      a.update(dt, e, { groundY: e.y, shadowRadius: 0.85 });
+    }
   }
 }
 
@@ -777,6 +841,15 @@ function consumeEvent(ev) {
     case 'contract': hud.pushKill(`CONTRACT: ${ev.name.toUpperCase()}`, '#ffd24a'); break;
     case 'boon': if (ev.id === game.localId) hud.showToast(`BOON: ${ev.name.toUpperCase()}`, '#7ee8ff'); break;
     case 'cache': hud.showToast('CACHE OPENED', '#ffb03a', 2); break;
+    case 'shop':
+      if (ev.id === game.localId) { panels.openTrade(ev.village); audio.ui(); }
+      break;
+    case 'trade':
+      if (ev.id === game.localId) { hud.pushKill('TRADED', '#9bd05a'); audio.ui(); }
+      break;
+    case 'tradefull':
+      if (ev.id === game.localId) hud.showToast('YOUR PACK IS FULL', '#ff4f4f', 2);
+      break;
     case 'deposit': if (ev.id === game.localId) hud.pushKill(`STORED ${ev.moved}`, '#3fe0ff'); break;
     case 'won': game.over = true; break;
     case 'beacon_down': game.over = true; hud.showToast('THE BEACON IS DARK', '#ff4f4f', 6); break;
@@ -841,6 +914,14 @@ function requestLearnSkill(key) {
   audio.ui();
   if (game.role === 'client') sendAction({ a: 'skill', key });
   else game.sim.learnSkill(me, key);
+}
+
+function requestTrade(index) {
+  const me = localPlayer();
+  if (!me || panels.village === undefined) return;
+  audio.ui();
+  if (game.role === 'client') sendAction({ a: 'trade', v: panels.village, i: index });
+  else game.sim.tryTrade(me, panels.village, index);
 }
 
 function requestBuyUpgrade(key) {
@@ -1094,8 +1175,16 @@ function handleHotkeys() {
   if (toggle('skills', 'skills')) return;
   if (toggle('journal', 'journal')) return;
 
-  for (let i = 0; i < 6; i++) {
-    if (input.wasPressed('slot' + (i + 1))) { setSlot(i); audio.ui(); }
+  /* At a stall the number keys buy rather than switch hotbar slots:
+     the board is a list of five and the numbers are printed on it. */
+  if (panels.current === 'trade') {
+    for (let i = 0; i < 6; i++) {
+      if (input.wasPressed('slot' + (i + 1))) requestTrade(i);
+    }
+  } else {
+    for (let i = 0; i < 6; i++) {
+      if (input.wasPressed('slot' + (i + 1))) { setSlot(i); audio.ui(); }
+    }
   }
 
   /* Q eats the best food you have, which is what the key is for in

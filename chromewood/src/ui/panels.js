@@ -14,10 +14,11 @@ import { lineHeight, drawWrapped, wrapLines } from './font.js';
 import { ITEMS, BUILDINGS, STATION_NAME, BEACON_REPAIR } from '../game/items.js';
 import { SKILLS, SKILL_BRANCHES, BEACON_UPGRADES } from '../game/defs.js';
 import { NIGHTS } from '../game/nights.js';
-import { allRecipes, invHasAll } from '../game/survival.js';
+import { allRecipes, invHasAll, invCount } from '../game/survival.js';
+import { villageOffers, villageDef } from '../game/trade.js';
 import { BEACON_COSTS } from '../game/sim.js';
 
-export const PANELS = ['inventory', 'build', 'skills', 'journal', 'beacon'];
+export const PANELS = ['inventory', 'build', 'skills', 'journal', 'beacon', 'trade'];
 
 /* Depth-first over the prerequisite links: the root first, then each
    path it opens, so a column reads top to bottom as a real sequence.
@@ -52,6 +53,7 @@ export class Panels {
   }
 
   open(name) { this.current = name; this.scroll = 0; }
+  openTrade(villageId) { this.village = villageId; this.open('trade'); }
   close() { this.current = null; this.tooltip = null; }
   toggle(name) { if (this.current === name) this.close(); else this.open(name); }
   get isOpen() { return this.current !== null; }
@@ -94,6 +96,7 @@ export class Panels {
     else if (this.current === 'skills') this._skills(state, inner);
     else if (this.current === 'journal') this._journal(state, inner);
     else if (this.current === 'beacon') this._beacon(state, inner);
+    else if (this.current === 'trade') this._trade(state, inner);
 
     if (this.tooltip) this._drawTooltip(state);
   }
@@ -559,6 +562,68 @@ export class Panels {
     });
   }
 
+  /* ------------------------------------------------- the stall */
+  _trade(state, r) {
+    const c = this.hud.ctx, S = this.hud.scale;
+    const me = state.me, sim = state.sim;
+    const v = sim.world.villages.find(x => x.id === this.village);
+    if (!v) { drawText(c, 'NOBODY HERE', r.x, r.y, { scale: S, color: PAL.dim }); return; }
+    const def = villageDef(v);
+    const offers = villageOffers(v, sim.night);
+
+    drawText(c, `${def.name.toUpperCase()} - ${def.trader}`, r.x, r.y,
+      { scale: S + 1, color: PAL.chrome });
+    drawWrapped(c, def.blurb.toUpperCase(), r.x, r.y + lineHeight(S + 1), r.w,
+      { scale: S, color: PAL.faint });
+
+    const blurbLines = wrapLines(def.blurb.toUpperCase(), r.w, S).length;
+    const top = r.y + lineHeight(S + 1) + blurbLines * lineHeight(S) + 4 * S;
+    const gap = 3 * S;
+    const rowH = Math.max(18 * S, Math.floor((r.h - (top - r.y) - offers.length * gap) / offers.length));
+
+    offers.forEach((offer, i) => {
+      const y = top + i * (rowH + gap);
+      const can = offer.give.every(([it, n]) => invCount(me, it) >= n);
+      const hov = this.hud.isHover(r.x, y, r.w, rowH);
+      frame(c, r.x, y, r.w, rowH, { lit: can || hov, notch: 2 * S, shadow: false });
+
+      /* The number key that does it, then what you give, an arrow,
+         and what you get. Reading left to right is the whole point:
+         a trade you have to decode is a trade nobody makes. */
+      drawText(c, String(i + 1), r.x + 4 * S, y + rowH / 2 - 3 * S,
+        { scale: S, color: can ? PAL.chrome : PAL.faint });
+
+      let x = r.x + 13 * S;
+      const mid = y + rowH / 2 - 4 * S;
+      /* Names on both sides. A row that reads "20 -> 3 BREAD" tells
+         you what you get and leaves you guessing what it costs,
+         which is the one thing a shop must never do. */
+      const entry = (it, n, color) => {
+        const label = `${n} ${ITEMS[it].name.toUpperCase()}`;
+        drawIcon(c, ITEMS[it].icon, x, mid, 9 * S, ITEMS[it].tint);
+        drawText(c, label, x + 10 * S, mid + 1 * S, { scale: S, color });
+        x += 10 * S + textWidth(label, S) + 6 * S;
+      };
+      for (const [it, n] of offer.give) {
+        entry(it, n, invCount(me, it) >= n ? PAL.text : PAL.bad);
+      }
+      drawText(c, '—>', x, mid + 1 * S, { scale: S, color: PAL.faint });
+      x += textWidth('—>', S) + 6 * S;
+      for (const [it, n] of offer.get) entry(it, n, PAL.good);
+
+      if (offer.deal) {
+        drawText(c, 'TONIGHT', r.x + r.w - 4 * S, y + 3 * S,
+          { scale: S, align: 'right', color: PAL.xp });
+      }
+      if (can) this.hud.hit('panel:trade', r.x, y, r.w, rowH, i);
+      else if (hov) {
+        const short = offer.give.filter(([it, n]) => invCount(me, it) < n)
+          .map(([it, n]) => `${n - invCount(me, it)} MORE ${ITEMS[it].name.toUpperCase()}`).join(', ');
+        this.tooltip = { title: 'NOT ENOUGH', color: PAL.bad, body: short };
+      }
+    });
+  }
+
   /* --------------------------------------------------- clicking */
   handle(hit, state) {
     if (!hit) return false;
@@ -569,6 +634,7 @@ export class Panels {
       case 'panel:build': this.hooks.setBuild(hit.data); return true;
       case 'panel:skill': this.hooks.learnSkill(hit.data); return true;
       case 'panel:upgrade': this.hooks.buyUpgrade(hit.data); return true;
+      case 'panel:trade': this.hooks.trade(hit.data); return true;
       default: return false;
     }
   }

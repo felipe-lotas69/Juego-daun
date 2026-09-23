@@ -191,7 +191,7 @@ export class WorldView {
     const b = new MeshBuilder(), g = new MeshBuilder();
     for (const lm of this.world.landmarks) {
       const { x, y, z } = lm;   /* worldgen already placed these */
-      const lights = buildStructure(b, g, lm.kind, x, y, z, lm.variant || 0);
+      const lights = buildStructure(b, g, lm.kind, x, y, z, lm.variant || 0, lm);
       if (lights) for (const l of lights) this.lightSites.push(l);
     }
     if (!b.isEmpty) {

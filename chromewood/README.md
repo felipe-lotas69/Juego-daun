@@ -54,13 +54,15 @@ order most people find things in, not a set of objectives.
    and stay near a fire at night or the cold takes your health.
 2. **Build somewhere.** Walls, a bed, a forge, lamps, plots to grow things
    in. Whatever you put up is yours and stays where you left it.
-3. **Go down a cave.** Every world has half a dozen, each with a timbered
+3. **Find a village** and trade with it. Three per world, each
+   dealing in something different.
+4. **Go down a cave.** Every world has half a dozen, each with a timbered
    portal over the mouth. Inside is where the metal is, and the crystal, and
    the riftglass, and it is dark enough that a torch is the difference
    between seeing the floor and not.
-4. **Light the beacon**, if you want a skill tree. It needs 25 scrap, 20
+5. **Light the beacon**, if you want a skill tree. It needs 25 scrap, 20
    essence, 25 wood and 25 stone in its store. Carry them there and hold `G`.
-5. **Seal the gates**, if you want a fight. Five rift gates open around the
+6. **Seal the gates**, if you want a fight. Five rift gates open around the
    map once the beacon is lit. Standing inside one for 75 seconds seals it,
    and it spends that whole time spawning things at you. Each one sealed
    makes every night after it smaller. Seal all five and something wakes up
@@ -92,6 +94,31 @@ town that fell over — broken walls, toppled pillars, crates nobody came back
 for — and that is where salvage comes from.
 
 What is worth having is further out, or underneath.
+
+### Villages
+
+Three per world, each with a trade. They are the only place with
+people in it who are not trying to kill you, which makes them worth
+walking to on their own; the trading is what makes them worth walking
+back to. A ring of cottages round a paved square, a well, a fence with
+a gate, and a stall under an awning in the colour of the trade — green
+for the grange, amber for the smithy, tan for the trapline, violet for
+the apothecary — so you can tell from across the valley whether it is
+worth the walk.
+
+Hold `G` at the counter. Barter, not coins: four standing offers and
+one that turns over every night. The grange takes timber and gives you
+bread and seed; the smithy takes ore and gives it back as metal; the
+trapline buys what you carry out of the woods; the apothecary deals in
+things that grow in the dark. Nothing about the board is stored — it
+is a function of the village and the night count — so a host and every
+client draw the same one with nothing on the wire about it.
+
+The villagers walking about are scenery with legs: they do not fight,
+cannot be hit and own nothing, so their walk is a function of the
+clock and their own index and the simulation never hears about them.
+The one who keeps the stall stands at it, because a shopkeeper who
+wanders off is a shop you cannot find.
 
 ### Caves
 
@@ -368,6 +395,12 @@ Six groups, all of which have caught something real:
   upgrade cost is a real item; every building is craftable, carryable and
   placeable; a tool exists for every tier the ground asks for; the skill tree
   resolves with no cycles and every ability is reachable.
+- **Villages.** Every world has them, you can walk to them from the
+  beacon, the square is open and the stall can be stood at, the
+  cottages are walls rather than scenery, they are not all the same
+  trade, every offer is in real goods, tonight's deal is different
+  from last night's, and a trade at the counter moves the goods while
+  one from forty tiles away does not.
 - **Caves.** Every world has them, you can walk in from the mouth and reach
   the back of one, there is rock over your head and enough of it to stand up
   in, there is ore or crystal down there, and a framed doorway outside.

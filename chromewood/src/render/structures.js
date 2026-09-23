@@ -8,10 +8,10 @@
    Each recipe returns the light sites it wants at night.
    ============================================================ */
 
-import { vrand } from './props.js';
+import { vrand, lerpHex } from './props.js';
 import { TEX } from './textures.js';
 
-export function buildStructure(b, g, kind, x, y, z, variant) {
+export function buildStructure(b, g, kind, x, y, z, variant, lm) {
   switch (kind) {
     case 'beacon': return beacon(b, g, x, y, z);
     case 'cache': return cache(b, g, x, y, z, variant);
@@ -21,6 +21,7 @@ export function buildStructure(b, g, kind, x, y, z, variant) {
     case 'camp': return camp(b, g, x, y, z, variant);
     case 'mine': return mine(b, g, x, y, z, variant);
     case 'cavemouth': return caveMouth(b, g, x, y, z, variant);
+    case 'village': return village(b, g, x, y, z, variant, lm);
     default: return null;
   }
 }
@@ -187,6 +188,131 @@ function mine(b, g, x, y, z, variant) {
   g.box(0.20, 0.20, 0.06, 0xffb03a, { centered: true });
   b.rot(0); g.rot(0);
   return [{ x, y: y + 1.1, z, color: 0xffb03a, intensity: 1.2, range: 6 }];
+}
+
+/* ------------------------------------------------------- villages
+
+   A square with a well in it, a ring of cottages facing inward, a
+   trading stall under an awning, and a fence with a gate. Everything
+   is laid out from the variant, so two villages are never the same
+   shape, and everything is axis-aligned, because a cottage turned
+   thirteen degrees off the grid in a game built out of blocks looks
+   like a mistake rather than like character.
+
+   The colour of the awning and the sign is the trade, which is how
+   you know from across the valley whether it is worth the walk. */
+const VILLAGE_COLORS = {
+  grange: 0x9bd05a, smithy: 0xffb03a, trapline: 0xc08a5e, apothecary: 0xb07bff,
+};
+
+function cottage(b, g, x, y, z, spin, seed, accent) {
+  const w = 2.2 + vrand(seed, 3) * 0.7;
+  const d = 1.9 + vrand(seed, 4) * 0.5;
+  const wallH = 1.5;
+  const wall = lerpHex(0xcfc0a4, 0xb8a98c, vrand(seed, 5));
+  const beam = 0x6b4f33;
+  const thatch = lerpHex(0x8a6a3c, 0x9d7c48, vrand(seed, 6));
+
+  b.at(x, y, z).rot(spin).sc(1);
+  /* Sill, walls, and the dark beams that make it half-timbered. */
+  b.box(w + 0.24, 0.16, d + 0.24, 0x6d6960, { topColor: 0x8a857b, tex: TEX.GRAVEL });
+  b.at(x, y + 0.16, z).rot(spin);
+  b.box(w, wallH, d, wall, { topColor: lerpHex(wall, 0xffffff, 0.25), tex: TEX.PLANK });
+  for (const side of [-1, 1]) {
+    b.at(x + Math.cos(spin) * (w / 2) * side, y + 0.16, z + Math.sin(spin) * (w / 2) * side).rot(spin);
+    b.box(0.16, wallH, d + 0.06, beam, { topColor: 0x8a6742, tex: TEX.PLANK });
+  }
+  b.at(x, y + 0.16 + wallH - 0.12, z).rot(spin);
+  b.box(w + 0.1, 0.16, d + 0.1, beam, { topColor: 0x8a6742, tex: TEX.PLANK });
+
+  /* A stepped roof: three courses narrowing to a ridge, which is how
+     a pitched roof is built out of blocks without looking like a
+     wedge stuck on top. */
+  let ry = y + 0.16 + wallH;
+  let rw = w + 0.5, rd = d + 0.5;
+  for (let k = 0; k < 3; k++) {
+    b.at(x, ry, z).rot(spin);
+    b.box(rw, 0.30, rd, thatch, { topColor: lerpHex(thatch, 0xd8c9a0, 0.4), tex: TEX.PLANK });
+    ry += 0.30; rw -= 0.62; rd -= 0.42;
+    if (rw < 0.4 || rd < 0.3) break;
+  }
+
+  /* Door, window, and a lit window at that. */
+  const fx = Math.cos(spin + Math.PI / 2), fz = Math.sin(spin + Math.PI / 2);
+  b.at(x + fx * (d / 2 + 0.02), y + 0.16, z + fz * (d / 2 + 0.02)).rot(spin);
+  b.box(0.10, 0.95, 0.62, beam, { topColor: 0x8a6742, tex: TEX.PLANK });
+  g.at(x + fx * (d / 2 + 0.04), y + 0.95, z + fz * (d / 2 + 0.04)).rot(spin);
+  g.box(0.06, 0.34, 0.40, accent, { centered: true });
+  b.rot(0); g.rot(0);
+}
+
+function village(b, g, x, y, z, variant, lm) {
+  const accent = VILLAGE_COLORS[lm && lm.vkind] || 0xffb03a;
+  const lights = [];
+
+  /* Cottages where the generator put them, because that is where the
+     walls it made solid are. */
+  const FACE_SPIN = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+  const huts = (lm && lm.huts) || [];
+  for (const hut of huts) {
+    const cx = x + (hut.tx - lm.tx), cz = z + (hut.ty - lm.ty);
+    cottage(b, g, cx, y, cz, FACE_SPIN[hut.face], hut.seed, accent);
+    lights.push({ x: cx, y: y + 1.1, z: cz, color: 0xffc46a, intensity: 0.9, range: 6 });
+  }
+
+  /* The well: the reason the village is here. */
+  b.at(x, y, z).rot(0).sc(1);
+  b.box(1.5, 0.14, 1.5, 0x6d6960, { topColor: 0x8a857b, tex: TEX.GRAVEL });
+  b.at(x, y + 0.14, z).rot(0);
+  b.box(1.1, 0.55, 1.1, 0x7d7669, { topColor: 0x6a6358, tex: TEX.STONE });
+  b.at(x, y + 0.42, z).rot(0);
+  b.box(0.72, 0.30, 0.72, 0x2e4a58, { topColor: 0x2f9ec9, tex: TEX.WATER });
+  for (const side of [-1, 1]) {
+    b.at(x + side * 0.45, y + 0.69, z).rot(0);
+    b.box(0.14, 0.9, 0.14, 0x6b4f33, { topColor: 0x8a6742, tex: TEX.PLANK });
+  }
+  b.at(x, y + 1.56, z).rot(0);
+  b.box(1.3, 0.22, 0.9, 0x8a6a3c, { topColor: 0xb89a62, tex: TEX.PLANK });
+
+  /* The stall, two tiles off the middle, where the trading happens.
+     An awning in the trade's colour and a lantern over the counter. */
+  const sx = x + 2, sz = z + 2;
+  b.at(sx, y, sz).rot(0);
+  b.box(2.4, 0.12, 1.6, 0x6d6960, { topColor: 0x8a857b, tex: TEX.GRAVEL });
+  b.at(sx, y + 0.12, sz - 0.5).rot(0);
+  b.box(2.2, 0.85, 0.5, 0x8a6a45, { topColor: 0xb08a5e, tex: TEX.PLANK });
+  for (const side of [-1, 1]) {
+    b.at(sx + side * 1.05, y + 0.12, sz + 0.6).rot(0);
+    b.box(0.14, 1.7, 0.14, 0x6b4f33, { topColor: 0x8a6742, tex: TEX.PLANK });
+  }
+  b.at(sx, y + 1.82, sz + 0.1).rot(0);
+  b.box(2.5, 0.16, 1.7, accent, { topColor: lerpHex(accent, 0xffffff, 0.35), tex: TEX.PLANK });
+  g.at(sx, y + 1.62, sz + 0.75).rot(0);
+  g.box(0.22, 0.22, 0.22, 0xffc46a, { centered: true });
+  lights.push({ x: sx, y: y + 1.6, z: sz, color: 0xffc46a, intensity: 1.8, range: 9 });
+
+  /* A sign on a post, in the trade's colour, tall enough to spot. */
+  b.at(x - 3.2, y, z - 3.2).rot(0);
+  b.box(0.16, 2.1, 0.16, 0x6b4f33, { topColor: 0x8a6742, tex: TEX.PLANK });
+  b.at(x - 3.2, y + 1.7, z - 3.2).rot(0);
+  b.box(0.9, 0.55, 0.12, 0x8a6a45, { topColor: 0xb08a5e, tex: TEX.PLANK });
+  g.at(x - 3.2, y + 1.95, z - 3.26).rot(0);
+  g.box(0.5, 0.26, 0.06, accent, { centered: true });
+
+  /* Fence posts around the edge, with a gap for the track. */
+  for (let i = 0; i < 20; i++) {
+    const a = (i / 20) * Math.PI * 2;
+    if (a > 0.45 && a < 1.1) continue;          /* the gate */
+    const fx = Math.round(x + Math.cos(a) * 6.4);
+    const fz = Math.round(z + Math.sin(a) * 6.4);
+    b.at(fx, y, fz).rot(0);
+    b.box(0.14, 0.85, 0.14, 0x6b4f33, { topColor: 0x8a6742, tex: TEX.PLANK });
+    b.at(fx, y + 0.5, fz).rot(a + Math.PI / 2);
+    b.box(0.9, 0.10, 0.08, 0x5c4229, { topColor: 0x7a5a38, tex: TEX.PLANK });
+  }
+
+  b.rot(0); g.rot(0);
+  return lights;
 }
 
 /* The way into a cave: a timber frame with a lintel over it, turned

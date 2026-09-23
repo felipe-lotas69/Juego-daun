@@ -19,6 +19,7 @@
    ============================================================ */
 
 import { makeRng, hash2, fbm, ridge, worley } from '../core/rng.js';
+import { KIND_LIST } from '../game/trade.js';
 import { WORLD_TILES, WORLD_HALF, TILE, LEVEL_STEP, CHUNK } from '../core/config.js';
 
 export const MAX_LEVEL = 16;
@@ -148,6 +149,7 @@ export class World {
     this.roofBiome = new Uint8Array(n);
     this.caveId = new Uint8Array(n);
     this.caves = [];
+    this.villages = [];
     this.propHp = new Map();
     this.landmarks = [];
     this.spawnPoints = [];
@@ -256,6 +258,7 @@ export class World {
     this._scatter();
     this._starterGround();
     this._caves();
+    this._villages();
     this._ore();
     this._landmarks();
     this.stats.genMs = Date.now() - t0;
@@ -1268,6 +1271,120 @@ export class World {
     }
   }
 
+  /* --------------------------------------------------- villages
+
+     Three of them, each with a trade to do. They are the only place
+     in the world with people in it who are not trying to kill you,
+     which makes them worth walking to on their own; the trading is
+     what makes them worth walking back to.
+
+     Placed like a landmark and then left alone: the ground is
+     flattened, the props are cleared, a track is marked, and the
+     buildings are drawn by the renderer from the same seed. Nothing
+     about a village changes at run time, so nothing about one has to
+     be sent to anybody. */
+  _villages() {
+    const n = this.size;
+    const rng = makeRng(this.seed ^ 0x5e7712);
+    const WANT = 3;
+    const R = 7;
+
+    const kinds = KIND_LIST.slice();
+    /* Shuffle so it is not always the same three in the same order. */
+    for (let i = kinds.length - 1; i > 0; i--) {
+      const j = rng.int(i + 1);
+      const t = kinds[i]; kinds[i] = kinds[j]; kinds[j] = t;
+    }
+
+    for (let attempt = 0; attempt < 6000 && this.villages.length < WANT; attempt++) {
+      const tx = R + 4 + rng.int(n - (R + 4) * 2);
+      const ty = R + 4 + rng.int(n - (R + 4) * 2);
+      const i = this.idx(tx, ty);
+      const b = this.biome[i];
+      /* People live where there is water within reach, flat ground
+         and something to farm: not on a glacier or in the ash. */
+      if (b !== BIOME.MEADOW && b !== BIOME.FOREST && b !== BIOME.PINE) continue;
+      if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.CAVE)) continue;
+      const h = this.height[i];
+      if (h <= SEA_LEVEL + 1) continue;
+      if (this.reachMask && !this.reachMask[i]) continue;
+
+      /* Flat enough to build on, and nothing already there. */
+      let flat = true;
+      for (let oy = -R - 1; oy <= R + 1 && flat; oy++) {
+        for (let ox = -R - 1; ox <= R + 1; ox++) {
+          if (!this.inBounds(tx + ox, ty + oy)) { flat = false; break; }
+          const j = this.idx(tx + ox, ty + oy);
+          if (this.caveId[j]) { flat = false; break; }
+          if (this.flags[j] & (FLAG.WATER | FLAG.PLAZA)) { flat = false; break; }
+          if (Math.abs(this.height[j] - h) > 2) { flat = false; break; }
+        }
+      }
+      if (!flat) continue;
+
+      const d = Math.hypot(tx - this.plaza.tx, ty - this.plaza.ty);
+      if (d < 34 || d > n * 0.42) continue;
+      if (this.villages.some(v => Math.hypot(v.tx - tx, v.ty - ty) < 52)) continue;
+      if (this.landmarks.some(l => Math.abs(l.tx - tx) < 20 && Math.abs(l.ty - ty) < 20)) continue;
+
+      const id = this.villages.length + 1;
+      this._flatten(tx, ty, R);
+      for (let oy = -R; oy <= R; oy++) {
+        for (let ox = -R; ox <= R; ox++) {
+          if (Math.hypot(ox, oy) > R) continue;
+          const j = this.idx(tx + ox, ty + oy);
+          this.clearProp(tx + ox, ty + oy);
+          this.flags[j] |= FLAG.ROAD;
+        }
+      }
+
+      const kind = kinds[(id - 1) % kinds.length];
+      const v = {
+        id, kind, tx, ty, variant: rng.int(256),
+        x: this.tileToWorldX(tx), z: this.tileToWorldZ(ty),
+        y: this.heightAtTile(tx, ty),
+      };
+      /* The stall is where you trade, a couple of tiles off centre so
+         the middle of the square stays walkable. */
+      v.stallX = this.tileToWorldX(tx + 2);
+      v.stallZ = this.tileToWorldZ(ty + 2);
+
+      /* The cottages are laid out here rather than in the renderer,
+         because a house you can walk through is not a house. The
+         generator owns the seed and the collision flags; the
+         renderer draws what it is told. */
+      v.huts = [];
+      const hutCount = 5 + (v.variant % 3);
+      for (let k = 0; k < hutCount; k++) {
+        const a = (k / hutCount) * Math.PI * 2 + (rng() - 0.5) * 0.35;
+        const rad = 5.0 + rng() * 0.9;
+        const hx = Math.round(tx + Math.cos(a) * rad);
+        const hy = Math.round(ty + Math.sin(a) * rad);
+        /* Squared to the grid and facing the middle. */
+        const dx = tx - hx, dy = ty - hy;
+        const face = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 0 : 2) : (dy > 0 ? 1 : 3);
+        if (Math.abs(hx - (tx + 2)) <= 2 && Math.abs(hy - (ty + 2)) <= 2) continue;
+        if (v.huts.some(h => Math.abs(h.tx - hx) < 3 && Math.abs(h.ty - hy) < 3)) continue;
+        v.huts.push({ tx: hx, ty: hy, face, seed: rng.int(256) });
+        /* A two-by-two footprint of wall, with the doorway tile in
+           front of it left open so you can stand at the door. */
+        for (let oy = 0; oy <= 1; oy++) {
+          for (let ox = 0; ox <= 1; ox++) {
+            const j = this.idx(hx + ox - 1, hy + oy - 1);
+            if (this.inBounds(hx + ox - 1, hy + oy - 1)) this.flags[j] |= FLAG.SOLID;
+          }
+        }
+      }
+
+      this.villages.push(v);
+      this.landmarks.push({
+        kind: 'village', tx, ty, variant: v.variant,
+        village: id, vkind: kind, huts: v.huts,
+      });
+    }
+    this.stats.villages = this.villages.length;
+  }
+
   _ore() {
     const n = this.size;
     const rng = makeRng(this.seed ^ 0x0e1a7e);
@@ -1275,7 +1392,7 @@ export class World {
     for (let ty = 2; ty < n - 2; ty++) {
       for (let tx = 2; tx < n - 2; tx++) {
         const i = this.idx(tx, ty);
-        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID | FLAG.CAVE)) continue;
+        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID | FLAG.CAVE | FLAG.ROAD)) continue;
         const h = this.height[i];
         let drop = 0;
         for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -1305,7 +1422,12 @@ export class World {
         const oy = ty + Math.floor(rng() * 5) - 2;
         if (!this.inBounds(ox, oy)) continue;
         const j = this.idx(ox, oy);
-        if (this.flags[j] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID)) continue;
+        /* The seed tile passed the filter; the tiles the vein spreads
+           to have to pass it too. A seam dropped into a cave walls
+           the cave off, and by now the pass that would have cleared
+           it has already run - which is exactly how one seed in six
+           shipped a cave you could see fifteen tiles of. */
+        if (this.flags[j] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID | FLAG.CAVE | FLAG.ROAD)) continue;
         this.setProp(ox, oy, kind);
       }
     }
@@ -1362,7 +1484,7 @@ export class World {
         const ty = Math.round(lm.ty + Math.sin(a) * r);
         if (!this.inBounds(tx, ty)) continue;
         const i = this.idx(tx, ty);
-        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID)) continue;
+        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID | FLAG.CAVE | FLAG.ROAD)) continue;
         this.setProp(tx, ty, rng() < 0.6 ? PROP.SCRAP_PILE : PROP.CRATE);
       }
     }
@@ -1377,7 +1499,10 @@ export class World {
         const ty = Math.round(lm.ty + Math.sin(a) * r);
         if (!this.inBounds(tx, ty)) continue;
         const i = this.idx(tx, ty);
-        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA)) continue;
+        /* Not into a cave: a seam of solid ore dropped in a one-tile
+           passage walls the cave off, and by this point the pass
+           that would have cleared it has already run. */
+        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.CAVE | FLAG.ROAD)) continue;
         this.setProp(tx, ty, rng() < 0.4 ? PROP.ORE_IRON : rng() < 0.7 ? PROP.ORE_COPPER : PROP.ORE_GOLD);
       }
     }
