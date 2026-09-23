@@ -12,6 +12,7 @@
    ============================================================ */
 
 import * as THREE from '../../vendor/three.module.js';
+import { characterSheet, DIR_MAP, CELL_W, CELL_H, DIRS, FRAMES, dirIndex } from './sprite.js';
 import { MeshBuilder } from './geom.js';
 import { makeToonMaterial, makeBlobShadowMaterial } from './materials.js';
 import { LAYER_WORLD, LAYER_NO_OUTLINE } from './pipeline.js';
@@ -20,6 +21,7 @@ import { ANIMALS, EXTRA_ENEMIES } from '../game/creatures.js';
 import { TEX } from './textures.js';
 import { lerpHex } from './props.js';
 import { clamp01, TAU } from '../core/util.js';
+import { RENDER } from '../core/config.js';
 
 export const PLAYER_COLORS = [
   { body: 0x3f7fd4, trim: 0x7ec3ff, core: 0x7ee8ff, name: 'AZURE' },
@@ -41,50 +43,6 @@ let blobGeo = null;
 function cached(key, build) {
   if (!geoCache.has(key)) geoCache.set(key, build());
   return geoCache.get(key);
-}
-
-/* ------------------------------------------------------------ player */
-function buildPlayerParts(colorIndex) {
-  const c = PLAYER_COLORS[colorIndex % PLAYER_COLORS.length];
-  const dark = lerpHex(c.body, 0x101020, 0.42);
-  const boot = lerpHex(c.body, 0x101020, 0.62);
-
-  const torso = new MeshBuilder();
-  torso.at(0, 0, 0).box(0.46, 0.46, 0.34, c.body, { topColor: lerpHex(c.body, 0xffffff, 0.22) });
-  /* Shoulder yoke, which is most of what reads at this size. */
-  torso.at(0, 0.36, 0).box(0.54, 0.14, 0.38, dark, { topColor: lerpHex(dark, 0xffffff, 0.3) });
-  torso.at(0, 0.10, -0.18).box(0.22, 0.24, 0.06, c.trim, { topColor: c.trim });
-
-  const head = new MeshBuilder();
-  head.at(0, 0, 0).box(0.36, 0.34, 0.34, lerpHex(c.body, 0x2a2438, 0.55),
-    { topColor: lerpHex(c.body, 0x3a3450, 0.4) });
-  head.at(0, 0.34, 0).box(0.40, 0.07, 0.38, dark, { topColor: lerpHex(dark, 0xffffff, 0.25) });
-
-  const visor = new MeshBuilder();
-  visor.at(0.13, 0.12, 0).box(0.06, 0.10, 0.26, c.core, { centered: true });
-
-  const arm = new MeshBuilder();
-  arm.at(0, -0.16, 0).box(0.14, 0.34, 0.15, dark, { topColor: lerpHex(dark, 0xffffff, 0.25) });
-  arm.at(0, -0.30, 0).box(0.16, 0.12, 0.17, c.trim, { topColor: lerpHex(c.trim, 0xffffff, 0.3) });
-
-  const legs = new MeshBuilder();
-  legs.at(0, 0, 0).box(0.16, 0.30, 0.17, boot, { topColor: lerpHex(boot, 0xffffff, 0.2) });
-
-  const core = new MeshBuilder();
-  core.at(0, 0, 0).box(0.16, 0.16, 0.10, c.core, { centered: true });
-
-  const weapon = new MeshBuilder();
-  weapon.at(0.20, 0, 0).box(0.42, 0.11, 0.11, 0x5c6470, { centered: true, topColor: 0x8a93a1 });
-  weapon.at(0.02, 0, 0).box(0.14, 0.17, 0.13, 0x3e4550, { centered: true, topColor: 0x676f7c });
-
-  const weaponGlow = new MeshBuilder();
-  weaponGlow.at(0.42, 0, 0).box(0.09, 0.07, 0.07, c.core, { centered: true });
-
-  return {
-    torso: torso.build(), head: head.build(), visor: visor.build(),
-    arm: arm.build(), legs: legs.build(), core: core.build(),
-    weapon: weapon.build(), weaponGlow: weaponGlow.build(), colors: c,
-  };
 }
 
 /* ------------------------------------------------------------ enemies */
@@ -354,6 +312,42 @@ function ensureBlob() {
 }
 
 /* ---------------------------------------------------------- the actor */
+/* A quad wearing the character sheet. It stays upright and turns to
+   face the camera; which cell it shows comes from the direction the
+   character is walking relative to the screen. */
+function makeCharacterSprite(colors) {
+  const canvas = characterSheet(colors);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  /* One cell of the sheet at a time. */
+  tex.repeat.set(1 / DIRS, 1 / FRAMES);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+
+  /* The quad stands upright while the camera looks down at 35
+     degrees, which would squash it. Building it taller by exactly
+     that amount puts the pixels back on a square grid on screen. */
+  const h = 1.5;
+  const w = h * (CELL_W / CELL_H);
+  const geo = new THREE.PlaneGeometry(w, h / Math.cos(RENDER.cameraPitch));
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide,
+    toneMapped: false, fog: true,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  /* The outline pass reads a normal buffer, and a flat quad has one
+     normal, so a sprite in it would be traced as a rectangle. It
+     carries its own drawn outline instead. */
+  mesh.layers.set(LAYER_NO_OUTLINE);
+  const baseY = h / Math.cos(RENDER.cameraPitch) * 0.5;
+  mesh.position.y = baseY;
+  mesh.renderOrder = 3;
+  return { mesh, tex, baseY, col: -1, frame: -1, flip: false };
+}
+
 export class Actor {
   constructor(scene, kind, variant) {
     this.scene = scene;
@@ -373,24 +367,13 @@ export class Actor {
     };
 
     if (kind === 'player') {
-      const p = cached('player:' + variant, () => buildPlayerParts(variant));
-      this.colors = p.colors;
-      const bodyMat = makeToonMaterial({ vertexColors: true, rim: 1.25 });
-      const glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, fog: false });
-      this.parts.torso = solid(p.torso, bodyMat);
-      this.parts.head = solid(p.head, bodyMat);
-      this.parts.armL = solid(p.arm, bodyMat);
-      this.parts.armR = solid(p.arm, bodyMat);
-      this.parts.legL = solid(p.legs, bodyMat);
-      this.parts.legR = solid(p.legs, bodyMat);
-      this.parts.weapon = solid(p.weapon, bodyMat);
-      this.parts.visor = new THREE.Mesh(p.visor, glowMat);
-      this.parts.core = new THREE.Mesh(p.core, glowMat);
-      this.parts.muzzle = new THREE.Mesh(p.weaponGlow, glowMat);
-      for (const k of ['visor', 'core', 'muzzle']) {
-        this.parts[k].layers.set(LAYER_WORLD);
-        this.group.add(this.parts[k]);
-      }
+      /* The person is a sprite, not a stack of blocks. A head built
+         out of cubes is a cube; a head built out of pixels can have
+         a face, and at this size that is the whole difference. */
+      const colors = PLAYER_COLORS[variant % PLAYER_COLORS.length];
+      this.colors = colors;
+      this.sprite = makeCharacterSprite(colors);
+      this.group.add(this.sprite.mesh);
       this.height = 1.25;
     } else if (ALL_CREATURES[kind]) {
       const p = cached('enemy:' + kind, () => buildEnemyParts(kind));
@@ -425,6 +408,13 @@ export class Actor {
   dispose() {
     this.scene.remove(this.group);
     this.scene.remove(this.shadow);
+    /* The sheet is shared, but each actor has its own texture and
+       material wrapping it. */
+    if (this.sprite) {
+      this.sprite.tex.dispose();
+      this.sprite.mesh.material.dispose();
+      this.sprite.mesh.geometry.dispose();
+    }
   }
 
   /* `ent` is a simulation entity; this never writes to it. */
@@ -446,36 +436,48 @@ export class Actor {
     const down = ent.state === 'downed';
 
     if (this.kind === 'player') {
-      const P = this.parts;
-      const lean = clamp01(Math.hypot(ent.vx || 0, ent.vz || 0) / 7) * 0.18;
-      P.torso.position.set(0, 0.52 + bob, 0);
-      P.torso.rotation.set(lean * 0.5, 0, 0);
-      P.head.position.set(0, 0.96 + bob * 1.2, 0);
-      P.head.rotation.set(0, 0, Math.sin(this.time * 1.7) * 0.04);
-      P.visor.position.copy(P.head.position);
-      P.visor.rotation.copy(P.head.rotation);
-      P.core.position.set(0.12, 0.66 + bob, 0);
-      /* The gun arm tracks the aim; the other one swings. */
-      P.armR.position.set(0.10, 0.80 + bob, 0.26);
-      P.armR.rotation.set(0, 0, -1.25 - attack * 0.35);
-      P.armL.position.set(0.02, 0.80 + bob, -0.26);
-      P.armL.rotation.set(swing * 0.9, 0, 0.12);
-      P.legL.position.set(0, 0.30 - bob * 0.4, 0.11);
-      P.legL.rotation.set(-swing, 0, 0);
-      P.legR.position.set(0, 0.30 - bob * 0.4, -0.11);
-      P.legR.rotation.set(swing, 0, 0);
-      P.weapon.position.set(0.34 + attack * 0.06, 0.70 + bob, 0.24);
-      P.weapon.rotation.set(0, 0, 0);
-      P.muzzle.position.set(0.56 + attack * 0.06, 0.70 + bob, 0.24);
-      P.muzzle.scale.setScalar(0.4 + attack * 1.9);
-      P.muzzle.visible = attack > 0.05;
+      const S = this.sprite;
+      const yaw = opts.cameraYaw !== undefined ? opts.cameraYaw : RENDER.cameraYaw;
+
+      /* A billboard: the quad turns with the camera and never with
+         the character. Which way the character is pointing is drawn
+         into the sheet, not rotated on screen. */
+      g.rotation.set(0, yaw, 0);
+
+      const d = dirIndex(ent.facing || 0, yaw);
+      const map = DIR_MAP[d];
+      /* Four whole frames, stepped rather than eased: feet that land
+         on fractions of a pixel look like skating. */
+      const frame = moving > 0.06
+        ? Math.floor(this.time * (5.5 + moving * 5)) % FRAMES
+        : 0;
+      if (frame !== S.frame || map.col !== S.col) {
+        S.frame = frame;
+        S.col = map.col;
+        S.tex.offset.set(map.col / DIRS, 1 - (frame + 1) / FRAMES);
+      }
+      if (map.flip !== S.flip) {
+        S.flip = map.flip;
+        S.mesh.scale.x = map.flip ? -1 : 1;
+      }
+
+      /* A swing throws the character a little way along the screen in
+         the direction they are aiming. */
+      const screenX = Math.sin((ent.facing || 0) + yaw);
+      S.mesh.position.x = screenX * attack * 0.22;
 
       if (down) {
-        g.rotation.z = Math.PI / 2 * 0.85;
-        g.position.y = ent.y + 0.15;
+        /* Rolled onto their side, in the plane of the screen. */
+        S.mesh.rotation.z = Math.PI * 0.44;
+        S.mesh.position.y = S.baseY * 0.34;
       } else {
-        g.rotation.z = 0;
+        S.mesh.rotation.z = 0;
+        S.mesh.position.y = S.baseY;
       }
+
+      /* Sprites cannot squash convincingly, so a hit flashes the
+         colour instead; values above one brighten the map. */
+      S.mesh.material.color.setRGB(1 + hurt * 1.1, 1 - hurt * 0.4, 1 - hurt * 0.35);
     } else {
       const P = this.parts;
       const h = this.height;
@@ -537,7 +539,7 @@ export class Actor {
 
     /* Damage flash, done by pushing the whole group's scale rather
        than swapping materials, which would break instancing. */
-    if (hurt > 0.01) {
+    if (hurt > 0.01 && this.kind !== 'player') {
       const k = 1 + hurt * 0.16;
       g.scale.set(scale * k, scale * (2 - k), scale * k);
     }

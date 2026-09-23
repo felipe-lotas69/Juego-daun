@@ -20,6 +20,7 @@ export function buildStructure(b, g, kind, x, y, z, variant) {
     case 'wreck': return wreck(b, g, x, y, z, variant);
     case 'camp': return camp(b, g, x, y, z, variant);
     case 'mine': return mine(b, g, x, y, z, variant);
+    case 'cavemouth': return caveMouth(b, g, x, y, z, variant);
     default: return null;
   }
 }
@@ -186,6 +187,48 @@ function mine(b, g, x, y, z, variant) {
   g.box(0.20, 0.20, 0.06, 0xffb03a, { centered: true });
   b.rot(0); g.rot(0);
   return [{ x, y: y + 1.1, z, color: 0xffb03a, intensity: 1.2, range: 6 }];
+}
+
+/* The way into a cave: a timber frame with a lintel over it, turned
+   to face out of the hill, and a lantern somebody left burning. The
+   variant carries the direction rather than a random seed - a portal
+   facing into the rock it is set in would be worse than none. */
+function caveMouth(b, g, x, y, z, variant) {
+  const spin = (variant & 3) * (Math.PI / 2);
+  const fx = Math.cos(spin), fz = Math.sin(spin);   /* into the hill */
+  const sx = -fz, sz = fx;                          /* across it     */
+
+  /* Trodden ground at the threshold. */
+  b.at(x, y, z).rot(spin).sc(1);
+  b.box(2.6, 0.12, 2.6, 0x6d6960, { topColor: 0x8a857b, tex: TEX.GRAVEL });
+
+  /* Two posts and a lintel, straddling the opening. */
+  for (const side of [-1, 1]) {
+    b.at(x + sx * 1.05 * side, y + 0.12, z + sz * 1.05 * side).rot(spin);
+    b.box(0.30, 1.9, 0.34, 0x6b4f33, { topColor: 0x8a6742, tex: TEX.PLANK });
+  }
+  b.at(x, y + 2.02, z).rot(spin);
+  b.box(0.42, 0.30, 2.6, 0x6b4f33, { topColor: 0x8a6742, tex: TEX.PLANK });
+  /* A brace across the top, so it reads as built and not as two sticks. */
+  b.at(x, y + 1.72, z).rot(spin);
+  b.box(0.24, 0.22, 2.0, 0x5c4229, { topColor: 0x7a5a38, tex: TEX.PLANK });
+
+  /* Spoil: what came out of the hole, heaped beside the door. */
+  for (let i = 0; i < 5; i++) {
+    const a = spin + 1.9 + i * 0.62;
+    const r = 1.5 + vrand(variant + i * 37, 40 + i) * 0.7;
+    b.at(x + Math.cos(a) * r, y, z + Math.sin(a) * r).rot(a);
+    b.taper(0.46, 0.24, 0.42, 0.7, 0x7d7669, { topColor: 0x9a938a, tex: TEX.GRAVEL, twist: 0.4 });
+  }
+
+  /* The lantern, which is also the thing you can see from a distance. */
+  b.at(x - fx * 1.15 + sx * 1.05, y + 1.5, z - fz * 1.15 + sz * 1.05).rot(spin);
+  b.box(0.16, 0.26, 0.16, 0x4a4038, { topColor: 0x655a4e, tex: TEX.FLAT });
+  g.at(x - fx * 1.15 + sx * 1.05, y + 1.5, z - fz * 1.15 + sz * 1.05).rot(spin);
+  g.box(0.20, 0.20, 0.20, 0xffb03a, { centered: true });
+
+  b.rot(0); g.rot(0);
+  return [{ x: x - fx * 1.1, y: y + 1.5, z: z - fz * 1.1, color: 0xffb03a, intensity: 1.6, range: 8 }];
 }
 
 /* A crashed hull. Half buried, still leaking power. */

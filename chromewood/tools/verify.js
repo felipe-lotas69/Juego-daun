@@ -24,6 +24,8 @@
    ============================================================ */
 
 import { World, FLAG, SOLID_PROPS, HARVEST, PLATEAUS } from '../src/world/worldgen.js';
+import { canStand } from '../src/game/movement.js';
+import { PLAYER, LEVEL_STEP } from '../src/core/config.js';
 import { Sim, PHASE, ARC, BEACON_COSTS, emptyInput } from '../src/game/sim.js';
 import {
   SKILLS, ABILITIES, ENEMIES, BEACON_UPGRADES, SKILL_BRANCHES, PRIMARY_ID,
@@ -41,6 +43,12 @@ import {
 } from '../src/net/protocol.js';
 import { Mirror } from '../src/net/mirror.js';
 import { brokerConfig, brokerIdForRoom } from '../src/net/peer.js';
+import { hasGlyph } from '../src/ui/font.js';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const UI_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'ui');
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf('--' + name);
@@ -310,22 +318,34 @@ const passable = (w, i) => {
 /* ------------------------------------------ 3. a bot plays the run */
 console.log('\nsimulated runs');
 
-/* The nearest thing this player is actually equipped to harvest. */
-function findResource(sim, p, kinds) {
+/* The nearest thing this player is actually equipped to harvest,
+   preferring whatever the next thing on its shopping list is short
+   of. A purely greedy forager was fine when props were spread evenly,
+   but now that cover and woodland cluster separately it would settle
+   into a meadow pulling grass forever and never walk to the trees -
+   which a person obviously would. */
+function findResource(sim, p, kinds, wanted, ignore) {
   const w = sim.world;
   const ctx = w.worldToTileX(p.x), cty = w.worldToTileZ(p.z);
   let best = null, bestD = 1e9;
-  for (let r = 1; r < 26 && !best; r++) {
+  /* Every ring, not just the first one with anything in it: stopping
+     at the first hit means the bot grinds whatever rock happens to
+     be nearest and never walks the extra four tiles to the tree it
+     actually needs. */
+  for (let r = 1; r < 26; r++) {
     for (let a = 0; a < r * 8; a++) {
       const ang = (a / (r * 8)) * Math.PI * 2;
       const tx = ctx + Math.round(Math.cos(ang) * r), ty = cty + Math.round(Math.sin(ang) * r);
       if (!w.inBounds(tx, ty)) continue;
+      if (ignore && ignore.has(tx * 4096 + ty)) continue;
       const h = HARVEST[w.prop[w.idx(tx, ty)]];
       if (!h || !kinds.includes(h.tool)) continue;
       if (h.tier > bestToolTier(p, h.tool === 'hand' ? 'blunt' : h.tool)) continue;
       const x = w.tileToWorldX(tx), z = w.tileToWorldZ(ty);
-      const d = (x - p.x) ** 2 + (z - p.z) ** 2;
-      if (d < bestD) { bestD = d; best = { x, z }; }
+      let d = (x - p.x) ** 2 + (z - p.z) ** 2;
+      /* Something we actually need is worth a long walk. */
+      if (wanted && wanted.size && h.yield.some(([item]) => wanted.has(item))) d *= 0.05;
+      if (d < bestD) { bestD = d; best = { x, z, tx, ty }; }
     }
   }
   return best;
@@ -378,7 +398,14 @@ function driveBot(sim, p, i, seq, recipes) {
 
   let tx, tz, fire = false, interact = false;
   const enemy = sim._nearestEnemy(p.x, p.z, 14);
-  const gate = sim.gates.find(g => !g.sealed);
+  /* The nearest unsealed gate, not the first in the list: the first
+     one can be on the far side of a mountain range. */
+  let gate = null, gateD = Infinity;
+  for (const g of sim.gates) {
+    if (g.sealed) continue;
+    const d = Math.hypot(g.x - p.x, g.z - p.z);
+    if (d < gateD) { gateD = d; gate = g; }
+  }
   const repairDone = BEACON_REPAIR.every(([it, n]) => (sim.beacon.store[it] || 0) >= n);
 
   if (sim.beacon.lit && gate) {
@@ -391,10 +418,51 @@ function driveBot(sim, p, i, seq, recipes) {
     fire = !!enemy && d <= 4;
   } else if (enemy && (sim.beacon.lit || invCount(p, 'club') + invCount(p, 'spear') > 0)) {
     tx = enemy.x; tz = enemy.z; fire = true;
-  } else if (!sim.beacon.lit && (repairDone || BEACON_REPAIR.some(([it, n]) => invCount(p, it) >= Math.min(n, 8)))) {
+  } else if (!sim.beacon.lit && (repairDone || BEACON_REPAIR.some(([it, n]) =>
+      invCount(p, it) >= Math.min(n, 8) && (sim.beacon.store[it] || 0) < n))) {
+    /* Only haul what the beacon still wants. Carrying a stack it has
+       already had its fill of used to pin the bot to the console
+       holding the interact key until it starved. */
     tx = sim.beacon.x; tz = sim.beacon.z; interact = true;
   } else {
-    const node = findResource(sim, p, ['axe', 'pick', 'hand']);
+    /* What is the next thing on the list short of? */
+    const wanted = new Set();
+    for (const target of SHOPPING) {
+      if (invCount(p, target) > 0 && !BUILDINGS[target]) continue;
+      const rec = recipes.find(x => x.out[0] === target);
+      if (!rec) continue;
+      let short = false;
+      for (const [item, n] of rec.in) {
+        if (invCount(p, item) < n) { wanted.add(item); short = true; }
+      }
+      if (short) break;
+    }
+    /* The bot walks in a straight line at whatever it picked, so a
+       target across a cliff or a lake is a target it will lean on
+       forever. Give up on one that is not getting any closer. */
+    if (!p._ignore) { p._ignore = new Set(); p._lastD = Infinity; p._stuck = 0; }
+    /* The search walks twenty-six rings of tiles; at sixty frames a
+       second per bot that is most of the step budget, and the answer
+       does not change between frames. Keep it until the tile it
+       picked is gone or a third of a second has passed. */
+    let node = p._node;
+    const stale = !node || i - (p._nodeAt || 0) > 20
+      || !HARVEST[sim.world.prop[sim.world.idx(node.tx, node.ty)]]
+      || p._ignore.has(node.tx * 4096 + node.ty);
+    if (stale) {
+      node = findResource(sim, p, ['axe', 'pick', 'hand'], wanted, p._ignore);
+      p._node = node; p._nodeAt = i;
+    }
+    if (node) {
+      const d = Math.hypot(node.x - p.x, node.z - p.z);
+      if (d > p._lastD - 0.02) p._stuck += 1; else p._stuck = 0;
+      p._lastD = d;
+      if (p._stuck > 240) {
+        p._ignore.add(node.tx * 4096 + node.ty);
+        p._stuck = 0; p._lastD = Infinity;
+        if (p._ignore.size > 400) p._ignore.clear();
+      }
+    } else { p._stuck = 0; p._lastD = Infinity; }
     if (node) { tx = node.x; tz = node.z; fire = true; }
     else { tx = sim.beacon.x; tz = sim.beacon.z; }
   }
@@ -402,8 +470,29 @@ function driveBot(sim, p, i, seq, recipes) {
   const dx = tx - p.x, dz = tz - p.z, m = Math.hypot(dx, dz) || 1;
   const close = m < 1.4;
   const holding = interact || (sim.beacon.lit && gate && m <= 4);
+
+  /* The bot has no pathfinder. Without one it leans on the first
+     cliff between it and whatever it wants and stays there for the
+     rest of the run, which makes a world with more relief in it look
+     like a broken game. Sliding along the obstacle for a couple of
+     seconds when the distance stops falling is not pathfinding, but
+     it gets round a ridge, and it is the same thing a person does. */
+  let mx = close ? 0 : dx / m, mz = close ? 0 : dz / m;
+  if (!close) {
+    const nav = p._nav || (p._nav = { lastD: Infinity, stuck: 0, side: 1, until: -1 });
+    if (m > nav.lastD - 0.004) nav.stuck += 1; else nav.stuck = 0;
+    nav.lastD = m;
+    if (nav.stuck > 90 && i > nav.until) { nav.side = -nav.side; nav.until = i + 180; nav.stuck = 0; }
+    if (i < nav.until) {
+      const a = nav.side * 1.15;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const rx = mx * ca - mz * sa, rz = mx * sa + mz * ca;
+      mx = rx; mz = rz;
+    }
+  }
+
   sim.setInput(p.id, {
-    seq, mx: close ? 0 : dx / m, mz: close ? 0 : dz / m,
+    seq, mx, mz,
     ax: enemy && holding ? enemy.x : tx, az: enemy && holding ? enemy.z : tz,
     fire: fire && (holding || m < 3), dash: false,
     abil: sim.beacon.lit && i % 50 === 0 ? 1 : 0, interact, sprint: m > 8,
@@ -470,7 +559,11 @@ function driveBot(sim, p, i, seq, recipes) {
     else if (!(gathered > 2 * MINUTES) || kinds.size < 4) bad(label, `the bots gathered almost nothing in ${MINUTES} minutes: ` +
       `${carried} carried, ${delivered} delivered, kinds: ${[...kinds].join(' ') || '(none)'}`);
     else if (!harvested) bad(label, 'nothing in the world was ever broken down, so harvesting is dead');
-    else if (!crafted) bad(label, 'nobody finished a single craft, so the crafting chain is broken');
+    else if (!crafted) {
+      bad(label, 'nobody finished a single craft, so the crafting chain is broken: '
+        + `${events.craftstart || 0} started, ${events.craftfail || 0} refused, `
+        + `${events.prop_break || 0} harvested, carrying ` + bots.map(b => JSON.stringify(b.inv)).join(' '));
+    }
     else {
       ok(label, `night ${sim.night}, arc ${sim.arc}, lvl ${bots.map(b => b.level).join('/')}, ` +
         `${totalKills} kills, ${gathered} items in ${kinds.size} kinds, ${sim.buildings.length} built, ` +
@@ -526,6 +619,86 @@ console.log('\nthe building loop');
   ok('building loop', `${rec.in.map(([i, n]) => n + ' ' + i).join(' + ')} -> campfire -> placed`);
 }
 
+/* ------------------------------------------------- 3a2. farming */
+console.log('\ngrowing things');
+{
+  /* Seeds have to be gettable from the world, a plot has to accept
+     one, it has to come up on its own, and pulling it has to give
+     back more than it cost - otherwise a garden is a decoration. */
+  const seedProps = Object.entries(HARVEST)
+    .filter(([, h]) => h.yield.some(([id]) => id.startsWith('seed_')));
+  check(seedProps.length >= 3, 'seeds come off plants you can already pull up',
+    `only ${seedProps.length} props drop seeds`);
+
+  const def = BUILDINGS.plot;
+  check(!!def && !!def.farm, 'there is something to plant in', 'no garden plot');
+
+  /* One clean world per crop. Sharing a plot across three cycles
+     means the previous harvest's seeds, seven minutes of night and
+     a replant all get a vote in whether the next one worked, and a
+     test that can fail for three reasons tells you nothing. */
+  const seeds = Object.keys(def.farm.crops);
+  let grewAll = true, paidBack = true;
+  let lastSnap = null, lastPlot = null;
+
+  for (const seed of seeds) {
+    const sim = new Sim(606, { difficulty: 1 });
+    const p = sim.addPlayer('p', 'FARMER');
+    const w = sim.world;
+    const tx = w.worldToTileX(p.x) + 1, ty = w.worldToTileZ(p.z);
+    w.clearProp(tx, ty);
+    const plot = sim.addBuilding('plot', tx, ty, 'p');
+    lastPlot = plot;
+    /* This is a test of farming, not of surviving the night. */
+    const keep = () => { p.hp = p.maxHp; p.state = 'alive'; plot.hp = plot.maxHp; };
+
+    invGive(p, seed, 1);
+    p.hotbar[0] = seed; p.hotbarIndex = 0;
+    for (let i = 0; i < 90; i++) {
+      p.x = plot.x - 1.2; p.z = plot.z; keep();
+      sim.setInput('p', { seq: i, mx: 0, mz: 0, ax: plot.x, az: plot.z, interact: true });
+      sim.step(1 / 60); sim.drainEvents();
+    }
+    if (plot.seed !== seed || invCount(p, seed) !== 0) {
+      grewAll = `planting ${seed} gave ${plot.seed} and left ${invCount(p, seed)} in the pack`;
+      break;
+    }
+
+    for (let i = 0; i < 60 * (def.farm.time + 8) && plot.grow < 1; i++) {
+      keep();
+      sim.step(1 / 60); sim.drainEvents();
+    }
+    if (plot.grow < 1) { grewAll = `${seed} only reached ${plot.grow.toFixed(2)}`; break; }
+
+    const want = def.farm.crops[seed].yield[0][0];
+    const had = invCount(p, want);
+    let pulled = false;
+    for (let i = 0; i < 400 && !pulled; i++) {
+      p.x = plot.x - 1.2; p.z = plot.z; keep();
+      sim.setInput('p', { seq: i, mx: 0, mz: 0, ax: plot.x, az: plot.z, interact: true });
+      sim.step(1 / 60);
+      for (const ev of sim.drainEvents()) if (ev.t === 'harvested') pulled = true;
+    }
+    for (let i = 0; i < 180; i++) {
+      keep();
+      sim.setInput('p', { seq: i, mx: 0, mz: 0, ax: p.x + 1, az: p.z });
+      sim.step(1 / 60); sim.drainEvents();
+    }
+    if (!pulled || invCount(p, want) <= had) {
+      paidBack = `${seed} ripened but gave no ${want}`;
+      break;
+    }
+    lastSnap = encodeSnapshot(sim);
+  }
+  check(grewAll === true, 'every seed can be planted and comes up', String(grewAll));
+  check(paidBack === true, 'pulling a crop pays out', String(paidBack));
+
+  const row = lastSnap && lastPlot && lastSnap.B.find(r => r[0] === lastPlot.id);
+  check(!!row && row.length >= 11, 'crop state is on the wire',
+    'a building row has no room for what is planted in it');
+  ok('farming', `${seeds.length} crops, ${def.farm.time}s to come up`);
+}
+
 /* ------------------------------------------- 3b. same seed, same run */
 console.log('\ndeterminism');
 {
@@ -552,6 +725,132 @@ console.log('\ndeterminism');
   const a = play(), b = play();
   check(a === b, 'the same seed plays out the same way',
     'two runs of seed 31337 diverged, so something still calls Math.random');
+}
+
+/* ----------------------------------------------------- 2b. caves */
+console.log('\ncaves');
+{
+  /* A cave has to be three things at once: somewhere you can get
+     into, somewhere with rock over your head, and somewhere worth
+     the walk. A hole in a hillside with nothing in it is scenery. */
+  let worlds = 0, caves = 0, walkable = 0, stocked = 0, roofed = 0, thin = 0;
+  const sample = [];
+  for (let k = 0; k < SEEDS; k++) {
+    const w = new World(2000 + k * 7919);
+    worlds++;
+    caves += w.caves.length;
+    for (const cave of w.caves) {
+      /* Walk in from the mouth under the same climb rule bodies use. */
+      const seen = new Set();
+      const queue = [[cave.tx, cave.ty]];
+      seen.add(cave.tx * 4096 + cave.ty);
+      let reached = 0;
+      while (queue.length) {
+        const [tx, ty] = queue.pop();
+        const h = w.height[w.idx(tx, ty)];
+        if (w.caveId[w.idx(tx, ty)] === cave.id) reached++;
+        for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = tx + ox, ny = ty + oy;
+          if (!w.inBounds(nx, ny)) continue;
+          const key = nx * 4096 + ny;
+          if (seen.has(key)) continue;
+          const i = w.idx(nx, ny);
+          if (w.caveId[i] !== cave.id) continue;
+          if (w.flags[i] & FLAG.SOLID) continue;
+          if (Math.abs(w.height[i] - h) > 1) continue;
+          seen.add(key);
+          queue.push([nx, ny]);
+        }
+      }
+      /* Most of it, not all: a disc carve can leave a pocket walled
+         off by its own boulders, and that is a cave, not a bug. */
+      if (reached >= cave.tiles.length * 0.75) walkable++;
+
+      let worth = 0, over = 0, low = 0;
+      for (const i of cave.tiles) {
+        if (HARVEST[w.prop[i]]) worth++;
+        if (!w.roof[i]) continue;
+        over++;
+        if (w.roof[i] - w.height[i] < 4) low++;
+      }
+      if (worth >= cave.tiles.length * 0.12) stocked++;
+      if (over >= cave.tiles.length * 0.8) roofed++;
+      thin += low;
+      if (sample.length < 3) sample.push(`${cave.tiles.length} tiles, ${worth} things in it`);
+    }
+  }
+  check(caves >= worlds * 3, 'every world has caves in it',
+    `${caves} caves across ${worlds} worlds`);
+  check(walkable === caves, 'you can walk in from the mouth and reach the back',
+    `${walkable} of ${caves} caves are walkable from their own doorway`);
+  check(roofed === caves, 'there is rock over your head, not sky',
+    `${roofed} of ${caves} caves are roofed`);
+  check(thin === 0, 'and enough of it to stand up in',
+    `${thin} tiles have less than two terraces of rock overhead`);
+  check(stocked === caves, 'and something down there worth the walk',
+    `${stocked} of ${caves} caves carry ore, crystal or mushrooms`);
+  /* The portal is how anyone finds the thing. */
+  const w0 = new World(2000);
+  const portals = w0.landmarks.filter(l => l.kind === 'cavemouth').length;
+  check(portals === w0.caves.length, 'and a framed doorway you can see from outside',
+    `${portals} portals for ${w0.caves.length} caves`);
+  ok('caves', sample.join('; '));
+}
+
+/* ------------------------------------------ 3b2. nobody stays stuck */
+console.log('\ngetting unstuck');
+{
+  /* A body whose four collision probes all land somewhere illegal
+     used to be frozen for good: every candidate move failed the
+     test, including the one that did not move at all. It happens in
+     a corner between two cliff steps, under a prop that was placed
+     on your feet, inside a wall somebody built round you. The player
+     stayed alive, at full health, unable to take a single step, and
+     starved. This is the check that it can walk out. */
+  const sim = new Sim(20260921, { difficulty: 1 });
+  const p = sim.addPlayer('p0', 'WEDGED');
+  const w = sim.world;
+
+  /* Find a spot the collision test refuses outright. */
+  let wedged = null;
+  const OFF = [-0.35, 0, 0.35];
+  for (let ty = 2; ty < w.size - 2 && !wedged; ty++) {
+    for (let tx = 2; tx < w.size - 2 && !wedged; tx++) {
+      for (const ox of OFF) {
+        for (const oz of OFF) {
+          const x = w.tileToWorldX(tx) + ox, z = w.tileToWorldZ(ty) + oz;
+          if (w.flagAt(x, z) & FLAG.WATER) continue;
+          const level = Math.round(w.groundAt(x, z) / LEVEL_STEP);
+          /* Standing on clear ground, but boxed in by the probes. */
+          if (w.blockedAt(x, z, level)) continue;
+          if (canStand(w, x, z, PLAYER.radius, level)) continue;
+          wedged = { x, z, tx, ty };
+          break;
+        }
+        if (wedged) break;
+      }
+    }
+  }
+  check(!!wedged, 'the world contains a spot that wedges a body',
+    'no wedging tile found, so this check proves nothing');
+
+  if (wedged) {
+    p.x = wedged.x; p.z = wedged.z;
+    p.y = w.groundAt(p.x, p.z);
+    const x0 = p.x, z0 = p.z;
+    for (let i = 0; i < 120; i++) {
+      sim.setInput(p.id, { ...emptyInput(), seq: i, mx: 1, mz: 0.35, ax: p.x + 8, az: p.z + 3 });
+      sim.step(1 / 60);
+      sim.drainEvents();
+    }
+    const moved = Math.hypot(p.x - x0, p.z - z0);
+    check(moved > 1, 'a wedged body walks out of it',
+      'it moved ' + moved.toFixed(3) + ' units in two seconds of walking');
+    const level = Math.round(p.y / LEVEL_STEP);
+    check(canStand(w, p.x, p.z, PLAYER.radius, level),
+      'and ends up somewhere it is allowed to be',
+      'it walked out and stopped somewhere still illegal');
+  }
 }
 
 /* --------------------------------------------------- 4. the whole arc */
@@ -644,6 +943,37 @@ console.log('\nthe optional content');
   }
   ok('arc', seenArcs.join(' -> ') + ` then ${sim.arc}, ${sim.night} nights, ` +
     `${sim.stats.gatesSealed}/${sim.gates.length} gates`);
+}
+
+/* ------------------------------------------------ 3c. the interface */
+console.log('\nthe interface');
+{
+  /* Every character the UI prints has to exist in the font. It does
+     not throw when one does not - it draws a blank - so a missing
+     glyph is invisible in code and obvious on screen, which is the
+     worst way round. "HOLD [G] - BEACON CONSOLE" shipped with a hole
+     in the middle of it for exactly this reason. */
+  /* menus.js is the only part of the interface that is DOM rather
+     than canvas, so it draws with real fonts and is not bound by
+     this one. Everything else goes through the bitmap. */
+  const files = readdirSync(UI_DIR).filter(f => f.endsWith('.js') && f !== 'menus.js');
+  const holes = new Map();
+  for (const f of files) {
+    const text = readFileSync(join(UI_DIR, f), 'utf8');
+    for (const m of text.matchAll(/'([^'\\]*)'|`([^`\\$]*)`/g)) {
+      const lit = m[1] ?? m[2] ?? '';
+      for (const ch of lit) {
+        if (ch === ' ' || hasGlyph(ch)) continue;
+        /* Only letters and punctuation people would read, not the
+           odd byte inside a regex or a colour string. */
+        if (ch.codePointAt(0) < 0x80) continue;
+        holes.set(ch, (holes.get(ch) || '') + (holes.get(ch) ? '' : f));
+      }
+    }
+  }
+  check(holes.size === 0, 'every character the interface prints exists in the font',
+    [...holes].map(([ch, f]) => `${JSON.stringify(ch)} (U+${ch.codePointAt(0).toString(16).toUpperCase()}) in ${f}`).join(', '));
+  ok('interface', `${files.length} ui files scanned`);
 }
 
 /* ------------------------------------- 4b. the peer-to-peer address */

@@ -47,6 +47,85 @@ export class WorldView {
     this.lightSites = [];      /* candidate point lights, filled per chunk */
     this.structures = [];
     this._buildStructures();
+    this.caveRoofs = [];
+    this._buildCaveRoofs();
+  }
+
+  /* The hill over a cave, put back.
+
+     Without it a cave is a slot cut in a hillside that you can see
+     the whole of from outside, which is a trench, not a cave. With
+     it the hill is unbroken until you walk in, and then the roof of
+     the one cave you are standing in is taken away so you can see
+     where you are going - the oldest trick in isometric games and
+     still the only one that works.
+
+     One mesh per cave rather than per chunk: caves are small, and a
+     whole hillside popping in and out a chunk at a time would look
+     like the world breaking. */
+  _buildCaveRoofs() {
+    const w = this.world;
+    if (!w.caves || !w.caves.length) return;
+    for (const cave of w.caves) {
+      const b = new MeshBuilder();
+      for (const i of cave.tiles) {
+        const roofTop = w.roof[i];
+        if (!roofTop) continue;                 /* the doorway, left open */
+        const tx = i % w.size, ty = (i / w.size) | 0;
+        const floorY = w.height[i] * LEVEL_STEP;
+        const topY = roofTop * LEVEL_STEP;
+        /* The ceiling starts two levels above the floor: head height,
+           and low enough that the rock reads as thick. */
+        const baseY = floorY + LEVEL_STEP * 2;
+        if (topY <= baseY) continue;
+
+        const biome = w.roofBiome[i];
+        const pal = GROUND_COLORS[biome] || GROUND_COLORS[BIOME.HIGHLAND];
+        const tex = GROUND_TEX[biome] || GROUND_TEX[BIOME.HIGHLAND];
+        const top = ((tx + ty) & 1) ? pal[0] : pal[1];
+        const wx = w.tileToWorldX(tx), wz = w.tileToWorldZ(ty);
+
+        /* A side face only where the rock actually ends: inside the
+           hill they would all be hidden, and at the mouth they are
+           what makes the opening read as a hole. */
+        const open = (ox, oy) => {
+          const jx = tx + ox, jy = ty + oy;
+          if (!w.inBounds(jx, jy)) return true;
+          const j = w.idx(jx, jy);
+          return w.caveId[j] === cave.id && !w.roof[j];
+        };
+        b.at(wx, baseY, wz).rot(0).sc(1);
+        b.box(TILE, topY - baseY, TILE, pal[2], {
+          topColor: top,
+          topTex: tex[0],
+          tex: tex[1],
+          faces: {
+            py: true, ny: true,
+            nx: open(-1, 0), px: open(1, 0), nz: open(0, -1), pz: open(0, 1),
+          },
+        });
+      }
+      if (b.isEmpty) { this.caveRoofs.push(null); continue; }
+      const mesh = new THREE.Mesh(b.build(), this.solidMat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.layers.set(LAYER_WORLD);
+      mesh.matrixAutoUpdate = false;
+      this.group.add(mesh);
+      this.caveRoofs.push(mesh);
+    }
+  }
+
+  /* Lift the roof off whichever cave the camera is looking at. */
+  _updateCaveRoofs(target) {
+    const w = this.world;
+    if (!this.caveRoofs.length) return;
+    const inside = w.caveIdAt ? w.caveIdAt(target.x, target.z) : 0;
+    for (let k = 0; k < w.caves.length; k++) {
+      const mesh = this.caveRoofs[k];
+      if (!mesh) continue;
+      mesh.visible = w.caves[k].id !== inside;
+    }
   }
 
   /* Landmarks are built once and kept: there are only a couple of
@@ -111,6 +190,8 @@ export class WorldView {
     for (const [key, chunk] of this.chunks) {
       if (!want.has(key)) { this.disposeChunk(key, chunk); }
     }
+
+    this._updateCaveRoofs(cameraTarget);
   }
 
   pendingHas(key) {
@@ -281,6 +362,7 @@ export class WorldView {
 
   dispose() {
     for (const [key, chunk] of this.chunks) this.disposeChunk(key, chunk);
+    for (const m of this.caveRoofs) if (m) m.geometry.dispose();
     if (this.structureMesh) this.structureMesh.geometry.dispose();
     if (this.structureGlow) this.structureGlow.geometry.dispose();
     this.scene.remove(this.group);

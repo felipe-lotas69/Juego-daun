@@ -372,7 +372,8 @@ export class Hud {
       if (lm.kind === 'rift') continue;
       const p = map(lm.x, lm.z);
       const col = lm.kind === 'beacon' ? (sim.beacon.lit ? '#7ee8ff' : '#6b6b6b')
-        : lm.kind === 'mine' ? '#ffb03a' : lm.kind === 'shrine' ? '#63ff9d'
+        : lm.kind === 'mine' || lm.kind === 'cavemouth' ? '#ffb03a'
+        : lm.kind === 'shrine' ? '#63ff9d'
         : lm.kind === 'cache' ? '#ffd24a' : 'rgba(180,190,210,0.55)';
       c.fillStyle = col;
       const s = lm.kind === 'beacon' ? 2 * S : S;

@@ -511,7 +511,11 @@ function syncBuildings(dt, sim, time) {
     live.add(b.id);
     let view = game.buildingViews.get(b.id);
     /* Rebuild only when something about the look actually changed. */
-    const stateKey = `${b.open ? 1 : 0}:${b.def.seal ? Math.floor((b.progress || 0) * 12) : 0}`;
+    /* Growth is quantised into eight steps: a crop should visibly
+       come on, but rebuilding the mesh every frame for a plant that
+       takes two and a half minutes would be absurd. */
+    const growStep = b.def.farm ? `${b.seed || '-'}:${Math.floor((b.grow || 0) * 8)}` : '';
+    const stateKey = `${b.open ? 1 : 0}:${b.def.seal ? Math.floor((b.progress || 0) * 12) : 0}:${growStep}`;
     if (!view || view.stateKey !== stateKey) {
       if (view) {
         rig.scene.remove(view.group);
@@ -519,8 +523,10 @@ function syncBuildings(dt, sim, time) {
       }
       const sb = new MeshBuilder(), gb = new MeshBuilder();
       const gate = sim.gates && sim.gates.find(g => Math.abs(g.x - b.x) < 2 && Math.abs(g.z - b.z) < 2);
+      const crop = b.def.farm && b.seed ? b.def.farm.crops[b.seed] : null;
       buildStructureMesh(sb, gb, b.key, 0, 0, 0, {
         open: b.open, t: 0, angle: 0, progress: gate ? gate.progress : 0,
+        seed: b.seed || null, grow: b.grow || 0, cropTint: crop ? crop.tint : undefined,
       });
       const group = new THREE.Group();
       if (!sb.isEmpty) {
@@ -1144,6 +1150,7 @@ requestAnimationFrame(frame);
 window.__ready = true;
 window.__game = game;
 game.__setZoom = (z) => cam.setZoom(z);
+game.__snapCam = (x, y, z) => cam.snapTo(x, y, z);
 game.__camera = cam;
 game.__pipeline = pipeline;
 game.__panels = panels;

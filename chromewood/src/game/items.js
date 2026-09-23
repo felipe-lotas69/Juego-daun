@@ -19,6 +19,21 @@ export const ITEMS = {
   wood:      { name: 'Wood', cat: CAT.RESOURCE, stack: 200, icon: 'log', tint: 0x8a6a45 },
   stone:     { name: 'Stone', cat: CAT.RESOURCE, stack: 200, icon: 'rock', tint: 0x9aa3b2 },
   fiber:     { name: 'Fiber', cat: CAT.RESOURCE, stack: 200, icon: 'fiber', tint: 0x7fbf5a },
+
+  /* ---- seed and crop ----
+     Seeds come off the plants you were already pulling up, so
+     farming starts the first time you clear a patch of ground
+     rather than at some later tier. */
+  seed_grain: { name: 'Grain Seed', cat: CAT.RESOURCE, stack: 100, icon: 'seed', tint: 0xd8c27a,
+    desc: 'Plant it in a garden plot.' },
+  seed_berry: { name: 'Berry Seed', cat: CAT.RESOURCE, stack: 100, icon: 'seed', tint: 0xd85a7a,
+    desc: 'Plant it in a garden plot.' },
+  seed_spore: { name: 'Spores', cat: CAT.RESOURCE, stack: 100, icon: 'seed', tint: 0x9a7ad8,
+    desc: 'Plant them in a garden plot. They prefer the dark.' },
+  grain:      { name: 'Grain', cat: CAT.RESOURCE, stack: 100, icon: 'grain', tint: 0xe0c464,
+    desc: 'Bake it into something worth eating.' },
+  bread:      { name: 'Bread', cat: CAT.FOOD, stack: 40, icon: 'bread', tint: 0xc98f4a,
+    food: 30, heal: 6, desc: 'Keeps. Which is the point of it.' },
   flint:     { name: 'Flint', cat: CAT.RESOURCE, stack: 100, icon: 'shard', tint: 0x5c5a58 },
   resin:     { name: 'Resin', cat: CAT.RESOURCE, stack: 100, icon: 'drop', tint: 0xe0a24a },
   hide:      { name: 'Hide', cat: CAT.RESOURCE, stack: 100, icon: 'hide', tint: 0xa87a52 },
@@ -135,6 +150,22 @@ export const BUILDINGS = {
     name: 'Bedroll', icon: 'bed', cost: [['fiber', 12], ['hide', 4]], hp: 50, solid: false, height: 0.3,
     respawn: true, needs: 'workbench', desc: 'You come back here instead of at the beacon.',
   },
+  plot: {
+    name: 'Garden Plot', icon: 'sprout',
+    cost: [['wood', 4], ['fiber', 6]],
+    hp: 40, solid: false, height: 0.25,
+    /* how long it takes to come up, and what each seed turns into */
+    farm: {
+      time: 150,
+      crops: {
+        seed_grain: { yield: [['grain', 4], ['seed_grain', 1]], tint: 0xe0c464 },
+        seed_berry: { yield: [['berries', 5], ['seed_berry', 1]], tint: 0xd85a7a },
+        seed_spore: { yield: [['mushroom', 4], ['seed_spore', 1]], tint: 0x9a7ad8 },
+      },
+    },
+    desc: 'Turned soil. Plant a seed with G and come back for it.',
+  },
+
   chest: {
     name: 'Chest', icon: 'chest', cost: [['wood', 10]], hp: 90, solid: true, height: 0.6,
     storage: 18, needs: 'workbench', desc: 'Shared storage. Pooled salvage goes in here.',
@@ -179,6 +210,7 @@ export const RECIPES = [
   { out: ['axe_stone', 1], in: [['wood', 3], ['stone', 3], ['fiber', 2]], station: 'hand', time: 2.0 },
   { out: ['pick_stone', 1], in: [['wood', 3], ['stone', 4], ['fiber', 2]], station: 'hand', time: 2.0 },
   { out: ['torch', 2], in: [['wood', 2], ['fiber', 2]], station: 'hand', time: 1.0 },
+  { out: ['plot', 1], in: [['wood', 4], ['fiber', 6]], station: 'hand', time: 1.2, build: true },
   { out: ['campfire', 1], in: [['wood', 5], ['stone', 3]], station: 'hand', time: 1.5, build: true },
   { out: ['workbench', 1], in: [['wood', 12], ['stone', 4]], station: 'hand', time: 2.5, build: true },
   { out: ['wall_wood', 1], in: [['wood', 4]], station: 'hand', time: 0.7, build: true },
@@ -223,6 +255,12 @@ export const RECIPES = [
    the same name, and because the forge should show it separately. */
 /* Ore comes out of the ground as the metal's raw form; the forge
    turns it into something you can build with. */
+/* Bread is the first food you can make that does not need hunting,
+   which is what makes a garden worth the ground it sits on. */
+export const FARM_RECIPES = [
+  { out: ['bread', 2], in: [['grain', 4]], station: 'fire', time: 3.0 },
+];
+
 export const SMELTING = [
   { out: ['copper', 2], in: [['copper_ore', 3], ['charcoal', 1]], station: 'forge', time: 2.0 },
   { out: ['iron', 2], in: [['iron_ore', 3], ['charcoal', 1]], station: 'forge', time: 2.5 },

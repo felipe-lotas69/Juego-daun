@@ -11,7 +11,7 @@
    on the host only; clients see the results in snapshots.
    ============================================================ */
 
-import { ITEMS, BUILDINGS, RECIPES, SMELTING, BEACON_REPAIR } from './items.js';
+import { ITEMS, BUILDINGS, RECIPES, FARM_RECIPES, SMELTING, BEACON_REPAIR } from './items.js';
 import { HARVEST, PROP, FLAG, CLIMB } from '../world/worldgen.js';
 import { SURVIVAL, RESONANCE, TILE } from '../core/config.js';
 import { clamp, dist2 } from '../core/util.js';
@@ -162,6 +162,7 @@ export class ResonanceField {
    if you are holding nothing and want it back. */
 export function swing(sim, p) {
   if (p.swingCd > 0 || p.state !== 'alive') return false;
+  const w0 = sim.world;
   const tool = heldTool(p);
   const reach = (tool && tool.reach) || SURVIVAL.baseReach;
   const speed = (tool && tool.speed) || 0.85;
@@ -193,10 +194,21 @@ export function swing(sim, p) {
     return true;
   }
 
-  /* Then whatever is growing or outcropping within the swing. */
+  /* Then whatever is growing or outcropping within the swing.
+
+     What you are pointing at wins outright. The sweep below is there
+     so small scattered things can be hit at all, not to overrule a
+     deliberate aim: preferring the tool's own kind is right as a
+     tiebreak, but as the first rule it meant a bare-handed player
+     stood in grass pulled grass forever instead of chopping the tree
+     they were facing - and wood is what the axe is made of. */
+  const aimTx = w0.worldToTileX(hx), aimTy = w0.worldToTileZ(hz);
+  if (w0.inBounds(aimTx, aimTy) && HARVEST[w0.prop[w0.idx(aimTx, aimTy)]]) {
+    return harvestTile(sim, p, aimTx, aimTy, tool);
+  }
   const found = findHarvest(sim, p, reach + 0.4);
   if (found) return harvestTile(sim, p, found.tx, found.ty, tool);
-  return harvestAt(sim, p, hx, hz, tool);
+  return false;
 }
 
 /* What a swing should actually connect with.
@@ -355,7 +367,7 @@ export function tickCraft(sim, p, dt) {
 
 let _allRecipes = null;
 export function allRecipes() {
-  if (!_allRecipes) _allRecipes = RECIPES.concat(SMELTING.map(r => ({ ...r, station: 'forge', smelt: true })));
+  if (!_allRecipes) _allRecipes = RECIPES.concat(FARM_RECIPES).concat(SMELTING.map(r => ({ ...r, station: 'forge', smelt: true })));
   return _allRecipes;
 }
 

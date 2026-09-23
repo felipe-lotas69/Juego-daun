@@ -40,13 +40,15 @@ export const BIOME = {
   SCRAP: 9,
   ASH: 10,
   PLAZA: 11,
+  CAVE: 12,
 };
 
 export const BIOME_NAME = {
   [BIOME.OCEAN]: 'Shallows', [BIOME.BEACH]: 'Shore', [BIOME.MEADOW]: 'Meadow',
   [BIOME.FOREST]: 'Chromewood', [BIOME.PINE]: 'Pinehold', [BIOME.HIGHLAND]: 'Crags',
   [BIOME.SNOW]: 'Whitecap', [BIOME.MARSH]: 'Sump', [BIOME.BLOOM]: 'Bloomwood',
-  [BIOME.SCRAP]: 'Scrapfield', [BIOME.ASH]: 'Ashlands', [BIOME.PLAZA]: 'The Plaza',
+  [BIOME.SCRAP]: 'The Ruins', [BIOME.ASH]: 'Ashlands', [BIOME.PLAZA]: 'The Plaza',
+  [BIOME.CAVE]: 'Underground',
 };
 
 export const PROP = {
@@ -59,6 +61,7 @@ export const PROP = {
   RUIN_WALL: 24, RUIN_PILLAR: 25, PYLON: 26, CONDUIT: 27, SCRAP_PILE: 28,
   ANTENNA: 29, CRATE: 30, LAMP: 31,
   BONES: 32, ICE_SPIKE: 33, SNOW_ROCK: 34,
+  LOG: 35,
 };
 
 /* Props that stop a body. */
@@ -81,12 +84,13 @@ export const HARVEST = {
   [PROP.TREE_DEAD]:   { tool: 'axe',  tier: 0, hp: 45, yield: [['wood', 3]] },
   [PROP.TREE_SNOW]:   { tool: 'axe',  tier: 0, hp: 65, yield: [['wood', 6], ['resin', 1]] },
   [PROP.STUMP]:       { tool: 'axe',  tier: 0, hp: 30, yield: [['wood', 2]] },
+  [PROP.LOG]:         { tool: 'axe',  tier: 0, hp: 26, yield: [['wood', 4], ['fiber', 1]] },
   [PROP.BUSH]:        { tool: 'hand', tier: 0, hp: 12, yield: [['fiber', 3]] },
-  [PROP.BERRY_BUSH]:  { tool: 'hand', tier: 0, hp: 12, yield: [['fiber', 2], ['berries', 3]] },
+  [PROP.BERRY_BUSH]:  { tool: 'hand', tier: 0, hp: 12, yield: [['fiber', 2], ['berries', 3], ['seed_berry', 1]] },
   [PROP.GRASS]:       { tool: 'hand', tier: 0, hp: 4,  yield: [['fiber', 1]] },
-  [PROP.FERN]:        { tool: 'hand', tier: 0, hp: 6,  yield: [['fiber', 2]] },
-  [PROP.MUSHROOM]:    { tool: 'hand', tier: 0, hp: 4,  yield: [['mushroom', 2]] },
-  [PROP.REED]:        { tool: 'hand', tier: 0, hp: 5,  yield: [['fiber', 2]] },
+  [PROP.FERN]:        { tool: 'hand', tier: 0, hp: 6,  yield: [['fiber', 2], ['seed_grain', 1]] },
+  [PROP.MUSHROOM]:    { tool: 'hand', tier: 0, hp: 4,  yield: [['mushroom', 2], ['seed_spore', 1]] },
+  [PROP.REED]:        { tool: 'hand', tier: 0, hp: 5,  yield: [['fiber', 2], ['seed_grain', 1]] },
   [PROP.FLOWER]:      { tool: 'hand', tier: 0, hp: 3,  yield: [['petal', 1]] },
   [PROP.ROCK]:        { tool: 'pick', tier: 0, hp: 25, yield: [['stone', 3]] },
   [PROP.BOULDER]:     { tool: 'pick', tier: 0, hp: 70, yield: [['stone', 8], ['flint', 1]] },
@@ -119,6 +123,8 @@ export const FLAG = {
   RIVER: 32,
   BUILT: 64,        /* a player structure stands here */
   SHALLOW: 128,
+  CAVE: 256,        /* carved out under a hill, with rock overhead  */
+  CAVE_MOUTH: 512,  /* where that hill opens onto the daylight      */
 };
 
 /* How far a body can climb in one step. Two levels is a scramble;
@@ -135,6 +141,13 @@ export class World {
     this.flags = new Uint16Array(n);
     this.prop = new Uint8Array(n);
     this.variant = new Uint8Array(n);
+    /* What used to be overhead before a cave was cut under it: the
+       level the hill's surface sits at, and the biome it wore. Zero
+       where there is no cave, which is almost everywhere. */
+    this.roof = new Uint8Array(n);
+    this.roofBiome = new Uint8Array(n);
+    this.caveId = new Uint8Array(n);
+    this.caves = [];
     this.propHp = new Map();
     this.landmarks = [];
     this.spawnPoints = [];
@@ -208,6 +221,13 @@ export class World {
     return false;
   }
 
+  /* Which cave, if any, is under this point. Zero is "outside". */
+  caveIdAt(x, z) {
+    const tx = this.worldToTileX(x), ty = this.worldToTileZ(z);
+    if (!this.inBounds(tx, ty)) return 0;
+    return this.caveId[this.idx(tx, ty)];
+  }
+
   setProp(tx, ty, prop) {
     const i = this.idx(tx, ty);
     this.prop[i] = prop;
@@ -230,8 +250,12 @@ export class World {
     this._shallows();
     this._biomes();
     this._plaza();
+    /* Needs the plaza to exist, so it runs after it. */
+    this._clearSpawnRegion();
     this._connect();
     this._scatter();
+    this._starterGround();
+    this._caves();
     this._ore();
     this._landmarks();
     this.stats.genMs = Date.now() - t0;
@@ -454,25 +478,103 @@ export class World {
         let b;
         if (this.flags[i] & FLAG.WATER) b = BIOME.OCEAN;
         else if (h <= SEA_LEVEL + 2) b = (m > 0.54 ? BIOME.MARSH : BIOME.BEACH);
-        else if (h <= 8) b = m < 0.46 ? BIOME.MEADOW : BIOME.FOREST;
-        else if (h <= 11) b = m < 0.40 ? BIOME.PINE : BIOME.FOREST;
-        else if (h <= 13) b = temp < 0.26 ? BIOME.SNOW : temp < 0.48 ? BIOME.HIGHLAND : BIOME.PINE;
-        else b = temp < 0.34 ? BIOME.SNOW : BIOME.HIGHLAND;
+        else if (h <= 10) b = m < 0.52 ? BIOME.MEADOW : BIOME.FOREST;
+        else if (h <= 12) b = m < 0.40 ? BIOME.PINE : BIOME.FOREST;
+        /* Snow is a thing that happens at the top of a mountain, not
+           a third of the continent. It needs the altitude AND the
+           cold, and below the treeline it needs to be properly cold. */
+        else if (h <= 14) b = temp < 0.12 ? BIOME.SNOW : temp < 0.42 ? BIOME.HIGHLAND : BIOME.PINE;
+        else b = temp < 0.22 ? BIOME.SNOW : BIOME.HIGHLAND;
 
-        /* Overgrowth and wreckage sit on top as worley patches. */
+        /* Overgrowth and wreckage sit on top as worley patches.
+           The cell size is the whole point: at one cell per 25 tiles
+           the map was a different biome every few paces, which reads
+           as noise rather than as places. One cell per ninety tiles
+           is a region you walk into and notice you are in. */
         if (b !== BIOME.OCEAN) {
-          const wx = tx * 0.040 + fbm(tx * 0.03, ty * 0.03, S + 77, 2) * 2.0;
-          const wy = ty * 0.040 + fbm(tx * 0.03 + 9, ty * 0.03 + 3, S + 78, 2) * 2.0;
+          const wx = tx * 0.011 + fbm(tx * 0.012, ty * 0.012, S + 77, 2) * 0.5;
+          const wy = ty * 0.011 + fbm(tx * 0.012 + 9, ty * 0.012 + 3, S + 78, 2) * 0.5;
           const cell = worley(wx, wy, S + 4242);
           const pick = hash2(Math.floor(wx), Math.floor(wy), S + 555);
-          if (cell < 0.44) {
+          if (cell < 0.30) {
             const ashBias = Math.max(0, (d - 0.40) / 0.45);
-            if (pick < 0.16 + ashBias * 0.45) b = BIOME.ASH;
-            else if (pick < 0.58) b = BIOME.BLOOM;
+            if (pick < 0.14 + ashBias * 0.42) b = BIOME.ASH;
+            else if (pick < 0.62) b = BIOME.BLOOM;
             else b = BIOME.SCRAP;
           }
         }
         this.biome[i] = b;
+      }
+    }
+
+    this._settleBiomes();
+  }
+
+  /* Two passes of a majority filter. Terracing makes the height
+     field step, and a band boundary that runs along a step produces
+     single-tile islands of the neighbouring biome - a lone square of
+     snow in a meadow, which is exactly what makes a world look
+     generated rather than made. Taking the commonest biome in a 5x5
+     neighbourhood keeps the regions and throws away the speckle.
+     Water and the plaza are structural and never move. */
+  _settleBiomes() {
+    const n = this.size;
+    const fixed = (b) => b === BIOME.OCEAN || b === BIOME.PLAZA;
+    let src = this.biome;
+    const dst = new src.constructor(src.length);
+    const tally = new Int32Array(32);
+    for (let pass = 0; pass < 2; pass++) {
+      for (let ty = 0; ty < n; ty++) {
+        for (let tx = 0; tx < n; tx++) {
+          const i = ty * n + tx;
+          const here = src[i];
+          if (fixed(here)) { dst[i] = here; continue; }
+          tally.fill(0);
+          for (let oy = -2; oy <= 2; oy++) {
+            const yy = ty + oy;
+            if (yy < 0 || yy >= n) continue;
+            for (let ox = -2; ox <= 2; ox++) {
+              const xx = tx + ox;
+              if (xx < 0 || xx >= n) continue;
+              const b = src[yy * n + xx];
+              if (fixed(b)) continue;
+              /* The centre counts for more, so a real boundary stays
+                 where the climate put it instead of being rounded
+                 off pass after pass. */
+              tally[b] += (ox === 0 && oy === 0) ? 6 : 1;
+            }
+          }
+          let best = here, bestN = -1;
+          for (let b = 0; b < tally.length; b++) if (tally[b] > bestN) { bestN = tally[b]; best = b; }
+          dst[i] = best;
+        }
+      }
+      src.set(dst);
+    }
+  }
+
+  /* The first ten minutes happen here, so the ground around the
+     plaza is somewhere a person with no tools can understand: trees
+     to chop, rock to break, grass to pull. Ash, wreckage and snow
+     are things to walk to, not things to land in. */
+  _clearSpawnRegion() {
+    const n = this.size;
+    const { tx: px, ty: py } = this.plaza;
+    const R = 34;
+    for (let ty = Math.max(0, py - R); ty <= Math.min(n - 1, py + R); ty++) {
+      for (let tx = Math.max(0, px - R); tx <= Math.min(n - 1, px + R); tx++) {
+        const i = ty * n + tx;
+        const b = this.biome[i];
+        if (b === BIOME.OCEAN || b === BIOME.PLAZA || b === BIOME.BEACH) continue;
+        const d = Math.hypot(tx - px, ty - py);
+        if (d > R) continue;
+        /* Fade out: right by the plaza nothing hostile, further out
+           it is allowed back so the edge is not a circle. */
+        const keep = (d - R * 0.55) / (R * 0.45);
+        if (keep > 0 && hash2(tx, ty, this.seed + 8811) < keep) continue;
+        if (b === BIOME.ASH || b === BIOME.SCRAP || b === BIOME.SNOW || b === BIOME.BLOOM) {
+          this.biome[i] = this.moisture[i] < 0.46 ? BIOME.MEADOW : BIOME.FOREST;
+        }
       }
     }
   }
@@ -638,6 +740,46 @@ export class World {
   _scatter() {
     const n = this.size;
     const rng = makeRng(this.seed ^ 0x9e3779b9);
+    const S = this.seed;
+
+    /* One slow field per family, plus a clearing field that thins
+       everything at once. These are what turn an even sprinkle into
+       woods with edges, scree slopes, meadows and open ground. */
+    const density = (fam, tx, ty) => {
+      const nx = tx * 0.035, ny = ty * 0.035;
+      switch (fam) {
+        case FAMILY.CANOPY: {
+          const d = fbm(nx * 0.8 + 11.5, ny * 0.8 - 4.25, S + 4001, 3);
+          return Math.max(0, Math.min(1.9, (d - 0.26) * 3.4));
+        }
+        case FAMILY.ROCK: {
+          const d = fbm(nx * 1.15 - 27.0, ny * 1.15 + 8.75, S + 4002, 3);
+          return Math.max(0, Math.min(2.0, (d - 0.33) * 3.8));
+        }
+        case FAMILY.COVER: {
+          const d = fbm(nx * 0.65 + 5.0, ny * 0.65 + 19.0, S + 4003, 2);
+          return Math.max(0, Math.min(1.8, (d - 0.22) * 2.8));
+        }
+        case FAMILY.DEBRIS: {
+          /* Wreckage lies where wreckage lay: tight patches, mostly
+             nothing, so a scrapfield feels like somewhere it happened. */
+          const d = fbm(nx * 1.6 + 63.0, ny * 1.6 - 41.0, S + 4004, 3);
+          return Math.max(0, Math.min(2.4, (d - 0.45) * 5.2));
+        }
+        default: {
+          const d = fbm(nx * 1.9 - 13.0, ny * 1.9 + 71.0, S + 4005, 2);
+          return Math.max(0, Math.min(2.0, (d - 0.40) * 4.2));
+        }
+      }
+    };
+
+    /* Genuine clearings, so there is somewhere to stand and build
+       and somewhere for a structure to be seen from. */
+    const clearing = (tx, ty) => {
+      const c = fbm(tx * 0.022 + 91.0, ty * 0.022 - 57.0, S + 4100, 2);
+      return c < 0.30 ? Math.max(0, (c - 0.15) / 0.15) : 1;
+    };
+
     for (let ty = 0; ty < n; ty++) {
       for (let tx = 0; tx < n; tx++) {
         const i = this.idx(tx, ty);
@@ -655,14 +797,35 @@ export class World {
         const steep = Math.abs(this.levelAt(tx + 1, ty) - this.levelAt(tx - 1, ty))
                     + Math.abs(this.levelAt(tx, ty + 1) - this.levelAt(tx, ty - 1));
         const openness = steep > 2 ? 0.25 : steep > 0 ? 0.7 : 1;
+        const open = clearing(tx, ty);
 
         const table = SCATTER[b];
         if (!table) continue;
+
+        /* Cache the five fields once per tile rather than per entry. */
+        const dens = this._densCache || (this._densCache = new Float32Array(FAMILY_COUNT));
+        for (let k = 0; k < FAMILY_COUNT; k++) dens[k] = density(k, tx, ty);
+
         const roll = rng();
         let acc = 0;
         for (const entry of table) {
-          acc += entry.p * openness;
+          acc += entry.p * openness * open * dens[familyOf(entry.prop)];
           if (roll < acc) { this.setProp(tx, ty, entry.prop); break; }
+        }
+      }
+    }
+
+    /* Give the big things room. Ground cover pressed against a tree
+       trunk or a ruin wall reads as texture on the object instead of
+       as a separate thing, and the silhouette goes with it. */
+    for (let ty = 1; ty < n - 1; ty++) {
+      for (let tx = 1; tx < n - 1; tx++) {
+        const prop = this.prop[this.idx(tx, ty)];
+        if (!prop || !isLandmarkProp(prop)) continue;
+        for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const j = this.idx(tx + ox, ty + oy);
+          const q = this.prop[j];
+          if (q && familyOf(q) === FAMILY.COVER && rng.chance(0.7)) this.clearProp(tx + ox, ty + oy);
         }
       }
     }
@@ -679,9 +842,353 @@ export class World {
     }
   }
 
+  /* Somewhere to start.
+
+     Clustering is what makes the map read as a landscape, but it
+     also means the ground around any given point may legitimately
+     be a clearing - and waking up with nothing in the middle of one
+     is not an interesting first five minutes, it is a walk. So the
+     ring around the plaza is guaranteed to hold the two things you
+     need before you can do anything at all: wood and stone. */
+  _starterGround() {
+    const rng = makeRng(this.seed ^ 0x5741b17);
+    const cx = this.plaza ? this.plaza.tx : Math.floor(this.size / 2);
+    const cy = this.plaza ? this.plaza.ty : Math.floor(this.size / 2);
+    const WANT_WOOD = 26, WANT_STONE = 18, INNER = 5, OUTER = 20;
+
+    const free = [];
+    let wood = 0, stone = 0;
+    for (let oy = -OUTER; oy <= OUTER; oy++) {
+      for (let ox = -OUTER; ox <= OUTER; ox++) {
+        const d2 = ox * ox + oy * oy;
+        if (d2 < INNER * INNER || d2 > OUTER * OUTER) continue;
+        const tx = cx + ox, ty = cy + oy;
+        if (!this.inBounds(tx, ty)) continue;
+        const i = this.idx(tx, ty);
+        const f = this.flags[i];
+        if (f & (FLAG.WATER | FLAG.PLAZA | FLAG.BUILT | FLAG.BLOCKED_EDGE)) continue;
+        const prop = this.prop[i];
+        if (prop) {
+          const h = HARVEST[prop];
+          if (h) {
+            for (const [item] of h.yield) {
+              if (item === 'wood') wood++;
+              else if (item === 'stone') stone++;
+            }
+          }
+          continue;
+        }
+        /* Not on a cliff edge, where nothing else grows either. */
+        const steep = Math.abs(this.levelAt(tx + 1, ty) - this.levelAt(tx - 1, ty))
+                    + Math.abs(this.levelAt(tx, ty + 1) - this.levelAt(tx, ty - 1));
+        if (steep > 1) continue;
+        free.push(i > 0 ? [tx, ty] : [tx, ty]);
+      }
+    }
+
+    /* Shuffle so the top-ups land in a scatter rather than a line. */
+    for (let i = free.length - 1; i > 0; i--) {
+      const j = rng.int(i + 1);
+      const t = free[i]; free[i] = free[j]; free[j] = t;
+    }
+
+    let k = 0;
+    const treeFor = (tx, ty) => {
+      const b = this.biome[this.idx(tx, ty)];
+      if (b === BIOME.SNOW) return PROP.TREE_SNOW;
+      if (b === BIOME.PINE) return PROP.TREE_PINE;
+      if (b === BIOME.ASH || b === BIOME.MARSH) return PROP.TREE_DEAD;
+      return rng.chance(0.5) ? PROP.TREE_OAK : PROP.TREE_BIRCH;
+    };
+    while (wood < WANT_WOOD && k < free.length) {
+      const [tx, ty] = free[k++];
+      this.setProp(tx, ty, treeFor(tx, ty));
+      wood += 5;
+    }
+    while (stone < WANT_STONE && k < free.length) {
+      const [tx, ty] = free[k++];
+      this.setProp(tx, ty, rng.chance(0.3) ? PROP.BOULDER : PROP.ROCK);
+      stone += 3;
+    }
+    this.stats.starterTopUp = k;
+  }
+
+
   /* Ore sits in exposed rock: tiles with a real drop beside them,
      up in the crags and under the snow. Veins cluster, so finding
      one is worth something. */
+  /* ------------------------------------------------------ caves
+
+     A cave here is a tunnel cut into the side of a hill, one terrace
+     below the mouth, with the hill left standing over it. The floor
+     is flat: a body can only climb or drop one level in a step and
+     the land steps two levels at a time, so a tunnel that dived
+     would be a staircase with a ramp at every turn. A single ramp
+     tile in the doorway takes you down, and after that it is level.
+
+     The rock that used to be there is remembered - its height and
+     the biome it wore - and drawn back in as a roof, which is what
+     makes the hill look unbroken from outside and dark from in. */
+  _caves() {
+    const n = this.size;
+    const rng = makeRng(this.seed ^ 0x9a17e5);
+    /* Four levels of rock overhead: two terraces, about two and a
+       quarter metres, which is a tunnel rather than a crawlspace. */
+    const HEADROOM = 4;
+    const WANT = 7;
+
+    const mouths = [];
+    for (let attempt = 0; attempt < 6000 && mouths.length < WANT; attempt++) {
+      const tx = 6 + rng.int(n - 12), ty = 6 + rng.int(n - 12);
+      const i = this.idx(tx, ty);
+      if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.ROAD | FLAG.CAVE | FLAG.BLOCKED_EDGE)) continue;
+      const h = this.height[i];
+      if (h < SEA_LEVEL + 4 || h > MAX_LEVEL - 2) continue;
+      const bm = this.biome[i];
+      /* Caves belong to rock and forest. The ashlands are already a
+         dark purple everywhere, so a dark hole in them is invisible,
+         and a cave in a marsh is a well. */
+      if (bm === BIOME.ASH || bm === BIOME.MARSH || bm === BIOME.BEACH
+        || bm === BIOME.OCEAN || bm === BIOME.PLAZA) continue;
+      /* A mouth wants a hill beside it: somewhere to tunnel into.
+         One terrace up is enough, because the floor goes one terrace
+         down and the two together are the headroom.
+
+         The two directions that face the camera come first. An
+         opening in the far side of a hill is an opening nobody can
+         see, and a cave you cannot find is not content. */
+      let into = null;
+      for (const [dx, dy] of [[-1, 0], [0, -1], [1, 0], [0, 1]]) {
+        let ok = true;
+        for (let k = 2; k <= 4; k++) {
+          const hx = tx + dx * k, hy = ty + dy * k;
+          if (!this.inBounds(hx, hy) || this.height[this.idx(hx, hy)] < h + 2) { ok = false; break; }
+        }
+        if (ok) { into = [dx, dy]; break; }
+      }
+      if (!into) continue;
+      if (mouths.some(m => Math.hypot(m.tx - tx, m.ty - ty) < 26)) continue;
+      if (Math.hypot(tx - this.plaza.tx, ty - this.plaza.ty) < 24) continue;
+      mouths.push({ tx, ty, into, level: h });
+    }
+
+    for (const m of mouths) {
+      const id = this.caves.length + 1;
+      if (id > 255) break;
+      const tiles = [];
+      const floor = m.level - 2;
+
+      /* Thick enough to hollow out - or already hollowed out by this
+         same cave, which is how the digger walks along the tunnel it
+         has just made instead of stopping dead in it. */
+      const carvable = (tx, ty) => {
+        if (!this.inBounds(tx, ty)) return false;
+        const i = this.idx(tx, ty);
+        if (this.caveId[i]) return this.caveId[i] === id;
+        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.ROAD | FLAG.BLOCKED_EDGE)) return false;
+        return this.height[i] >= floor + HEADROOM;
+      };
+
+      const cut = (tx, ty) => {
+        const i = this.idx(tx, ty);
+        if (this.caveId[i]) return;
+        this.roof[i] = this.height[i];
+        this.roofBiome[i] = this.biome[i];
+        this.caveId[i] = id;
+        this.height[i] = floor;
+        this.biome[i] = BIOME.CAVE;
+        this.prop[i] = PROP.NONE;
+        this.flags[i] = (this.flags[i] & ~FLAG.SOLID) | FLAG.CAVE;
+        this.propHp.delete(i);
+        tiles.push(i);
+      };
+
+      /* Walk in, wandering. Each step hollows a small disc, so the
+         tunnel has width without being a corridor exactly one tile
+         across that you cannot turn round in. */
+      const dig = (sx, sy, dx, dy, steps, width) => {
+        let x = sx, y = sy, vx = dx, vy = dy;
+        for (let s = 0; s < steps; s++) {
+          const r = width + (rng() < 0.3 ? 1 : 0);
+          for (let oy = -r; oy <= r; oy++) {
+            for (let ox = -r; ox <= r; ox++) {
+              if (ox * ox + oy * oy > r * r + 1) continue;
+              if (carvable(x + ox, y + oy)) cut(x + ox, y + oy);
+            }
+          }
+          if (rng() < 0.32) {
+            const turn = rng() < 0.5 ? 1 : -1;
+            const nvx = vy * turn, nvy = -vx * turn;
+            vx = nvx; vy = nvy;
+          }
+          if (!carvable(x + vx, y + vy)) {
+            /* Ground too thin to tunnel under: turn rather than stop
+               dead against it. */
+            const turn = rng() < 0.5 ? 1 : -1;
+            const nvx = vy * turn, nvy = -vx * turn;
+            vx = nvx; vy = nvy;
+            if (!carvable(x + vx, y + vy)) break;
+          }
+          x += vx; y += vy;
+        }
+        return { x, y, vx, vy };
+      };
+
+      const [dx, dy] = m.into;
+      const start = dig(m.tx + dx * 2, m.ty + dy * 2, dx, dy, 24 + rng.int(18), 1);
+      if (tiles.length < 24) { for (const i of tiles) this._uncut(i); continue; }
+
+      const chamber = (cx, cy, r) => {
+        for (let oy = -r; oy <= r; oy++) {
+          for (let ox = -r; ox <= r; ox++) {
+            if (ox * ox + oy * oy > r * r) continue;
+            if (carvable(cx + ox, cy + oy)) cut(cx + ox, cy + oy);
+          }
+        }
+      };
+      chamber(start.x, start.y, 3 + rng.int(2));
+      for (let k = 0; k < 3; k++) {
+        const pick = tiles[rng.int(tiles.length)];
+        const bx = pick % n, by = (pick / n) | 0;
+        const turn = rng() < 0.5 ? 1 : -1;
+        const br = dig(bx, by, start.vy * turn, -start.vx * turn, 10 + rng.int(12), 1);
+        chamber(br.x, br.y, 2 + rng.int(2));
+      }
+
+      /* The doorway: the mouth stays at the surface, one ramp tile
+         drops a level, and the tunnel is a level below that. Nothing
+         is roofed until you are past the ramp, so what you see from
+         outside is a dark opening in a hillside. */
+      const mi = this.idx(m.tx, m.ty);
+      this.flags[mi] = (this.flags[mi] & ~FLAG.SOLID) | FLAG.CAVE_MOUTH;
+      this.prop[mi] = PROP.NONE;
+      this.caveId[mi] = id;
+
+      const rx = m.tx + dx, ry = m.ty + dy;
+      const ri = this.idx(rx, ry);
+      this.roof[ri] = 0;
+      this.roofBiome[ri] = 0;
+      this.caveId[ri] = id;
+      this.height[ri] = floor + 1;
+      this.biome[ri] = BIOME.CAVE;
+      this.prop[ri] = PROP.NONE;
+      this.flags[ri] = (this.flags[ri] & ~FLAG.SOLID) | FLAG.CAVE;
+      tiles.push(ri);
+
+      this.caves.push({ id, tx: m.tx, ty: m.ty, floor, tiles, dx, dy });
+      const cave = this.caves[this.caves.length - 1];
+      this._stockCave(cave, rng);
+      this._openCave(cave);
+    }
+    this.stats.caves = this.caves.length;
+  }
+
+  /* A boulder or a seam of ore in a one-tile passage is a wall, and
+     a cave with a wall across it is half a cave. Walk it from the
+     doorway under the same rule a body obeys, and clear whatever is
+     standing between the doorway and the rest of it. Repeated,
+     because clearing one blocker usually reveals the next. */
+  _openCave(cave) {
+    const n = this.size;
+    for (let pass = 0; pass < 80; pass++) {
+      const seen = new Uint8Array(cave.tiles.length ? n * n : 0);
+      const stack = [[cave.tx, cave.ty]];
+      seen[this.idx(cave.tx, cave.ty)] = 1;
+      while (stack.length) {
+        const [tx, ty] = stack.pop();
+        const h = this.height[this.idx(tx, ty)];
+        for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = tx + ox, ny = ty + oy;
+          if (!this.inBounds(nx, ny)) continue;
+          const j = this.idx(nx, ny);
+          if (seen[j] || this.caveId[j] !== cave.id) continue;
+          if (this.flags[j] & FLAG.SOLID) continue;
+          if (Math.abs(this.height[j] - h) > CLIMB) continue;
+          seen[j] = 1;
+          stack.push([nx, ny]);
+        }
+      }
+      /* Everything reached? Then there is nothing in the way. */
+      let missing = 0;
+      for (const i of cave.tiles) if (!seen[i]) missing++;
+      if (!missing) break;
+
+      /* Otherwise take out one blocker - the first solid thing with
+         open cave on the near side and unreached cave on the far one
+         - and look again. One at a time, because clearing the whole
+         frontier empties the cave of the very things it is for. */
+      let cleared = false;
+      for (const i of cave.tiles) {
+        if (seen[i] || !(this.flags[i] & FLAG.SOLID)) continue;
+        const tx = i % n, ty = (i / n) | 0;
+        let near = false, far = false;
+        for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = tx + ox, ny = ty + oy;
+          if (!this.inBounds(nx, ny)) continue;
+          const j = this.idx(nx, ny);
+          if (this.caveId[j] !== cave.id) continue;
+          if (seen[j]) near = true;
+          else if (!(this.flags[j] & FLAG.SOLID)) far = true;
+        }
+        if (!near || !far) continue;
+        this.clearProp(tx, ty);
+        cleared = true;
+        break;
+      }
+      if (!cleared) break;
+    }
+  }
+
+  _uncut(i) {
+    if (!this.caveId[i]) return;
+    this.height[i] = this.roof[i];
+    this.biome[i] = this.roofBiome[i];
+    this.flags[i] &= ~FLAG.CAVE;
+    this.roof[i] = 0; this.roofBiome[i] = 0; this.caveId[i] = 0;
+  }
+
+  /* What is worth the walk: metal, crystal and the things that grow
+     without light. Density is the point - a cave that pays the same
+     as a hillside is a hole in the ground. */
+  _stockCave(cave, rng) {
+    const n = this.size;
+    const table = [
+      [PROP.ORE_IRON, 0.055], [PROP.ORE_COPPER, 0.045], [PROP.ORE_GOLD, 0.022],
+      [PROP.ORE_ESSENCE, 0.020], [PROP.CRYSTAL, 0.030], [PROP.RIFT_SHARD, 0.012],
+      [PROP.MUSHROOM, 0.075], [PROP.ROCK, 0.055], [PROP.BOULDER, 0.020],
+      [PROP.BONES, 0.010],
+    ];
+    const openAround = (tx, ty) => {
+      let k = 0;
+      for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = tx + ox, ny = ty + oy;
+        if (this.inBounds(nx, ny) && this.caveId[this.idx(nx, ny)] === cave.id) k++;
+      }
+      return k;
+    };
+    for (const i of cave.tiles) {
+      const tx = i % n, ty = (i / n) | 0;
+      /* Leave the way in clear so the doorway reads as a doorway. */
+      if (Math.hypot(tx - cave.tx, ty - cave.ty) < 3) continue;
+      /* A seam of ore in a one-tile passage is a wall. Solid things
+         go in the wide parts; the narrow parts get the things you
+         can walk through. */
+      const roomy = openAround(tx, ty) >= 3;
+      let r = rng();
+      for (const [prop, p] of table) {
+        if (r < p) {
+          const use = (!roomy && SOLID_PROPS.has(prop))
+            ? (rng() < 0.5 ? PROP.MUSHROOM : PROP.ROCK)
+            : prop;
+          this.setProp(tx, ty, use);
+          this.variant[i] = rng.int(256);
+          break;
+        }
+        r -= p;
+      }
+    }
+  }
+
   _ore() {
     const n = this.size;
     const rng = makeRng(this.seed ^ 0x0e1a7e);
@@ -689,7 +1196,7 @@ export class World {
     for (let ty = 2; ty < n - 2; ty++) {
       for (let tx = 2; tx < n - 2; tx++) {
         const i = this.idx(tx, ty);
-        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID)) continue;
+        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID | FLAG.CAVE)) continue;
         const h = this.height[i];
         let drop = 0;
         for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -747,6 +1254,9 @@ export class World {
           if (opts.minHeight !== undefined && this.height[i] < opts.minHeight) continue;
           if (opts.maxHeight !== undefined && this.height[i] > opts.maxHeight) continue;
           if (this.landmarks.some(l => Math.abs(l.tx - tx) < 16 && Math.abs(l.ty - ty) < 16)) continue;
+          /* Flattening a landmark's ground would fill in a cave that
+             happened to run under it, roof and all. */
+          if (this._touchesCave(tx, ty, clear + 3)) continue;
           this._flatten(tx, ty, clear);
           this.landmarks.push({ kind, tx, ty, variant: rng.int(256) });
           break;
@@ -774,7 +1284,7 @@ export class World {
         if (!this.inBounds(tx, ty)) continue;
         const i = this.idx(tx, ty);
         if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID)) continue;
-        this.setProp(tx, ty, rng() < 0.55 ? PROP.SCRAP_PILE : rng() < 0.6 ? PROP.CRATE : PROP.CONDUIT);
+        this.setProp(tx, ty, rng() < 0.6 ? PROP.SCRAP_PILE : PROP.CRATE);
       }
     }
 
@@ -793,6 +1303,15 @@ export class World {
       }
     }
 
+    /* Every cave gets a timbered portal over its mouth, turned to
+       face the way out. A hole two levels down in a hillside reads
+       as a shadow; a frame, a lintel and a lantern read as a door,
+       and the point of a cave is that you can find it. */
+    for (const cave of this.caves) {
+      const dir = cave.dx === 1 ? 0 : cave.dx === -1 ? 2 : cave.dy === 1 ? 1 : 3;
+      this.landmarks.push({ kind: 'cavemouth', tx: cave.tx, ty: cave.ty, variant: dir, cave: cave.id });
+    }
+
     for (const lm of this.landmarks) {
       lm.x = this.tileToWorldX(lm.tx);
       lm.z = this.tileToWorldZ(lm.ty);
@@ -807,6 +1326,16 @@ export class World {
     }
   }
 
+  _touchesCave(cx, cy, radius) {
+    for (let ty = cy - radius; ty <= cy + radius; ty++) {
+      for (let tx = cx - radius; tx <= cx + radius; tx++) {
+        if (!this.inBounds(tx, ty)) continue;
+        if (this.caveId[this.idx(tx, ty)]) return true;
+      }
+    }
+    return false;
+  }
+
   _flatten(cx, cy, radius) {
     if (!this.inBounds(cx, cy)) return;
     const target = this.height[this.idx(cx, cy)];
@@ -815,6 +1344,9 @@ export class World {
         if (!this.inBounds(tx, ty)) continue;
         const d = Math.hypot(tx - cx, ty - cy);
         const i = this.idx(tx, ty);
+        /* Never re-cut ground that has a cave under it: the roof is
+           measured from the height that is there now. */
+        if (this.caveId[i]) continue;
         if (d <= radius) {
           this.height[i] = target;
           this.clearProp(tx, ty);
@@ -832,30 +1364,72 @@ export class World {
 }
 
 /* Scatter tables, evaluated in order: probability per tile. */
+/* Which family a prop belongs to, for the clustering pass below.
+   Scatter used to be an independent roll per tile, which is white
+   noise: every tile had the same chance of the same spread of
+   things, so the map came out as an even confetti of small objects
+   with no groves, no boulder fields, no clearings and nothing for
+   the eye to rest on. Each family now gets its own slow-moving
+   density field, so trees gather into woods and woods have edges. */
+const FAMILY = { CANOPY: 0, ROCK: 1, COVER: 2, DEBRIS: 3, ORE: 4 };
+const FAMILY_COUNT = 5;
+
+function familyOf(prop) {
+  switch (prop) {
+    case PROP.TREE_PINE: case PROP.TREE_OAK: case PROP.TREE_BIRCH:
+    case PROP.TREE_BLOOM: case PROP.TREE_DEAD: case PROP.TREE_SNOW:
+    case PROP.STUMP:
+      return FAMILY.CANOPY;
+    case PROP.ROCK: case PROP.BOULDER: case PROP.ROCK_TALL:
+    case PROP.SNOW_ROCK: case PROP.ICE_SPIKE:
+      return FAMILY.ROCK;
+    case PROP.ORE_COPPER: case PROP.ORE_IRON: case PROP.ORE_GOLD:
+    case PROP.ORE_ESSENCE: case PROP.CRYSTAL: case PROP.RIFT_SHARD:
+      return FAMILY.ORE;
+    case PROP.SCRAP_PILE: case PROP.CONDUIT: case PROP.CRATE:
+    case PROP.RUIN_WALL: case PROP.RUIN_PILLAR: case PROP.LAMP:
+    case PROP.ANTENNA: case PROP.PYLON: case PROP.BONES:
+    case PROP.LOG:
+      return FAMILY.DEBRIS;
+    default:
+      return FAMILY.COVER;
+  }
+}
+
+/* Big things need room around them or they stop reading as
+   silhouettes and become part of the texture. */
+function isLandmarkProp(prop) {
+  const f = familyOf(prop);
+  return f === FAMILY.CANOPY || prop === PROP.BOULDER || prop === PROP.ROCK_TALL
+    || prop === PROP.RUIN_WALL || prop === PROP.RUIN_PILLAR || prop === PROP.PYLON
+    || prop === PROP.ANTENNA;
+}
+
 const SCATTER = {
   [BIOME.BEACH]: [
-    { prop: PROP.SCRAP_PILE, p: 0.012 }, { prop: PROP.CRATE, p: 0.006 },
     { prop: PROP.GRASS, p: 0.05 }, { prop: PROP.ROCK, p: 0.03 }, { prop: PROP.BONES, p: 0.004 },
+    { prop: PROP.LOG, p: 0.006 },
   ],
   [BIOME.MARSH]: [
     { prop: PROP.REED, p: 0.16 }, { prop: PROP.TREE_DEAD, p: 0.05 }, { prop: PROP.MUSHROOM, p: 0.06 },
     { prop: PROP.FERN, p: 0.10 }, { prop: PROP.ROCK, p: 0.02 }, { prop: PROP.BUSH, p: 0.05 },
+    { prop: PROP.LOG, p: 0.012 },
   ],
   [BIOME.MEADOW]: [
-    { prop: PROP.SCRAP_PILE, p: 0.010 }, { prop: PROP.GRASS, p: 0.22 }, { prop: PROP.FLOWER, p: 0.07 }, { prop: PROP.BUSH, p: 0.04 },
+    { prop: PROP.GRASS, p: 0.15 }, { prop: PROP.FLOWER, p: 0.035 }, { prop: PROP.BUSH, p: 0.04 },
     { prop: PROP.BERRY_BUSH, p: 0.022 }, { prop: PROP.TREE_OAK, p: 0.025 }, { prop: PROP.ROCK, p: 0.03 },
-    { prop: PROP.BOULDER, p: 0.008 },
+    { prop: PROP.BOULDER, p: 0.008 }, { prop: PROP.LOG, p: 0.008 },
   ],
   [BIOME.FOREST]: [
-    { prop: PROP.SCRAP_PILE, p: 0.009 }, { prop: PROP.CRATE, p: 0.005 },
     { prop: PROP.TREE_OAK, p: 0.075 }, { prop: PROP.TREE_BIRCH, p: 0.045 }, { prop: PROP.TREE_PINE, p: 0.03 },
-    { prop: PROP.BUSH, p: 0.06 }, { prop: PROP.FERN, p: 0.07 }, { prop: PROP.GRASS, p: 0.11 },
+    { prop: PROP.BUSH, p: 0.05 }, { prop: PROP.FERN, p: 0.055 }, { prop: PROP.GRASS, p: 0.085 },
     { prop: PROP.MUSHROOM, p: 0.03 }, { prop: PROP.BERRY_BUSH, p: 0.018 }, { prop: PROP.ROCK, p: 0.02 },
-    { prop: PROP.STUMP, p: 0.008 }, { prop: PROP.FLOWER, p: 0.02 },
+    { prop: PROP.STUMP, p: 0.008 }, { prop: PROP.LOG, p: 0.016 }, { prop: PROP.FLOWER, p: 0.012 },
   ],
   [BIOME.PINE]: [
-    { prop: PROP.SCRAP_PILE, p: 0.008 }, { prop: PROP.TREE_PINE, p: 0.12 }, { prop: PROP.ROCK, p: 0.045 }, { prop: PROP.BOULDER, p: 0.015 },
+    { prop: PROP.TREE_PINE, p: 0.12 }, { prop: PROP.ROCK, p: 0.045 }, { prop: PROP.BOULDER, p: 0.015 },
     { prop: PROP.GRASS, p: 0.07 }, { prop: PROP.BUSH, p: 0.03 }, { prop: PROP.MUSHROOM, p: 0.02 },
+    { prop: PROP.LOG, p: 0.014 }, { prop: PROP.STUMP, p: 0.006 },
   ],
   [BIOME.HIGHLAND]: [
     { prop: PROP.ROCK, p: 0.09 }, { prop: PROP.BOULDER, p: 0.035 }, { prop: PROP.ROCK_TALL, p: 0.016 },
@@ -866,21 +1440,25 @@ const SCATTER = {
     { prop: PROP.BOULDER, p: 0.02 }, { prop: PROP.BONES, p: 0.004 },
   ],
   [BIOME.BLOOM]: [
-    { prop: PROP.TREE_BLOOM, p: 0.07 }, { prop: PROP.CRYSTAL, p: 0.035 }, { prop: PROP.GRASS, p: 0.11 },
+    { prop: PROP.TREE_BLOOM, p: 0.07 }, { prop: PROP.CRYSTAL, p: 0.02 }, { prop: PROP.GRASS, p: 0.11 },
     { prop: PROP.FLOWER, p: 0.06 }, { prop: PROP.MUSHROOM, p: 0.05 }, { prop: PROP.BUSH, p: 0.03 },
-    { prop: PROP.ROCK, p: 0.015 },
+    { prop: PROP.ROCK, p: 0.015 }, { prop: PROP.LOG, p: 0.008 },
   ],
+  /* The Ruins: a town that fell over. Broken walls, toppled pillars,
+     crates somebody stacked and never came back for, and the grass
+     growing through it. Nothing here needs explaining. */
   [BIOME.SCRAP]: [
-    { prop: PROP.RUIN_WALL, p: 0.042 }, { prop: PROP.RUIN_PILLAR, p: 0.02 }, { prop: PROP.SCRAP_PILE, p: 0.05 },
-    { prop: PROP.CONDUIT, p: 0.032 }, { prop: PROP.PYLON, p: 0.012 }, { prop: PROP.CRATE, p: 0.02 },
-    { prop: PROP.GRASS, p: 0.06 }, { prop: PROP.ANTENNA, p: 0.008 }, { prop: PROP.LAMP, p: 0.01 },
-    { prop: PROP.ROCK, p: 0.015 },
+    { prop: PROP.RUIN_WALL, p: 0.050 }, { prop: PROP.RUIN_PILLAR, p: 0.026 },
+    { prop: PROP.SCRAP_PILE, p: 0.055 }, { prop: PROP.CRATE, p: 0.026 },
+    { prop: PROP.GRASS, p: 0.09 }, { prop: PROP.BUSH, p: 0.03 },
+    { prop: PROP.ROCK, p: 0.02 }, { prop: PROP.BONES, p: 0.006 },
+    { prop: PROP.STUMP, p: 0.008 }, { prop: PROP.LOG, p: 0.008 },
   ],
   [BIOME.ASH]: [
-    { prop: PROP.SCRAP_PILE, p: 0.020 }, { prop: PROP.CONDUIT, p: 0.010 },
-    { prop: PROP.TREE_DEAD, p: 0.07 }, { prop: PROP.RIFT_SHARD, p: 0.03 }, { prop: PROP.ROCK, p: 0.04 },
+    { prop: PROP.TREE_DEAD, p: 0.07 }, { prop: PROP.ROCK, p: 0.04 },
+    { prop: PROP.SCRAP_PILE, p: 0.020 },
     { prop: PROP.BOULDER, p: 0.02 }, { prop: PROP.STUMP, p: 0.02 }, { prop: PROP.GRASS, p: 0.03 },
-    { prop: PROP.BONES, p: 0.008 },
+    { prop: PROP.BONES, p: 0.008 }, { prop: PROP.LOG, p: 0.010 },
   ],
   [BIOME.PLAZA]: [],
   [BIOME.OCEAN]: [],

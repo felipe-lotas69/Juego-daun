@@ -26,6 +26,25 @@ export function moveEntity(world, ent, radius, dt) {
   const level = Math.round(ent.y / LEVEL_STEP);
   let nx = ent.x + ent.vx * dt;
   let nz = ent.z + ent.vz * dt;
+
+  /* If the body is already somewhere it should not be, every
+     candidate fails the test - including the one that does not move
+     at all - and it is frozen where it stands for the rest of the
+     run. It happens: a corner between two cliff steps where the four
+     probes straddle the drop, a prop placed on somebody's feet, a
+     wall built round them, a spawn that landed badly. There is no
+     way out of it by pushing, because pushing is what is being
+     refused.
+
+     Being stuck is worse than being briefly somewhere illegal, so
+     while stuck, collision is off and the body walks out. One frame
+     later it is standing somewhere legal and the rules apply again. */
+  if (!canStand(world, ent.x, ent.z, radius, level)) {
+    ent.x = clamp(nx, -WORLD_HALF + 1, WORLD_HALF - 1);
+    ent.z = clamp(nz, -WORLD_HALF + 1, WORLD_HALF - 1);
+    return;
+  }
+
   if (!canStand(world, nx, ent.z, radius, level)) { nx = ent.x; ent.vx *= 0.2; }
   if (!canStand(world, nx, nz, radius, level)) { nz = ent.z; ent.vz *= 0.2; }
   ent.x = clamp(nx, -WORLD_HALF + 1, WORLD_HALF - 1);
