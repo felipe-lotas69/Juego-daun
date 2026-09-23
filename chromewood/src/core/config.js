@@ -9,7 +9,11 @@ export const TILE = 1;                    /* world units per ground tile   */
 export const WORLD_TILES = 224;           /* arena is WORLD_TILES square   */
 export const WORLD_HALF = (WORLD_TILES * TILE) / 2;
 export const CHUNK = 16;                  /* tiles per streamed chunk      */
-export const LEVEL_STEP = 0.55;           /* height of one terrain step    */
+/* One terrain step is most of a tile tall. Shorter than this and a
+   nine-level island is a gentle slope seen from above: the cliffs
+   stop reading as cliffs and the whole landscape flattens out into
+   a map of itself. */
+export const LEVEL_STEP = 0.80;
 
 export const RENDER = {
   pixelScale: 3,          /* screen pixels per rendered pixel              */
@@ -18,7 +22,7 @@ export const RENDER = {
   maxInternalW: 860,      /* clamp so huge monitors stay chunky            */
   toonBands: 4,
   outline: true,
-  outlineAlpha: 0.75,
+  outlineAlpha: 0.46,
   bloom: true,
   bloomStrength: 0.85,
   bloomThreshold: 0.62,

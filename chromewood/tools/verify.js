@@ -43,6 +43,7 @@ import {
 } from '../src/net/protocol.js';
 import { Mirror } from '../src/net/mirror.js';
 import { brokerConfig, brokerIdForRoom } from '../src/net/peer.js';
+import { villageOffers } from '../src/game/trade.js';
 import { hasGlyph } from '../src/ui/font.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -795,6 +796,84 @@ console.log('\ncaves');
   check(portals === w0.caves.length, 'and a framed doorway you can see from outside',
     `${portals} portals for ${w0.caves.length} caves`);
   ok('caves', sample.join('; '));
+}
+
+/* ------------------------------------------------- 2c. villages */
+console.log('\nvillages');
+{
+  /* A village has to be somewhere you can get to, somewhere you can
+     walk about in, and somewhere with a trade worth making. */
+  let worlds = 0, villages = 0, reachable = 0, walkable = 0, solid = 0, kinds = new Set();
+  for (let k = 0; k < SEEDS; k++) {
+    const w = new World(3000 + k * 6151);
+    worlds++;
+    for (const v of w.villages) {
+      villages++;
+      kinds.add(v.kind);
+      const i = w.idx(v.tx, v.ty);
+      if (!w.reachMask || w.reachMask[i]) reachable++;
+      /* The square itself is open, and the stall can be stood at. */
+      const level = Math.round(w.groundAt(v.x, v.z) / LEVEL_STEP);
+      const open = canStand(w, v.x, v.z, PLAYER.radius, level)
+        && canStand(w, v.stallX, v.stallZ + 1.2, PLAYER.radius, level);
+      if (open) walkable++;
+      /* And the cottages are walls, not scenery you walk through. */
+      if (v.huts.length && v.huts.every(h => w.flags[w.idx(h.tx, h.ty)] & FLAG.SOLID)) solid++;
+    }
+  }
+  check(villages >= worlds * 2, 'every world has villages in it',
+    `${villages} villages across ${worlds} worlds`);
+  check(reachable === villages, 'and you can walk to them from the beacon',
+    `${reachable} of ${villages} are on reachable ground`);
+  check(walkable === villages, 'the square is open and the stall can be stood at',
+    `${walkable} of ${villages} have a clear counter`);
+  check(solid === villages, 'the cottages are walls rather than scenery',
+    `${solid} of ${villages} have solid walls`);
+  check(kinds.size >= 3, 'and they are not all the same trade',
+    'kinds seen: ' + [...kinds].join(', '));
+
+  /* The board itself: every offer names real items, and the deal
+     turns over with the night. */
+  const w0 = new World(3000);
+  let offers = 0, bad = [];
+  for (const v of w0.villages) {
+    const a = villageOffers(v, 0), b = villageOffers(v, 1);
+    offers += a.length;
+    if (JSON.stringify(a[a.length - 1]) === JSON.stringify(b[b.length - 1])) {
+      bad.push(`${v.kind} deal does not turn over`);
+    }
+    for (const o of a) {
+      for (const [it] of [...o.give, ...o.get]) {
+        if (!ITEMS[it] && !BUILDINGS[it]) bad.push(`${v.kind} trades in "${it}", which is not a thing`);
+      }
+    }
+  }
+  check(bad.length === 0, 'every trade is in real goods and tonight is different',
+    bad.join('; '));
+  ok('villages', `${villages} across ${worlds} worlds, ${offers} offers on the first board`);
+
+  /* And a trade actually moves the goods. */
+  const sim = new Sim(3000, { difficulty: 1 });
+  const p = sim.addPlayer('p0', 'BUYER');
+  const v = sim.world.villages[0];
+  const offer = villageOffers(v, sim.night)[0];
+  for (const [it, n] of offer.give) invGive(p, it, n);
+  p.x = v.stallX; p.z = v.stallZ;
+  const before = offer.get.map(([it]) => invCount(p, it));
+  const took = sim.tryTrade(p, v.id, 0);
+  check(took, 'standing at the counter with the goods makes the trade',
+    'tryTrade refused a trade the player could afford');
+  check(offer.give.every(([it, n]) => invCount(p, it) === 0 || invCount(p, it) < n),
+    'and it takes what you offered', 'the goods were not taken');
+  check(offer.get.every(([it, n], i) => invCount(p, it) >= before[i] + n),
+    'and hands over what was promised', 'nothing arrived');
+
+  /* From across the map it refuses. */
+  const far = sim.addPlayer('p1', 'FAR');
+  for (const [it, n] of offer.give) invGive(far, it, n);
+  far.x = v.stallX + 40; far.z = v.stallZ;
+  check(sim.tryTrade(far, v.id, 0) === false, 'and not from the other side of the valley',
+    'a trade went through from forty tiles away');
 }
 
 /* ------------------------------------------ 3b2. nobody stays stuck */

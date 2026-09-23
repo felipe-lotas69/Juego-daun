@@ -23,6 +23,17 @@ import { lerpHex } from './props.js';
 import { clamp01, TAU } from '../core/util.js';
 import { RENDER } from '../core/config.js';
 
+/* Villagers wear what people wear rather than what a squad wears:
+   earth, not the four signal colours the players get, so a person
+   at the stall never reads as a fifth player. */
+export const VILLAGER_COLORS = [
+  { body: 0x8a6a45, trim: 0xc09a68, core: 0xe0c464, name: 'MILLER' },
+  { body: 0x6d7a52, trim: 0x9db07a, core: 0xd8e08a, name: 'FARMER' },
+  { body: 0x9a5542, trim: 0xc98f6a, core: 0xffb03a, name: 'SMITH' },
+  { body: 0x5c6a7a, trim: 0x8ea0b4, core: 0xbfd0e8, name: 'TRAPPER' },
+  { body: 0x7a5a84, trim: 0xa88ab4, core: 0xd9a6ff, name: 'HERBALIST' },
+];
+
 export const PLAYER_COLORS = [
   { body: 0x3f7fd4, trim: 0x7ec3ff, core: 0x7ee8ff, name: 'AZURE' },
   { body: 0xd4543f, trim: 0xff9f7e, core: 0xffb03a, name: 'EMBER' },
@@ -366,11 +377,12 @@ export class Actor {
       return m;
     };
 
-    if (kind === 'player') {
+    if (kind === 'player' || kind === 'villager') {
       /* The person is a sprite, not a stack of blocks. A head built
          out of cubes is a cube; a head built out of pixels can have
          a face, and at this size that is the whole difference. */
-      const colors = PLAYER_COLORS[variant % PLAYER_COLORS.length];
+      const palette = kind === 'villager' ? VILLAGER_COLORS : PLAYER_COLORS;
+      const colors = palette[variant % palette.length];
       this.colors = colors;
       this.sprite = makeCharacterSprite(colors);
       this.group.add(this.sprite.mesh);
@@ -435,7 +447,7 @@ export class Actor {
     const swing = Math.sin(stride) * 0.75 * moving;
     const down = ent.state === 'downed';
 
-    if (this.kind === 'player') {
+    if (this.sprite) {
       const S = this.sprite;
       const yaw = opts.cameraYaw !== undefined ? opts.cameraYaw : RENDER.cameraYaw;
 
@@ -539,7 +551,7 @@ export class Actor {
 
     /* Damage flash, done by pushing the whole group's scale rather
        than swapping materials, which would break instancing. */
-    if (hurt > 0.01 && this.kind !== 'player') {
+    if (hurt > 0.01 && !this.sprite) {
       const k = 1 + hurt * 0.16;
       g.scale.set(scale * k, scale * (2 - k), scale * k);
     }

@@ -27,9 +27,10 @@ import { ITEMS, BUILDINGS, BEACON_REPAIR } from './items.js';
 import { ANIMALS, EXTRA_ENEMIES, FACTION, animalsForBiome } from './creatures.js';
 import { NIGHTS, WEATHER, buildNightDeck, rollWeather, CONTRACTS } from './nights.js';
 import {
-  ResonanceField, swing, tickCraft, tickBody, place, invGive, invTake, invCount, heldItem,
-  depositToBeacon, beaconRepairProgress,
+  ResonanceField, swing, tickCraft, tickBody, place, invGive, invTake, invCount, invRoom,
+  heldItem, depositToBeacon, beaconRepairProgress,
 } from './survival.js';
+import { villageOffers } from './trade.js';
 import { makeRng } from '../core/rng.js';
 import { clamp, clamp01, lerp, dist2, dist, damp, TAU } from '../core/util.js';
 import { castAbility, stepProjectiles, damageEnemy, damagePlayer, explode } from './combat.js';
@@ -100,7 +101,7 @@ export class Sim {
     this.strikeTimer = 0;
     this.corruption = 0;
     this._spawnIndex = 0;
-    this.stats = { built: 0, mined: 0, chopped: 0, killed: 0, gatesSealed: 0 };
+    this.stats = { built: 0, mined: 0, chopped: 0, killed: 0, gatesSealed: 0, traded: 0 };
   }
 
   /* ---------------------------------------------------- players */
@@ -217,6 +218,29 @@ export class Sim {
      let you play, which is exactly the kind of directed objective
      this is not supposed to have. Repairing it is now worth doing
      for what it gives everyone, not for permission. */
+  /* Barter at a stall. Everything about the board is derived - the
+     village, the night count - so a client draws the same one the
+     host does and only the swap itself has to happen here. */
+  tryTrade(p, villageId, index) {
+    const v = this.world.villages.find(x => x.id === villageId);
+    if (!v) return false;
+    if (dist2(p.x, p.z, v.stallX, v.stallZ) > 4.2 * 4.2) return false;
+    const offers = villageOffers(v, this.night);
+    const offer = offers[index];
+    if (!offer) return false;
+    if (!offer.give.every(([it, n]) => invCount(p, it) >= n)) return false;
+    /* Refuse rather than void the goods if there is no room. */
+    if (!offer.get.every(([it, n]) => invRoom(p, it, n))) {
+      this.emit({ t: 'tradefull', id: p.id });
+      return false;
+    }
+    for (const [it, n] of offer.give) invTake(p, it, n);
+    for (const [it, n] of offer.get) invGive(p, it, n);
+    this.stats.traded++;
+    this.emit({ t: 'trade', id: p.id, village: villageId, index, x: p.x, y: p.y, z: p.z });
+    return true;
+  }
+
   learnSkill(p, key) {
     const s = SKILLS[key];
     if (!s || p.skills[key] || p.skillPoints < s.cost) return false;
@@ -679,6 +703,7 @@ export class Sim {
       if (d < Math.min(bestD, r * r)) { bestD = d; best = { kind, obj, x, z }; }
     };
     consider('beacon', this.beacon, this.beacon.x, this.beacon.z, SURVIVAL.depositRange);
+    for (const v of this.world.villages) consider('stall', v, v.stallX, v.stallZ, 2.8);
     for (const s of this.shrines) if (s.cooldown <= 0) consider('shrine', s, s.x, s.z, 2.6);
     for (const c of this.caches) if (!c.opened) consider('cache', c, c.x, c.z, 2.4);
     for (const g of this.gates) if (!g.sealed) consider('gate', g, g.x, g.z, GATE.radius * 0.5);
@@ -698,6 +723,16 @@ export class Sim {
           p.interactProgress += dt / 2.5;
           if (p.interactProgress >= 1) { p.interactProgress = 0; this.tryLightBeacon(p); }
         }
+      }
+    } else if (best.kind === 'stall') {
+      /* A shop opens rather than doing something, so the hold is
+         short: long enough not to trigger as you walk past, short
+         enough that it does not feel like a lock. */
+      p.interactProgress += dt / 0.45;
+      if (p.interactProgress >= 1) {
+        p.interactProgress = 0;
+        p.shopVillage = best.obj.id;
+        this.emit({ t: 'shop', id: p.id, village: best.obj.id, x: p.x, y: p.y, z: p.z });
       }
     } else if (best.kind === 'shrine') {
       p.interactProgress += dt / 1.1;

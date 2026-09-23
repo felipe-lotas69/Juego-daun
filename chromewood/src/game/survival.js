@@ -41,6 +41,13 @@ export function invTake(p, item, n) {
   return true;
 }
 
+/* Will `n` more of this fit? Stacks are capped at four deep, so a
+   trade that would overflow is refused rather than swallowed. */
+export function invRoom(p, item, n) {
+  if (!ITEMS[item]) return false;
+  return (p.inv[item] || 0) + n <= ITEMS[item].stack * 4;
+}
+
 export function invHasAll(p, list) {
   for (const [item, n] of list) if ((p.inv[item] || 0) < n) return false;
   return true;

@@ -9,8 +9,8 @@
 
 import * as THREE from '../../vendor/three.module.js';
 import { PALETTE, DAY, RENDER, WORLD_HALF } from '../core/config.js';
-import { clamp01, lerp, smoothstep } from '../core/util.js';
-import { setRimLook } from './materials.js';
+import { clamp01, lerp, smoothstep, damp } from '../core/util.js';
+import { setRimLook, cloudUniforms } from './materials.js';
 import { LAYER_NO_OUTLINE } from './pipeline.js';
 
 const POINT_LIGHT_POOL = 10;
@@ -75,10 +75,43 @@ export class SceneRig {
     this._fogDay = new THREE.Color(PALETTE.fogDay);
     this._fogNight = new THREE.Color(PALETTE.fogNight);
     this._fogDusk = new THREE.Color(0xd98a6a);
+    this._rock = new THREE.Color(0x120f18);
+    this.under = 0;
     this._tmp = new THREE.Color();
 
     this.starField = this._makeStars();
     this.scene.add(this.starField);
+
+    /* Motes: dust in a sunbeam. They live in a box that travels with
+       the camera, so there are never more than a few hundred of them
+       and they are always where you are looking. */
+    this.motes = this._makeMotes();
+    this.scene.add(this.motes);
+    this.cloudDrift = new THREE.Vector2(0, 0);
+  }
+
+  _makeMotes() {
+    const count = 260;
+    const g = new THREE.BufferGeometry();
+    const pos = new Float32Array(count * 3);
+    const seed = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * 34;
+      pos[i * 3 + 1] = Math.random() * 7 + 0.4;
+      pos[i * 3 + 2] = (Math.random() - 0.5) * 34;
+      seed[i] = Math.random() * 100;
+    }
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.userData.seed = seed;
+    g.userData.home = pos.slice();
+    const m = new THREE.PointsMaterial({
+      size: 1.6, sizeAttenuation: false, color: 0xfff0c8,
+      transparent: true, opacity: 0.0, depthWrite: false, fog: false, toneMapped: false,
+    });
+    const points = new THREE.Points(g, m);
+    points.layers.set(LAYER_NO_OUTLINE);
+    points.frustumCulled = false;
+    return points;
   }
 
   _makeStars() {
@@ -120,7 +153,12 @@ export class SceneRig {
 
   setTime(t) { this.time = t; }
 
-  update(dt, cameraTarget, grade, cameraDistance = 52, weather = null) {
+  update(dt, cameraTarget, grade, cameraDistance = 52, weather = null, zoom = RENDER.fov,
+    underground = 0) {
+    /* Eased rather than snapped: walking through a doorway should
+       feel like the light going, not like a switch. */
+    this.under = damp(this.under === undefined ? 0 : this.under, clamp01(underground), 3.4, dt);
+    const under = this.under;
     this.time += dt;
     const t = this.time % this.cycleLength;
 
@@ -154,6 +192,17 @@ export class SceneRig {
 
     this.sunTarget.position.copy(cameraTarget);
     this.sun.position.copy(cameraTarget).addScaledVector(dir, 42);
+    /* The shadow map has to cover what the camera can see, or a
+       zoomed-out view is lit but unshadowed past a hard circle. */
+    if (this.sun.shadow) {
+      const half = Math.min(58, Math.max(20, zoom * 2.6));
+      const sc = this.sun.shadow.camera;
+      if (sc.right !== half) {
+        sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half;
+        sc.far = Math.max(90, half * 2.6);
+        sc.updateProjectionMatrix();
+      }
+    }
 
     /* Colour: day -> dusk -> night. */
     this._tmp.set(PALETTE.sunDay).lerp(new THREE.Color(PALETTE.sunDusk), duskAmt);
@@ -162,31 +211,73 @@ export class SceneRig {
     /* More sun, less sky. The hemisphere light fills every face
        evenly, which is exactly what flattens a stack of cubes, so
        the balance moves toward the direction that has a direction. */
-    this.sun.intensity = lerp(3.15, 0.82, night);
+    this.sun.intensity = lerp(2.55, 0.74, night) * lerp(1, 0.10, under);
 
-    this.hemi.intensity = lerp(0.80, 0.52, night);
+    this.hemi.intensity = lerp(1.05, 0.60, night) * lerp(1, 0.34, under);
     this.hemi.color.set(PALETTE.skyDay).lerp(new THREE.Color(0x3a4a80), night);
     this.hemi.groundColor.set(PALETTE.grassDark).lerp(new THREE.Color(0x19203a), night);
-    this.fill.intensity = lerp(0.30, 0.55, night);
+    this.fill.intensity = lerp(0.42, 0.58, night) * lerp(1, 0.30, under);
     this.fill.color.set(0x9fc4ff).lerp(new THREE.Color(0x6f7fff), night);
 
     /* Sky and fog. */
     this._tmp.copy(this._skyDay).lerp(this._skyDusk, duskAmt).lerp(this._skyNight, night * night);
+    this._tmp.lerp(this._rock, under);
     this.scene.background.copy(this._tmp);
     this._tmp.copy(this._fogDay).lerp(this._fogDusk, duskAmt).lerp(this._fogNight, night);
+    /* Pull the fog most of the way toward the sky. Distance haze
+       that is a different colour from the sky reads as smoke; haze
+       that matches it reads as air, and the far hills dissolve into
+       the horizon the way they do outdoors. */
+    this._tmp.lerp(this.scene.background, 0.55);
     this.scene.fog.color.copy(this._tmp);
-    /* Only the far half of the view fogs: enough for aerial depth,
-       never enough to grey out the ground you are standing on.
+    /* Aerial perspective starts close - a few tiles past the player -
+       and is gentle, rather than starting far away and being abrupt.
        Weather pulls the far plane in, which is the whole effect of
        fog and a snowstorm. */
+    /* Ranges scale with the zoom. A fixed distance is right at one
+       zoom level and wrong at every other: zoomed out, a fog that
+       ends sixty units away swallows two thirds of what is on
+       screen, and the world becomes a grey smear. */
     const vis = weather && weather.fog !== undefined ? weather.fog : 1;
-    this.scene.fog.near = cameraDistance + lerp(10, 4, night) * vis;
-    this.scene.fog.far = cameraDistance + lerp(54, 34, night) * vis;
+    const reach = Math.max(zoom, 4);
+    /* Underground the far distance closes right in: you should not
+       be able to see the whole tunnel system from inside one of it. */
+    this.scene.fog.near = cameraDistance + reach * lerp(lerp(0.5, 0.0, night), -0.2, under) * vis;
+    this.scene.fog.far = cameraDistance + reach * lerp(lerp(8.2, 5.2, night), 1.9, under) * vis;
     if (weather && weather.id === 'ashfall') this.scene.fog.color.lerp(new THREE.Color(0x5a4658), 0.45);
     if (weather && weather.id === 'snowstorm') this.scene.fog.color.lerp(new THREE.Color(0xc8d6e4), 0.4);
 
-    this.starField.material.opacity = Math.max(0, night * night * 0.9);
+    this.starField.material.opacity = Math.max(0, night * night * 0.9) * (1 - under);
     this.starField.position.set(cameraTarget.x, 0, cameraTarget.z);
+
+    /* Cloud shadows drift on a slow diagonal. Overcast weather makes
+       them heavier; at night there is no sun to cast them. */
+    const cover = weather && weather.cloud !== undefined ? weather.cloud : 1;
+    this.cloudDrift.x += dt * 0.021;
+    this.cloudDrift.y += dt * 0.013;
+    cloudUniforms.uCloudDrift.value.copy(this.cloudDrift);
+    cloudUniforms.uCloudStrength.value = lerp(0.85, 0.12, night) * cover * (1 - under);
+
+    /* Motes only where there is light to catch them, and most of all
+       at dusk when the light is raking. */
+    this.motes.position.set(
+      Math.floor(cameraTarget.x / 34) * 34,
+      0,
+      Math.floor(cameraTarget.z / 34) * 34,
+    );
+    this.motes.material.opacity = (lerp(0.26, 0.05, night) + duskAmt * 0.22) * (1 - under * 0.7);
+    {
+      const g = this.motes.geometry;
+      const pos = g.attributes.position.array;
+      const home = g.userData.home, seed = g.userData.seed;
+      for (let i = 0; i < seed.length; i++) {
+        const t = this.time * 0.35 + seed[i];
+        pos[i * 3] = home[i * 3] + Math.sin(t) * 1.6 + this.time * 0.22 % 34;
+        pos[i * 3 + 1] = home[i * 3 + 1] + Math.sin(t * 0.7) * 0.5;
+        pos[i * 3 + 2] = home[i * 3 + 2] + Math.cos(t * 0.8) * 1.4;
+      }
+      g.attributes.position.needsUpdate = true;
+    }
 
     /* Rim light flips from a warm sky bounce to a cold arcane edge
        so characters stay readable once the ground goes dark. */
@@ -197,12 +288,18 @@ export class SceneRig {
     );
 
     if (grade) {
-      grade.exposure = lerp(1.0, 1.02, night);
-      grade.contrast = lerp(1.05, 1.10, night);
-      grade.saturation = lerp(1.14, 1.00, night);
-      grade.tint.setRGB(lerp(1, 0.88, night), lerp(1, 0.92, night), lerp(1, 1.12, night));
-      grade.lift.setRGB(lerp(0, 0.020, night), lerp(0, 0.024, night), lerp(0, 0.042, night));
-      grade.vignette = lerp(0.48, 0.80, night);
+      /* Deliberately flat. The world is made of hard-edged blocks in
+         saturated colours; pushing contrast and saturation on top of
+         that is what made it shout. Lifting the blacks a little and
+         leaving the midtones alone is what lets the shapes carry it. */
+      grade.exposure = lerp(1.02, 1.03, night);
+      grade.contrast = lerp(0.94, 1.02, night);
+      grade.saturation = lerp(0.98, 0.92, night);
+      grade.tint.setRGB(lerp(1, 0.88, night), lerp(1, 0.92, night), lerp(1.01, 1.12, night));
+      grade.lift.setRGB(lerp(0.016, 0.030, night), lerp(0.018, 0.034, night), lerp(0.026, 0.052, night));
+      grade.vignette = lerp(lerp(0.34, 0.70, night), 0.92, under);
+      grade.exposure *= lerp(1, 0.86, under);
+      grade.saturation *= lerp(1, 0.80, under);
     }
   }
 

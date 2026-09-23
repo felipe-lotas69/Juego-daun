@@ -11,6 +11,7 @@
    ============================================================ */
 
 import * as THREE from '../../vendor/three.module.js';
+import { patchHeroFade } from './materials.js';
 import { FULLSCREEN_VERT, EDGE_FRAG, BRIGHT_FRAG, BLUR_FRAG, COMPOSITE_FRAG } from './shaders.js';
 import { RENDER } from '../core/config.js';
 
@@ -40,6 +41,11 @@ export class PixelPipeline {
     this.enabled = { outline: RENDER.outline, bloom: RENDER.bloom, dither: RENDER.dither };
 
     this.normalMaterial = new THREE.MeshNormalMaterial();
+    /* The normal and depth buffers have to lose the same pixels the
+       lit pass does, or the edge pass traces a wall that is no
+       longer drawn. */
+    this.normalMaterial.onBeforeCompile = (shader) => patchHeroFade(shader);
+    this.normalMaterial.customProgramCacheKey = () => 'normal-hero';
     this.normalCamera = null;
 
     this.quadScene = new THREE.Scene();
@@ -71,13 +77,13 @@ export class PixelPipeline {
         uTexel: { value: new THREE.Vector2() },
         uNear: { value: 0.1 }, uFar: { value: 200 },
         uLineAlpha: { value: RENDER.outlineAlpha },
-        uHighlight: { value: 0.58 },
-        uShadow: { value: 0.62 },
+        uHighlight: { value: 0.34 },
+        uShadow: { value: 0.40 },
         uDepthScale: { value: 1.0 },
         uDepthBias: { value: 0.3 },
         /* Not white: a cool, slightly desaturating multiplier, so a
            shadowed edge stays the colour of the thing it is on. */
-        uShadowTint: { value: new THREE.Color(0.20, 0.19, 0.31) },
+        uShadowTint: { value: new THREE.Color(0.46, 0.45, 0.56) },
         uOutlineWhite: { value: 0.10 },
       },
     });
