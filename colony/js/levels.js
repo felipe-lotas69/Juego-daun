@@ -75,6 +75,15 @@
 
   var COLLAPSE_DAMAGE = [9, 26]; /* blunt, to whatever falls and whatever it lands on */
 
+  /* Armour is a model of a blow glancing off a garment, and health.js
+     rolls a flat deflect chance whenever the hit part is covered. That
+     is right for a fist and wrong for a building: a colonist who rides
+     his own floor down a whole level was measured taking literally
+     nothing because the roll went to his jacket, which makes the one
+     disaster this system exists to produce silently not happen. Falling
+     masonry gets the clamp ceiling, so it always connects. */
+  var COLLAPSE_ARMOR_PEN = 2;
+
   /* ============================================================
      CONTENT
 
@@ -798,7 +807,7 @@
       if (Health && Health.damage) {
         Health.damage(pawn, {
           amount: U.randInt(COLLAPSE_DAMAGE[0], COLLAPSE_DAMAGE[1]),
-          type: 'blunt', source: 'collapse'
+          type: 'blunt', source: 'collapse', armorPen: COLLAPSE_ARMOR_PEN
         });
       }
     }
@@ -811,7 +820,7 @@
         if (Health && Health.damage) {
           Health.damage(under[q], {
             amount: U.randInt(COLLAPSE_DAMAGE[0], COLLAPSE_DAMAGE[1]),
-            type: 'blunt', source: 'collapse'
+            type: 'blunt', source: 'collapse', armorPen: COLLAPSE_ARMOR_PEN
           });
         }
       }
@@ -1544,10 +1553,19 @@
 
     var PE = sys('Path') ? sys('Path').PE : { ON_CELL: 0, TOUCH: 1 };
 
+    /* jobs.js calls this on every end, whatever the reason, while a
+       toil's own end handler only runs if the job got that far. A
+       hauler who goes berserk on the stairs ends at toil 1, and without
+       this the storage cell it claimed downstairs would stay locked
+       until the next housekeeping sweep - a window in which no other
+       hauler can take that cell, for a job nobody is doing any more. */
+    function releaseOnEnd(pawn) { Levels.releaseRemoteClaims(pawn); }
+
     Jobs.register('levelTransit', {
       label: 'change level',
       reportString: 'Heading to another level.',
       keepCarried: true,
+      onEnd: releaseOnEnd,
       toils: function () { return [transitToil()]; }
     });
 
@@ -1555,6 +1573,7 @@
       label: 'haul between levels',
       reportString: 'Hauling {A} to another level.',
       keepCarried: true,
+      onEnd: releaseOnEnd,
       toils: function () {
         return [
           Toils.reserve('A', 1),
@@ -1830,7 +1849,10 @@
       var Health = sys('Health');
       for (var p = 0; p < pawns.length; p++) {
         if (Health && Health.damage) {
-          Health.damage(pawns[p], { amount: U.randInt(6, 18), type: 'blunt', source: 'cave-in' });
+          Health.damage(pawns[p], {
+            amount: U.randInt(6, 18), type: 'blunt', source: 'cave-in',
+            armorPen: COLLAPSE_ARMOR_PEN
+          });
           hurt++;
         }
       }

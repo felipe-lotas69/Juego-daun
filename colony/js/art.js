@@ -58,18 +58,59 @@
      custom properties styles.css declares on :root.
      ------------------------------------------------------------------ */
   var P = {
-    /* art direction anchors */
-    soil: '#6b533b', richSoil: '#4f3d2b', grass: '#5c7a3e', sand: '#c2b280',
-    rock: '#5a5a62', rockFloor: '#6e6e78', water: '#2f5d78', woodFloor: '#8a6134',
-    steel: '#8f97a3', blood: '#8b1a1a', night: '#0e1430', colonist: '#4a7fd4',
-    raider: '#c0392b', wild: '#b08c5a', paper: '#e8e2d4', ink: '#141821',
-    gold: '#ffc23c', wood: '#a9783f', flame: '#ff8c1a', sky: '#6fa8dc',
-    leaf: '#3f6b33', bone: '#d8cfc0', shadow: '#2a2118',
+    /* Art direction anchors, warm and muted.
+
+       The reference the player asked this to match is weathered ground
+       in afternoon light: browns and olive greens at low saturation,
+       water a muted blue-green rather than a bright blue, stone a warm
+       grey rather than a blue-grey. Every anchor below was pulled that
+       way from the swatch it used to be - soil off its orange, grass off
+       its emerald, water off its cyan, rock off its blue. A world layer
+       with one cool hue in it reads as a colour swatch; a world layer
+       where every grey leans the same way as the light reads as weather.
+       The ungraded originals are named in the comments so the step is
+       auditable rather than a vibe. */
+    soil: '#675442',        /* was #6b533b - less orange, same weight  */
+    richSoil: '#4b3e30',    /* was #4f3d2b                             */
+    grass: '#6b7644',       /* was #5c7a3e - emerald toward olive      */
+    sand: '#bfae86',        /* was #c2b280                             */
+    rock: '#5d574e',        /* was #5a5a62 - blue-grey toward warm grey*/
+    rockFloor: '#726c62',   /* was #6e6e78                             */
+    water: '#385c62',       /* was #2f5d78 - bright blue toward teal   */
+    woodFloor: '#87663c',   /* was #8a6134                             */
+    steel: '#96948b',       /* was #8f97a3                             */
+    blood: '#8b1a1a', night: '#1a2748', colonist: '#5077b4',
+    raider: '#b04a37', wild: '#ad8c5c', paper: '#e8e2d4', ink: '#141821',
+    gold: '#ffc23c', wood: '#a07b4d', flame: '#ff8c1a', sky: '#7ea3b4',
+    leaf: '#4c6538', bone: '#d3cab9', shadow: '#241d15',
+
+    /* The rest of the world grounds. These used to live only on the
+       terrain defs, which this file does not own; they are here now so
+       that Art.PALETTE really is the one place the world's colour is
+       decided, and paintTerrain reads them through Art.groundColor. A
+       terrain art.js has never met still gets a colour - its def's, run
+       through the same grade as everything else. */
+    ground: {
+      soil: ['#675442', '#715e4c'],
+      richSoil: ['#4b3e30', '#554736'],
+      gravel: ['#786f65', '#847b6e'],
+      sand: ['#bfae86', '#c9ba9c'],
+      mud: ['#4a3e30', '#554838'],
+      marsh: ['#4d5440', '#454c3b'],
+      shallowWater: ['#44696c', '#4d7677'],
+      deepWater: ['#385c62', '#30525a'],
+      rockFloor: ['#726c62', '#7c766b'],
+      woodFloor: ['#87663c', '#7a5c36'],
+      stoneFloor: ['#77716a', '#6c6760'],
+      concreteFloor: ['#8a877e', '#807d75'],
+      steelFloor: ['#96948b', '#8a8880'],
+      carpet: ['#8a4a42', '#7b423b']
+    },
 
     /* material tones the illustrations lean on */
-    mortar: '#584f45', iron: '#5c6068', smoke: '#4a4a52', brass: '#c9a24a', glass: '#9fd2e8',
+    mortar: '#584f45', iron: '#5f5c55', smoke: '#4a4740', brass: '#c9a24a', glass: '#9cc2cc',
     ember: '#ffd23c', charcoal: '#241d18', linen: '#e4dcc6', hide: '#9c6b3f',
-    foliageDark: '#2c4a26', foliageLight: '#7fa64c', bark: '#5a4227',
+    foliageDark: '#37462a', foliageLight: '#8a9456', bark: '#5a4227',
 
     /* interface accents - these are the values in styles.css :root */
     bg0: '#0b0e14', bg1: '#171c26', bg2: '#1f2531', bg3: '#2a3140', bg4: '#38404f',
@@ -215,6 +256,114 @@
   /* Pull a colour toward the grey of dead tissue and dry stone. Used by
      corpses and downed animals, which must not read as living ones. */
   function drained(c) { return mix(c, '#7a7068', 0.45); }
+
+  /* ------------------------------------------------------------------
+     The world grade
+
+     Half the colour on the map comes from def files this file does not
+     own - every plant, every animal, every stuff a wall can be built
+     from - and those were authored before the direction was "warm and
+     muted". Rather than reach into files that belong to somebody else,
+     every def colour that lands in the world layer goes through here on
+     its way to a brush. The grade is the same one the anchors in the
+     palette above were moved by, written down as a function so a def
+     that arrives tomorrow lands in the same afternoon light:
+
+       - greens are rotated toward olive and taken down in saturation,
+         which is what turns a field of emerald discs into scrub;
+       - blues and cyans are rotated toward blue-green and taken down
+         harder, because a saturated blue in a brown world is the one
+         thing the eye cannot stop looking at;
+       - a near-neutral is given the hue of the light, so grey stone
+         reads warm rather than blue - the single change that does most
+         of the work, because a third of the map is stone;
+       - everything else keeps its hue, loses a fifth of its chroma;
+       - and nothing comes out blacker than the palette's dark or
+         whiter than its lit, which is section 13's rule about pure
+         values, applied to colours nobody here chose.
+
+     Interface accents do not come through here. A panel wants the
+     contrast, and the accent being the one saturated thing on screen is
+     the point of it. */
+
+  function rgbToHsl(p) {
+    var r = p[0] / 255, g = p[1] / 255, b = p[2] / 255;
+    var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    var l = (mx + mn) / 2, h = 0, s = 0, d = mx - mn;
+    if (d > 0.0001) {
+      s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+      if (mx === r) h = ((g - b) / d + (g < b ? 6 : 0));
+      else if (mx === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h *= 60;
+    }
+    return [h, s, l];
+  }
+
+  function hue2rgb(p, q, t) {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  }
+
+  function hslToHex(h, s, l) {
+    h = (((h % 360) + 360) % 360) / 360;
+    s = U.clamp(s, 0, 1); l = U.clamp(l, 0, 1);
+    if (s < 0.0001) return toHex(l * 255, l * 255, l * 255);
+    var q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+    return toHex(hue2rgb(p, q, h + 1 / 3) * 255, hue2rgb(p, q, h) * 255,
+      hue2rgb(p, q, h - 1 / 3) * 255);
+  }
+
+  var LIGHT_HUE = 34;     /* the hue of the light, which every grey borrows */
+  var worldMemo = Object.create(null);
+
+  function worldColor(c) {
+    if (!c || typeof c !== 'string' || c.charAt(0) !== '#' || c.length < 7) return c;
+    var hit = worldMemo[c];
+    if (hit) return hit;
+    var hsl = rgbToHsl(parse(c)), h = hsl[0], s = hsl[1], l = hsl[2];
+    if (s < 0.13) {
+      /* Near-neutral: take the light's hue and a trace of its chroma, so
+         stone, concrete and steel all agree with the ground instead of
+         each leaning a different way. */
+      h = LIGHT_HUE;
+      s = Math.min(0.14, s * 0.5 + 0.06);
+    } else if (h >= 58 && h < 172) {
+      h = 58 + (h - 58) * 0.46;
+      s *= 0.78;
+    } else if (h >= 172 && h < 262) {
+      h = 172 + (h - 172) * 0.42;
+      s *= 0.62;
+      l *= 0.93;
+    } else if (h >= 262 && h < 330) {
+      s *= 0.62;
+    } else {
+      s *= 0.84;
+    }
+    /* The world's floor and ceiling, the same two the palette names. */
+    l = U.clamp(l, 0.085, 0.925);
+    return (worldMemo[c] = hslToHex(h, s, l));
+  }
+
+  /* The two tones a terrain is painted from. The palette decides, and a
+     terrain the palette has not named falls back to its def's own pair,
+     graded. Returned as a fresh pair only when it has to be: the table
+     entries are handed back as they are, and nothing mutates them. */
+  var groundMemo = Object.create(null);
+
+  function groundColors(def) {
+    var named = P.ground[def.id];
+    if (named) return named;
+    var hit = groundMemo[def.id];
+    if (hit) return hit;
+    var c1 = worldColor(def.color || '#6f5c46');
+    var c2 = def.color2 ? worldColor(def.color2) : shade(c1, 0.06);
+    return (groundMemo[def.id] = [c1, c2]);
+  }
 
   /* ------------------------------------------------------------------
      Deterministic per-sprite noise
@@ -543,9 +692,14 @@
   function sheen(g, x, y, w, h, alpha, tilt) {
     tilt = tilt === undefined ? 0.55 : tilt;
     g.globalCompositeOperation = 'screen';
+    /* The palette's lit, not a pure white. This band runs across every
+       steel plate, solar cell and machine casing on the map, and a 255
+       highlight is the one thing that will not sit in an afternoon:
+       screened over warm grey it came out blue-white, which is what
+       made the metal look like it was under a different sky. */
     gradRect(g, x, y, w, h, linGrad(g, x, y, x + w * tilt, y + h, [
-      0, rgba('#ffffff', 0), 0.34, rgba('#ffffff', alpha),
-      0.46, rgba('#ffffff', alpha * 0.35), 0.6, rgba('#ffffff', 0)
+      0, rgba(LIT, 0), 0.34, rgba(LIT, alpha),
+      0.46, rgba(LIT, alpha * 0.35), 0.6, rgba(LIT, 0)
     ]));
     g.globalCompositeOperation = 'source-over';
   }
@@ -1073,7 +1227,9 @@
   }
 
   function paintTerrain(g, rnd, def, variant) {
-    var c1 = def.color, c2 = def.color2 || shade(c1, 0.06);
+    /* The palette decides the ground, not the terrain def - see
+       groundColors and the P.ground table it reads. */
+    var gc = groundColors(def), c1 = gc[0], c2 = gc[1];
     switch (def.id) {
       case 'soil': paintSoil(g, rnd, c1, c2, false, variant); break;
       case 'richSoil': paintSoil(g, rnd, c1, c2, true, variant); break;
@@ -1390,11 +1546,23 @@
      screen - and the rest is material.
      ------------------------------------------------------------------ */
 
+  /* How hard everything on this map presses into the ground.
+
+     With the ground calmed down to a quiet field, the contact shadow is
+     what is left holding a thing onto it: a pawn with a timid shadow on
+     a busy field merely looked flat, but a pawn with a timid shadow on a
+     calm one floats. Every contact shadow in the file is scaled by this
+     one number so the whole scene agrees about how low the sun is, and
+     so that raising it is one edit rather than forty. */
+  var CONTACT = 1.32;
+
+  function contact(a) { return a * CONTACT > 0.72 ? 0.72 : a * CONTACT; }
+
   /* A soft contact shadow under a rectangular object, offset the way the
      north-west light demands. */
   function softShade(g, x, y, w, h, r, alpha, spread) {
     spread = spread || 4;
-    var step = alpha / spread;
+    var step = contact(alpha) / spread;
     for (var i = spread; i >= 1; i--) {
       g.globalAlpha = step;
       rrect(g, x - i + 2.5, y - i + 3.5, w + i * 2, h + i * 2, r + i, DARK);
@@ -2285,7 +2453,8 @@
      ------------------------------------------------------------------ */
 
   function groundShadow(g, cx, cy, rx, ry, alpha) {
-    blobEll(g, cx + 2, cy + 3, rx, ry, DARK, alpha === undefined ? 0.36 : alpha, 0.3);
+    blobEll(g, cx + 2, cy + 3, rx * 1.06, ry * 1.06, DARK,
+      contact(alpha === undefined ? 0.36 : alpha), 0.3);
   }
 
   /* End grain: the rings and the split of a sawn log, seen head-on. */
@@ -3072,7 +3241,7 @@
      of dissolving into speckle. Crops and trees keep every edge they
      had: those are things the player acts on. */
   function paintGrassPlant(g, rnd, def, stage, variant) {
-    var c1 = def.color, c2 = def.color2 || shade(c1, 0.12);
+    var c1 = worldColor(def.color), c2 = def.color2 ? worldColor(def.color2) : shade(c1, 0.12);
     var tall = def.id === 'tallGrass';
     var cx = PX / 2 + ((variant & 1) ? 8 : -8) + rs(rnd, 4);
     var base = 50 + ((variant & 2) ? 5 : -5);
@@ -3111,11 +3280,12 @@
      from above, and a berry bush two cells away is still the brightest
      thing in that patch of map. */
   function paintBush(g, rnd, def, stage, ripe) {
-    var c1 = def.color, c2 = def.color2 || shade(c1, 0.15);
+    var c1 = worldColor(def.color), c2 = def.color2 ? worldColor(def.color2) : shade(c1, 0.15);
     var scrub = !(def.plant && def.plant.harvestedThing);
     var s = [0.5, 0.78, 1][stage];
     var cx = PX / 2, cy = PX / 2 + 5, r = 22 * s;
-    blobEll(g, cx + 3, cy + r * 0.62, r * 0.95, r * 0.32, DARK, scrub ? 0.11 : 0.18, 0.25);
+    blobEll(g, cx + 3, cy + r * 0.62, r * 0.98, r * 0.34, DARK,
+      contact(scrub ? 0.11 : 0.18), 0.25);
     /* Woody stems first, then three tones of foliage in clumps. */
     for (var st = 0; st < 3; st++) {
       var ang = -Math.PI / 2 + rs(rnd, 1.1);
@@ -3173,7 +3343,7 @@
      ox/oy = -32, so the tile the tree actually occupies is canvas
      x 32..95, y 32..95 - which is where the trunk has to land. */
   function paintTree(g, rnd, def, stage) {
-    var leafC = def.color, bark = def.color2 || P.bark;
+    var leafC = worldColor(def.color), bark = def.color2 ? worldColor(def.color2) : P.bark;
     var pine = def.id === 'treePine';
     var scale = [0.42, 0.7, 1][stage];
     var cx = 64, base = 92;
@@ -3182,8 +3352,8 @@
     var canopyR = (pine ? 30 : 38) * scale;
 
     /* The shadow the canopy throws, south-east of the trunk. */
-    blobEll(g, cx + canopyR * 0.42, base - canopyR * 0.1, canopyR * 0.95, canopyR * 0.4,
-      DARK, 0.34, 0.25);
+    blobEll(g, cx + canopyR * 0.42, base - canopyR * 0.1, canopyR * 1.0, canopyR * 0.43,
+      DARK, contact(0.34), 0.25);
 
     /* Trunk: tapered, with bark running up it and roots flaring out. */
     var tw = (pine ? 7 : 8) * scale + 2;
@@ -3271,11 +3441,11 @@
   }
 
   function paintCrop(g, rnd, def, stage) {
-    var c1 = def.color, c2 = def.color2 || shade(c1, 0.2);
+    var c1 = worldColor(def.color), c2 = def.color2 ? worldColor(def.color2) : shade(c1, 0.2);
     var id = def.id;
     var cx = PX / 2, base = 54;
     var s = [0.34, 0.66, 1][stage];
-    blobEll(g, cx + 2, base + 2, 20 * s + 5, 4.5, DARK, 0.24, 0.2);
+    blobEll(g, cx + 2, base + 2, 20 * s + 5, 4.8, DARK, contact(0.24), 0.2);
 
     if (id === 'plantCorn') {
       /* One tall stalk with broad arching leaves; cobs when ripe. */
@@ -3759,7 +3929,7 @@
     var legC = dead ? drained(s.leg) : s.leg;
     var hair = dead ? drained(s.hair) : s.hair;
     var cx = 34, cy = 34;
-    blobEll(g, cx + 3, cy + 5, 22, 9, DARK, 0.36, 0.22);
+    blobEll(g, cx + 3, cy + 5, 23, 9.6, DARK, contact(0.36), 0.22);
     /* Head to the west, legs to the east, arms thrown out. */
     limb(g, cx + 4, cy + 4, cx + 22, cy + 12, 9, legC);
     limb(g, cx + 4, cy - 4, cx + 24, cy - 6, 9, legC);
@@ -3812,7 +3982,7 @@
        looking pasted onto the map, and now that the ground underneath
        has stopped shouting it can afford to be a little stronger than it
        was - a calm field is exactly what lets a silhouette read. */
-    blobEll(g, cx + 2, footY + 2, 15, 5.5, DARK, 0.42, 0.22);
+    blobEll(g, cx + 2, footY + 2, 16.5, 6.2, DARK, contact(0.42), 0.22);
 
     /* ---- legs ---- */
     var legW = 9;
@@ -4006,7 +4176,7 @@
     var legW = Math.max(2.5, S * a.legW), legL = S * 0.2;
 
     /* The contact shadow first, so every leg and the barrel sit on it. */
-    blobEll(g, cx + S * 0.035, bodyY + ry * 0.62, rx * 1.3, ry * 0.5, DARK, 0.36, 0.22);
+    blobEll(g, cx + S * 0.035, bodyY + ry * 0.62, rx * 1.36, ry * 0.54, DARK, contact(0.36), 0.22);
 
     /* Legs first: front pair and back pair on opposite phases. */
     var pairs = [[bodyY - ry * 0.55, swing], [bodyY + ry * 0.55, -swing]];
@@ -4240,20 +4410,32 @@
   }
 
   /* key -> [painter, colour]. Aliases are the point: a pickaxe is a
-     pickaxe whether it is a designation, a work type or a build menu. */
+     pickaxe whether it is a designation, a work type or a build menu.
+
+     One rule governs the colours below, and it is the accent rule: the
+     bright gold is the interface's selection colour, so nothing the
+     architect draws may spend it. A category button that is gold beside
+     a selected category that is also gold leaves the player with no way
+     to see which one is selected, and the panel ends up with four
+     accents, which is the same as having none. So the two category
+     icons and the one designation icon that used to be P.gold are now
+     P.brass - warm, a stop darker, and unmistakably not the selection -
+     and the tame heart, the only hot pink in the whole architect, is
+     now P.wild, the tan this palette already gives animals. Red stays
+     where red belongs: hunting, slaughter and cancel. */
   var ICON_MAP = {
     'speed0': ['pause', P.paper], 'speed1': ['play1', P.paper],
     'speed2': ['play2', P.paper], 'speed3': ['play3', P.paper],
     'speed4': ['play3', P.gold],
     'cat-structure': ['wallIcon', P.steel], 'cat-furniture': ['chair', P.woodFloor],
-    'cat-production': ['anvil', P.steel], 'cat-power': ['bolt', P.gold],
+    'cat-production': ['anvil', P.steel], 'cat-power': ['bolt', P.brass],
     'cat-security': ['shield', '#8a9ab0'], 'cat-floor': ['tiles', '#9a958c'],
-    'cat-zone': ['dashSquare', P.gold], 'cat-orders': ['handArrow', P.paper],
+    'cat-zone': ['dashSquare', P.dim], 'cat-orders': ['handArrow', P.paper],
     'cat-misc': ['gear', P.steel],
     'des-mine': ['pick', P.steel], 'des-chop': ['axe', P.steel],
     'des-harvest': ['sickle', P.steel], 'des-cut': ['scissors', P.steel],
-    'des-deconstruct': ['hammer', '#b08c5a'], 'des-haulUrgent': ['upArrow', P.gold],
-    'des-hunt': ['crosshair', P.raider], 'des-tame': ['heart', '#d4557a'],
+    'des-deconstruct': ['hammer', '#b08c5a'], 'des-haulUrgent': ['upArrow', P.brass],
+    'des-hunt': ['crosshair', P.raider], 'des-tame': ['heart', P.wild],
     'des-slaughter': ['knifeIcon', P.blood], 'des-cancel': ['xMark', P.raider],
     'work-firefight': ['flame', P.flame], 'work-patient': ['bed', '#8fbb62'],
     'work-doctor': ['cross', '#e05a5a'], 'work-bedRest': ['bed', '#7fa0c0'],
@@ -4267,7 +4449,7 @@
     'need-food': ['apple', '#c0392b'], 'need-rest': ['moon', '#c9cfe0'],
     'need-joy': ['star', P.gold], 'need-comfort': ['chair', P.woodFloor],
     'need-outdoors': ['sun', P.gold], 'need-mood': ['heart', '#d4557a'],
-    'alert-low': ['bang', P.gold], 'alert-medium': ['bang', '#e08a2a'],
+    'alert-low': ['bang', P.dim], 'alert-medium': ['bang', P.warn],
     'alert-high': ['bang', '#e05a3a'],
     'letter-neutral': ['envelope', P.paper], 'letter-threat': ['envelope', '#e08a7a'],
     'letter-good': ['envelope', '#9ed08a'], 'letter-death': ['skull', P.bone],
@@ -4284,6 +4466,17 @@
      ------------------------------------------------------------------ */
 
   var Art = { PX: PX, ICON_PX: ICON_PX, PALETTE: P, FACTION: FACTION };
+
+  /* The world grade, for the handful of places render.js paints a def
+     colour itself: a flat chunk that ran out of budget this frame, a
+     sprite that failed to build, the stand-in for a def with no art. A
+     fallback that arrives in the wrong hue is worse than a fallback,
+     because it looks like the map changed. */
+  Art.worldColor = worldColor;
+
+  /* [c1, c2] for a terrain, straight out of the palette. Do not mutate
+     the array - it is the table's own. */
+  Art.groundColor = groundColors;
 
   /* Keyed by the def object rather than by a string: this runs once per
      visible tile per frame, and building ten thousand throwaway strings
@@ -4735,13 +4928,13 @@
       (kindId ? '|' + kindId : '');
 
     var base = cached(key, sw * PX, sh * PX, function (g, rnd) {
-      var c1 = stuffId ? Defs.thing(stuffId).color : def.color;
+      var c1 = worldColor(stuffId ? Defs.thing(stuffId).color : def.color);
       var a = {
         def: def, rnd: rnd, variant: mask, open: open, lit: lit,
         frame: frame, noise: noise, kindId: kindId, stuffId: stuffId,
         material: materialKind(stuffId) || materialKind(defaultStuff(def)) || 'stone',
         w: sw * PX, h: sh * PX,
-        c1: c1, c2: def.color2 || shade(c1, -0.25)
+        c1: c1, c2: def.color2 ? worldColor(def.color2) : shade(c1, -0.25)
       };
       (SPRITE[def.sprite] || SPRITE.item)(g, a);
     });
@@ -4817,7 +5010,8 @@
       if (ds && ds.length) ds = ds[0];
       var S = Math.max(24, Math.round(ds * PX / 2) * 2);
       var spec = {
-        body: (kind && kind.color) || a.body, belly: (kind && kind.color2) || a.belly,
+        body: worldColor((kind && kind.color) || a.body),
+        belly: worldColor((kind && kind.color2) || a.belly),
         ear: a.ear, tail: a.tail, snout: a.snout, horn: a.horn, antler: a.antler,
         shag: a.shag, lean: a.lean, legW: a.legW
       };
@@ -5016,7 +5210,7 @@
     var hit = cache.get(ck);
     if (hit) return hit;
     return centred(cached(ck, s, s, function (g) {
-      blobEll(g, s / 2, s / 2, s * 0.46, s * 0.24, DARK, 0.5, 0.18);
+      blobEll(g, s / 2, s / 2, s * 0.46, s * 0.24, DARK, contact(0.5), 0.18);
     }, (PX - s) / 2, (PX - s) / 2), s / 2, s / 2);
   };
 

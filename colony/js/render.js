@@ -42,7 +42,7 @@
   var ZOOM_MIN = 1, ZOOM_MAX = 3;
   var OVERSCROLL = 6;          /* tiles of void the camera may pull past an edge */
   var DARK_STEPS = 16;         /* quantisation of the night tint, to merge fill runs */
-  var MAX_DARK = 0.52;         /* how far a pitch-dark cell is pulled toward the night colour */
+  var MAX_DARK = 0.70;         /* how far a pitch-dark cell is pulled toward the night colour */
   var DARK_GAMMA = 1.45;       /* above 1, partial light stays legible instead of falling off a cliff */
 
   var VOID = '#0a0c12';
@@ -50,6 +50,62 @@
   var INK = '#141821';
   var PAPER = '#e8e2d4';
   var GOLD = '#ffc23c';
+
+  /* ---------- the world's colour lives in art.js ----------
+
+     Every colour this file paints onto the map comes out of
+     Art.PALETTE, one way or another: the wash across a chunk, the night
+     veil, the warm pool a lamp throws, and the flat stand-in a chunk
+     falls back to when it has run out of frame budget. None of it is
+     typed here a second time, because a fallback that arrives in the
+     wrong hue does not look like a fallback - it looks like the map
+     changed underneath the player.
+
+     Read lazily and then kept. art.js is loaded first, but reaching for
+     a global at parse time is the sort of ordering dependency that
+     breaks a year from now, and rule 3 of this file is that nothing in
+     here may throw. */
+  var palMemo = Object.create(null);
+
+  function pal(key, fallback) {
+    var v = palMemo[key];
+    if (v !== undefined) return v;
+    var t = root.Art && root.Art.PALETTE;
+    v = (t && typeof t[key] === 'string') ? t[key] : fallback;
+    return (palMemo[key] = v);
+  }
+
+  /* A def colour graded into the world's light. art.js decides what that
+     means; this is the guarded call into it. */
+  function worldColor(c, fallback) {
+    if (!c) return fallback;
+    var A = root.Art;
+    if (A && A.worldColor) {
+      try { return A.worldColor(c) || fallback; } catch (e) { warnOnce('Art.worldColor', e); }
+    }
+    return c;
+  }
+
+  /* [c1, c2] for a terrain, from the palette, cached by def index: the
+     flat paths below ask for this once per cell of a repaint. */
+  var groundPairs = [];
+
+  function groundPair(def) {
+    if (!def) return FLAT_VOID;
+    var i = def.defIndex, hit = groundPairs[i];
+    if (hit) return hit;
+    var A = root.Art;
+    if (A && A.groundColor) {
+      try {
+        var p = A.groundColor(def);
+        if (p && p.length === 2 && p[0]) return (groundPairs[i] = p);
+      } catch (e) { warnOnce('Art.groundColor', e); }
+    }
+    var c1 = worldColor(def.color, '#4a463f');
+    return (groundPairs[i] = [c1, worldColor(def.color2, c1)]);
+  }
+
+  var FLAT_VOID = ['#4a463f', '#4a463f'];
 
   var Render = {};
   var canvas = null, ctx = null;
@@ -301,6 +357,11 @@
   /* ---------- colour ---------- */
 
   function hexChannel(hex, i) { return parseInt(hex.substr(1 + i * 2, 2), 16); }
+
+  /* '#6f5c46' -> '111,92,70', ready to drop into an rgba() string. */
+  function chan(hex) {
+    return hexChannel(hex, 0) + ',' + hexChannel(hex, 1) + ',' + hexChannel(hex, 2);
+  }
 
   function mixHex(a, b, t) {
     var r = Math.round(hexChannel(a, 0) + (hexChannel(b, 0) - hexChannel(a, 0)) * t);
@@ -849,7 +910,7 @@
       var sc = atCachePx(art);
       sg.drawImage(sc, sc.dx, sc.dy);
     } else {
-      sg.fillStyle = def.color || '#4a4a52';
+      sg.fillStyle = groundPair(def)[0];
       sg.fillRect(0, 0, EDGE_PX, EDGE_PX);
     }
     sg.globalCompositeOperation = 'destination-in';
@@ -924,14 +985,24 @@
     return v < -1 ? -1 : (v > 1 ? 1 : v);
   }
 
+  /* The wash is the largest single mark on the map - eleven tiles a
+     cycle, over everything - so its two inks decide what colour the
+     light is. They used to be a near-white and a blue-violet, and the
+     blue-violet was the reason a warm ground still photographed cool:
+     every shaded hollow on the map was being painted in a hue that
+     exists nowhere else in the palette. Both inks are the palette's own
+     now, the lit and the dark that section 13 says nothing in the world
+     layer may exceed, so shade on this map is a warmer, lower version
+     of the same ground rather than a different weather. */
   function macroInkFor(v) {
     if (!macroInk) {
+      var hi = chan(pal('lit', '#f4efe2')), lo = chan(pal('dark', '#241d15'));
       macroInk = new Array(33);
       for (var i = 0; i <= 32; i++) {
         var t = i / 16 - 1;
         macroInk[i] = t >= 0
-          ? 'rgba(255,244,214,' + (t * 0.075).toFixed(3) + ')'
-          : 'rgba(16,14,24,' + (-t * 0.12).toFixed(3) + ')';
+          ? 'rgba(' + hi + ',' + (t * 0.075).toFixed(3) + ')'
+          : 'rgba(' + lo + ',' + (-t * 0.115).toFixed(3) + ')';
       }
     }
     var k = Math.round((v + 1) * 16);
@@ -1052,8 +1123,8 @@
     }
     /* Flat stand-in for a missing art file. It stays flat: speckles here
        would be the per-cell noise the ground is being rid of. */
-    g.fillStyle = (terrainVariant(x, y) & 1) && def.color2
-      ? def.color2 : (def.color || '#4a4a52');
+    var pair = groundPair(def);
+    g.fillStyle = pair[(terrainVariant(x, y) & 1)];
     g.fillRect(dx, dy, CACHE_PX, CACHE_PX);
   }
 
@@ -1154,7 +1225,7 @@
       var base = y * w, dy = (y - y0) * CACHE_PX;
       for (var x = x0; x < x1; x++) {
         var def = Defs.fromIndex('terrain', terrain[base + x]);
-        g.fillStyle = (def && def.color) || '#4a4a52';
+        g.fillStyle = groundPair(def)[0];
         g.fillRect((x - x0) * CACHE_PX, dy, CACHE_PX, CACHE_PX);
       }
     }
@@ -1381,10 +1452,10 @@
     var oy = py + ((TS - size) >> 1) + (((h >>> 3) % 3) - 1) * pixelScale;
     if (t.blighted) ctx.globalAlpha = 0.75;
     var q = Math.max(1, size >> 3);
-    ctx.fillStyle = def.color || '#4e7a3c';
+    ctx.fillStyle = worldColor(def.color, '#4e6b3f');
     ctx.fillRect(ox + (size >> 1) - q, oy + (size >> 1), q * 2, size >> 1);
     ctx.fillRect(ox + q, oy + q * 2, size - q * 2, size >> 1);
-    ctx.fillStyle = def.color2 || def.color || '#6f9a4a';
+    ctx.fillStyle = worldColor(def.color2 || def.color, '#6b8a4c');
     ctx.fillRect(ox + q * 2, oy + q, q * 2, q * 2);
     ctx.fillRect(ox + size - q * 4, oy + q * 2, q * 2, q * 2);
     if (t.blighted) {
@@ -1428,10 +1499,10 @@
     var q = Math.max(1, TS >> 3);
     ctx.fillStyle = INK;
     ctx.fillRect(px + q * 2, py + q * 3, TS - q * 4, TS - q * 5);
-    ctx.fillStyle = def.color || '#b0b0b8';
+    ctx.fillStyle = worldColor(def.color, '#b0aca4');
     ctx.fillRect(px + q * 2 + pixelScale, py + q * 3 + pixelScale,
       TS - q * 4 - pixelScale * 2, TS - q * 5 - pixelScale * 2);
-    ctx.fillStyle = def.color2 || def.color || '#d0d0d8';
+    ctx.fillStyle = worldColor(def.color2 || def.color, '#d0ccc2');
     ctx.fillRect(px + q * 3, py + q * 4, q * 2, Math.max(1, q));
     if (tileHash(x, y) & 1) ctx.fillRect(px + TS - q * 4, py + TS - q * 4, q, q);
   }
@@ -1472,9 +1543,9 @@
       blitAt(art, px, py);
     } else {
       var q = Math.max(1, TS >> 4) * pixelScale;
-      ctx.fillStyle = def.color || '#8f97a3';
+      ctx.fillStyle = worldColor(def.color, '#96948b');
       ctx.fillRect(px, py, dw, dh);
-      ctx.fillStyle = def.color2 || INK;
+      ctx.fillStyle = worldColor(def.color2, INK);
       ctx.fillRect(px + q * 2, py + q * 2, dw - q * 4, Math.max(1, dh >> 3));
       outlineRect(px, py, dw, dh, q, 'rgba(10,12,18,0.55)');
     }
@@ -1545,7 +1616,7 @@
       if (art) {
         blitAt(art, px, py);
       } else {
-        ctx.fillStyle = def.color || '#8f97a3';
+        ctx.fillStyle = worldColor(def.color, '#96948b');
         ctx.fillRect(px, py, dw, dh);
       }
       ctx.globalAlpha = frame ? 0.22 : 0.28;
@@ -1681,7 +1752,7 @@
     ctx.fillRect(ox + q, oy + q, dw - q * 2, dh - q * 2);
     ctx.fillStyle = col;
     ctx.fillRect(ox + q + pixelScale, oy + (dh >> 2), dw - q * 2 - pixelScale * 2, dh - (dh >> 2) - q - pixelScale);
-    ctx.fillStyle = p.isAnimal ? (p.kind && p.kind.color) || '#8a6134' : '#d9b08a';
+    ctx.fillStyle = p.isAnimal ? worldColor(p.kind && p.kind.color, '#8a6134') : '#d9b08a';
     ctx.fillRect(ox + (dw >> 2), oy + q, dw >> 1, dh >> 2);
     /* A pip on the facing edge, so you can tell which way a pawn looks. */
     ctx.fillStyle = INK;
@@ -1706,7 +1777,7 @@
     } else {
       ctx.fillStyle = INK;
       ctx.fillRect(ox, oy, s, s);
-      ctx.fillStyle = def.color || '#b0b0b8';
+      ctx.fillStyle = worldColor(def.color, '#b0aca4');
       ctx.fillRect(ox + pixelScale, oy + pixelScale, s - pixelScale * 2, s - pixelScale * 2);
     }
   }
@@ -1787,6 +1858,35 @@
   var veil = null, veilCtx = null, veilImg = null, veilW = 0, veilH = 0;
   var veilStamp = -1, veilKey = -1;
 
+  /* Lamplight, kept as its own grid beside the light one.
+
+     The veil can only ever subtract: a lit cell is a cell the night was
+     not painted over, which is a hole in the dark rather than a lamp.
+     From above that reads as a torch with no colour in it - the ground
+     under a standing lamp comes out the same grey-brown it is at noon,
+     and the pool has a rim because the veil's alpha stops there.
+
+     So the warmth is a second one-pixel-to-the-tile bitmap, laid over
+     the veil with the same bilinear stretch, carrying only what the
+     lamps contribute: Power.lightAt returns lamp plus daylight, and
+     daylight is the part this file can reconstruct, so the difference
+     is the lamp. It is squared on the way in, which turns the linear
+     falloff power.js builds into a pool with a bright middle and a long
+     soft edge, and it is scaled by how dark it is outside, so a lamp
+     burning at noon costs one byte write and shows nothing.
+
+     The warmth is deliberately a tint and not a floodlight. The veil has
+     already stopped covering a lamp-lit cell - that is what the light
+     grid does - so the ground there is at its daytime brightness before
+     this layer touches it, and a strong add on top of that blows the
+     pool out to cream and puts a rim round it. A fifth of the ember is
+     enough to say the light is warm without saying it is a spotlight. */
+  var warmGrid = null;
+  var warmCv = null, warmCtx = null, warmImg = null, warmW = 0, warmH = 0;
+  var warmStamp = -1, warmAny = false;
+  var ROOF_LEAK = 0.22;        /* daylight under a roof, as power.js has it */
+  var LAMP_WARMTH = 0.18;      /* how far a lamp's middle carries its own colour */
+
   function buildDarkLUT() {
     darkLUT = new Uint8Array(256);
     for (var v = 0; v < 256; v++) {
@@ -1798,6 +1898,7 @@
   function updateLightGrid(map, day) {
     if (!lightGrid || lightOwner !== map || lightGrid.length !== map.size) {
       lightGrid = new Uint8Array(map.size);
+      warmGrid = new Uint8Array(map.size);
       lightOwner = map;
       lightFrame = -999;
     }
@@ -1807,6 +1908,7 @@
     lightDay = day;
     lightStamp++;
     lightB[0] = b0x; lightB[1] = b0y; lightB[2] = b1x; lightB[3] = b1y;
+    warmAny = false;
 
     var P = root.Power;
     var useLightAt = !powerOff && !!(P && P.lightAt);
@@ -1838,6 +1940,18 @@
         if (!(l >= 0)) l = 0;
         if (l > 1) l = 1;
         lightGrid[base + x] = (l * 255) | 0;
+        /* What is left when the sky's share is taken out is the lamp's.
+           Squared for a pool with a soft rim, and faded out as the day
+           comes up, because warm light on a lit field is just a stain. */
+        var sky = day * (roof && roof[base + x] ? ROOF_LEAK : 1);
+        var lamp = l - sky;
+        if (lamp > 0 && day < 0.98) {
+          lamp = lamp * lamp * (1 - day);
+          warmGrid[base + x] = (lamp * 255) | 0;
+          if (lamp > 0.02) warmAny = true;
+        } else {
+          warmGrid[base + x] = 0;
+        }
       }
     }
   }
@@ -1847,10 +1961,14 @@
     var c = document.createElement('canvas');
     c.width = c.height = 64;
     var g = c.getContext('2d');
+    /* Fire is the one thing on the map allowed to be the brightest
+       object in the frame, but it is still lit by the palette's ember
+       and flame rather than by three hand-typed oranges. */
+    var em = chan(pal('ember', '#ffd23c')), fl = chan(pal('flame', '#ff8c1a'));
     var grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-    grd.addColorStop(0, 'rgba(255,196,118,0.9)');
-    grd.addColorStop(0.45, 'rgba(255,140,40,0.34)');
-    grd.addColorStop(1, 'rgba(255,120,30,0)');
+    grd.addColorStop(0, 'rgba(' + em + ',0.9)');
+    grd.addColorStop(0.45, 'rgba(' + fl + ',0.34)');
+    grd.addColorStop(1, 'rgba(' + fl + ',0)');
     g.fillStyle = grd;
     g.fillRect(0, 0, 64, 64);
     glowSprite = c;
@@ -1884,17 +2002,28 @@
         veilImg = veilCtx.createImageData(n, m);
         veilStamp = -1;
       }
-      /* Night is the blue of the palette, daytime gloom indoors a
-         neutral shadow, and one colour covers both mixed by how bright
-         it is outside. The ground is quieter than it was, so at full
-         strength this keeps about half the colour underneath: night
-         reads as night without reading as a closed lid, and the gamma in
-         the lookup keeps a half-lit room from falling off into soup. */
+      /* Night is the deep desaturated blue the palette names, daytime
+         gloom indoors a warm neutral shadow, and one colour covers both
+         mixed by how bright it is outside. A single alpha blend can only
+         carry the scene as far as the veil's own colour, so depth and
+         hue are set together and not traded off: a near-black blue only
+         subtracts, and lit ground at midnight comes out a neutral grey;
+         a light blue tints but leaves the map at dusk. #1a2748 has the
+         chroma to tint and the darkness to deepen, and MAX_DARK 0.70
+         carries it far enough that the mean of a lit field falls from
+         roughly four fifths of its noon brightness to two thirds. The
+         indoor end is the palette's own dark rather than a second blue,
+         so night reads as night and a roofed room reads as shade,
+         neither as a lid closing. The gamma in the lookup, and the warm
+         grid drawn over the top, keep a half-lit room legible. */
       var key = Math.round(day * 24);
       if (veilStamp !== lightStamp || veilKey !== key) {
         veilStamp = lightStamp; veilKey = key;
         var t = key / 24;
-        var cr = Math.round(14 + 6 * t), cg = Math.round(20 + 4 * t), cb = Math.round(48 - 15 * t);
+        var nightC = pal('night', '#1a2748'), shadeC = pal('dark', '#241d15');
+        var cr = Math.round(hexChannel(nightC, 0) + (hexChannel(shadeC, 0) - hexChannel(nightC, 0)) * t);
+        var cg = Math.round(hexChannel(nightC, 1) + (hexChannel(shadeC, 1) - hexChannel(nightC, 1)) * t);
+        var cb = Math.round(hexChannel(nightC, 2) + (hexChannel(shadeC, 2) - hexChannel(nightC, 2)) * t);
         var step = 255 * MAX_DARK / DARK_STEPS;
         var d = veilImg.data;
         for (var j = 0; j < m; j++) {
@@ -1915,6 +2044,7 @@
          tile back from the view and the browser's bilinear lands each
          pixel's centre on its tile's centre. */
       ctx.drawImage(veil, originX + (b0x - 1) * TS, originY + (b0y - 1) * TS, n * TS, m * TS);
+      drawLamplight(map, n, m, w);
     }
 
     if (fireList.length) {
@@ -1928,6 +2058,52 @@
       }
       ctx.globalCompositeOperation = 'source-over';
     }
+  }
+
+  /* The warm half of the night: what the lamps put back.
+
+     Built and stretched exactly like the veil above - one pixel to the
+     tile, one cell of overhang on every side, one drawImage - so the
+     pool a lamp throws is interpolated into a smooth falloff instead of
+     a ring of lit squares, and it lines up with the darkness it is
+     cutting into because both bitmaps are sampled off the same grid.
+
+     `lighter` rather than a plain draw, because this is light being
+     added to a scene, not paint being laid over one: a lamp on stone
+     and a lamp on soil then both look like the same lamp on two
+     different grounds. The alpha is the warmth and the colour is the
+     lamp's, so a pool fades out rather than stopping at a rim. */
+  function drawLamplight(map, n, m, w) {
+    if (!warmAny) return;
+    if (!warmCv) { warmCv = document.createElement('canvas'); warmCtx = warmCv.getContext('2d'); }
+    if (warmW !== n || warmH !== m) {
+      warmCv.width = n; warmCv.height = m;
+      warmW = n; warmH = m;
+      warmImg = warmCtx.createImageData(n, m);
+      warmStamp = -1;
+    }
+    if (warmStamp !== lightStamp) {
+      warmStamp = lightStamp;
+      var lamp = pal('ember', '#ffd23c');
+      var lr = hexChannel(lamp, 0), lg = hexChannel(lamp, 1), lb = hexChannel(lamp, 2);
+      var d = warmImg.data;
+      for (var j = 0; j < m; j++) {
+        var sy = b0y - 1 + j;
+        sy = sy < 0 ? 0 : (sy > map.h - 1 ? map.h - 1 : sy);
+        var srow = sy * w, drow = j * n * 4;
+        for (var i = 0; i < n; i++) {
+          var sx = b0x - 1 + i;
+          sx = sx < 0 ? 0 : (sx > map.w - 1 ? map.w - 1 : sx);
+          var q = drow + i * 4;
+          d[q] = lr; d[q + 1] = lg; d[q + 2] = lb;
+          d[q + 3] = (warmGrid[srow + sx] * LAMP_WARMTH) | 0;
+        }
+      }
+      warmCtx.putImageData(warmImg, 0, 0);
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.drawImage(warmCv, originX + (b0x - 1) * TS, originY + (b0y - 1) * TS, n * TS, m * TS);
+    ctx.globalCompositeOperation = 'source-over';
   }
 
   /* ---------- designations ---------- */
@@ -2227,7 +2403,7 @@
     if (art) {
       blitAt(art, px, py);
     } else {
-      ctx.fillStyle = def.color || '#8f97a3';
+      ctx.fillStyle = worldColor(def.color, '#96948b');
       ctx.fillRect(px, py, dw, dh);
     }
     ctx.globalAlpha = 0.24;

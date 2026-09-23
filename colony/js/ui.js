@@ -7,7 +7,8 @@
      resources (top left) | colonist boxes (top centre) | alerts (right)
                                                         | letters (right)
      messages (bottom left)                             | date, time,
-     architect: a category column and the command grid  | speed (btm rt)
+     architect: a two-column category block, then the   | speed (btm rt)
+     command grid beside it                             |
      [ Architect | Work | Schedule | Assign | Animals | Research | World | Menu ]
 
    index.html's container ids are frozen, so the bottom tab bar lives
@@ -48,7 +49,11 @@
   var WORK_COLORS = ['', 'p1', 'p2', 'p3', 'p4'];
   var SCHEDULE_KINDS = ['anything', 'work', 'recreation', 'sleep'];
 
-  /* The architect's categories, in the order they run down the column. */
+  /* The architect's categories. They are laid out two to a row, which
+     with this order gives Orders / Zones, Structure / Production,
+     Furniture / Power, Security / Floors and Misc on its own - the
+     grouping the reference shows. Reordering this list re-pairs them,
+     so the pairs are the order, not an accident of it. */
   var ARCH_CATEGORIES = [
     { id: 'orders', label: 'Orders', icon: 'cat-orders' },
     { id: 'zones', label: 'Zones', icon: 'cat-zone' },
@@ -114,6 +119,14 @@
   };
 
   var frame = 0;
+  /* True while a tab sheet or the world screen is up. A sheet is sized
+     to what is in it, so it lands somewhere between covering the whole
+     screen and covering a corner, and whatever it fails to cover shows
+     through beside it as a stripe of a second panel: the inspect pane
+     to its right, the architect above a short one, the newest line of
+     the message log cut through the middle. The three of them stand
+     down together while a sheet is up. */
+  var sheetUp = false;
   var inspectTab = 'needs';
   var archCategory = 'orders';
   var archOpen = true;
@@ -470,9 +483,15 @@
   function pressBottom(name) {
     if (name === 'menu') { UI.showMenu(); return; }
     if (name === 'architect') {
+      /* With a sheet up the architect is hidden because the sheet is
+         over it, not because the player put it away, so the press means
+         "back to the architect". Toggling here instead closed the sheet
+         and left the architect down with nothing marked active in the
+         bar, and the player had to press it twice. */
+      var covered = !!openTabName || worldOpen();
       if (openTabName) UI.closeTab();
       closeWorld();
-      archOpen = !archOpen;
+      archOpen = covered ? true : !archOpen;
       sig.arch = '';
       syncArchitectVisibility();
       return;
@@ -531,7 +550,7 @@
     clockEls.speed = [];
     ['Pause', '1x', '2x', '3x', '6x'].forEach(function (label, i) {
       var b = btn('', 'speed-btn', function () { Game.setSpeed(i); sig.clock = ''; });
-      b.appendChild(iconEl('speed' + i, 16));
+      b.appendChild(iconEl('speed' + i, 13));
       tip(b, label + (i === 0 ? ' (space)' : ' (key ' + i + ')'));
       speeds.appendChild(b);
       clockEls.speed.push(b);
@@ -658,7 +677,7 @@
       for (i = 0; i < list.length; i++) {
         var r = list[i];
         var row = el('div', 'res-row');
-        row.appendChild(spriteEl(r.iconId, null, 18));
+        row.appendChild(spriteEl(r.iconId, null, 14));
         var n = el('span', 'res-n', '');
         row.appendChild(n);
         P.resources.appendChild(row);
@@ -691,7 +710,7 @@
 
   function buildBox(pawn) {
     var rootEl = el('div', 'pbox');
-    var face = portraitEl(pawn, 34);
+    var face = portraitEl(pawn, 26);
     var body = el('div', 'pbox-body');
     var name = el('div', 'pbox-name', nameOf(pawn));
     var flag = el('div', 'pbox-flag', '');
@@ -744,7 +763,7 @@
       var pose = state + (pawn.carried ? 'c' : '');
       if (pose !== box.pose) {
         box.pose = pose;
-        paintPortrait(box.face, pawn, 34);
+        paintPortrait(box.face, pawn, 26);
       }
       box.flag.textContent = STATE_LABEL[state] || '';
       box.hpFill.style.width = Math.round(hp * 100) + '%';
@@ -1202,6 +1221,10 @@
   }
 
   function updateInspect() {
+    if (sheetUp) {
+      if (sig.inspect !== 'sheet') { sig.inspect = 'sheet'; renderInspect(null); }
+      return;
+    }
     var sel = Game.selection[0];
     var data = null;
     if (isPawn(sel)) data = pawnData(sel);
@@ -1264,6 +1287,7 @@
     clear(P.architect);
 
     var side = el('div', 'arch-side');
+
     var search = el('input', 'arch-search');
     search.type = 'text';
     search.placeholder = 'Search';
@@ -1276,19 +1300,26 @@
       if (e.stopPropagation) e.stopPropagation();
       if (e.key === 'Escape') { search.value = ''; archSearch = ''; sig.arch = ''; search.blur(); }
     });
-    side.appendChild(search);
 
     var cats = el('div', 'arch-cats');
     ARCH_CATEGORIES.forEach(function (c) {
+      /* input.js finds these by their class and their text, so the
+         label stays the button's only text node and the icon goes in
+         ahead of it as an element. */
       var b = btn(c.label, 'arch-cat' + (archCategory === c.id ? ' on' : ''), function () {
         archCategory = c.id;
         if (archSearch) { archSearch = ''; search.value = ''; }
         sig.arch = '';
       });
-      b.insertBefore(iconEl(c.icon, 16), b.firstChild);
+      b.insertBefore(iconEl(c.icon, 14), b.firstChild);
       cats.appendChild(b);
     });
+
+    /* Categories first, the search under them: that is the order the
+       reference puts them in, and it is why the block is two columns
+       wide rather than one tall. */
     side.appendChild(cats);
+    side.appendChild(search);
     P.architect.appendChild(side);
 
     var main = el('div', 'arch-main');
@@ -1333,7 +1364,7 @@
 
   function syncArchitectVisibility() {
     if (!P.architect) return;
-    P.architect.classList.toggle('hidden', !archOpen);
+    P.architect.classList.toggle('hidden', !archOpen || sheetUp);
   }
 
   function renderArchitect() {
@@ -1365,7 +1396,7 @@
       var def = Defs.maybe('thing', t.defId) || Defs.maybe('terrain', t.defId);
       hint.appendChild(el('span', 'arch-hint-text',
         U.cap((def && def.label) || t.defId) + ' — ' + costText(t.defId, t.stuffId) +
-        '. Drag to place a line, R rotates, escape cancels.'));
+        ' · drag to line, R rotates'));
       if (def && def.stuffable && root.Construct) {
         Construct.stuffOptions(t.defId).forEach(function (sid) {
           var sd = Defs.maybe('thing', sid);
@@ -1375,10 +1406,10 @@
       }
     } else if (t.kind !== 'select') {
       hint.appendChild(el('span', 'arch-hint-text',
-        'Drag over the map to apply. Escape cancels the tool.'));
+        'Drag over the map. Escape cancels the tool.'));
     } else {
       hint.appendChild(el('span', 'arch-hint-text dim',
-        'Pick a category, then a thing to place. Escape puts the tool down.'));
+        'Pick a category, then a thing to place.'));
     }
     overflowDirty = true;
   }
@@ -1405,22 +1436,22 @@
   function renderOrders(items) {
     DESIGNATIONS.forEach(function (d) {
       var active = UI.tool.kind === 'designate' && UI.tool.designation === d[0];
-      items.appendChild(tip(archButton(iconEl('des-' + d[0], 22), d[1], null, active, function () {
+      items.appendChild(tip(archButton(iconEl('des-' + d[0], 20), d[1], null, active, function () {
         UI.setTool({ kind: 'designate', designation: d[0] });
       }), d[2]));
     });
-    items.appendChild(tip(archButton(iconEl('des-cancel', 22), 'Cancel', null,
+    items.appendChild(tip(archButton(iconEl('des-cancel', 20), 'Cancel', null,
       UI.tool.kind === 'cancel', function () { UI.setTool({ kind: 'cancel' }); }),
       'Remove designations and unbuilt plans you drag over. ' +
       'Select a zone and use Delete zone to get rid of one of those.'));
   }
 
   function renderZoneTools(items) {
-    items.appendChild(tip(archButton(iconEl('cat-zone', 22), 'Stockpile', 'storage',
+    items.appendChild(tip(archButton(iconEl('cat-zone', 20), 'Stockpile', 'storage',
       UI.tool.kind === 'zone' && UI.tool.zoneKind === 'stockpile', function () {
         UI.setTool({ kind: 'zone', zoneKind: 'stockpile' });
       }), 'Paint a stockpile. Haulers carry loose items into it.'));
-    items.appendChild(tip(archButton(iconEl('work-grow', 22), 'Growing zone', 'crops',
+    items.appendChild(tip(archButton(iconEl('work-grow', 20), 'Growing zone', 'crops',
       UI.tool.kind === 'zone' && UI.tool.zoneKind === 'growing', function () {
         UI.setTool({ kind: 'zone', zoneKind: 'growing' });
       }), 'Paint a field. Growers sow it and harvest it when it is ripe.'));
@@ -1438,7 +1469,7 @@
       }
       var stuff = root.Construct && Construct.defaultStuff ? Construct.defaultStuff(def.id) : null;
       var active = UI.tool.kind === 'build' && UI.tool.defId === def.id;
-      var b = archButton(spriteEl(def.id, stuff, 22), def.label || def.id,
+      var b = archButton(spriteEl(def.id, stuff, 20), def.label || def.id,
         costText(def.id, stuff), active, function () {
           UI.setTool({ kind: 'build', defId: def.id, rot: 0, stuffId: stuff });
         }, reason);
@@ -1459,20 +1490,20 @@
       if (d[1].toLowerCase().indexOf(q) < 0) return;
       found++;
       var active = UI.tool.kind === 'designate' && UI.tool.designation === d[0];
-      items.appendChild(tip(archButton(iconEl('des-' + d[0], 22), d[1], null, active, function () {
+      items.appendChild(tip(archButton(iconEl('des-' + d[0], 20), d[1], null, active, function () {
         UI.setTool({ kind: 'designate', designation: d[0] });
       }), d[2]));
     });
     if ('stockpile'.indexOf(q) === 0 || 'storage'.indexOf(q) === 0) {
       found++;
-      items.appendChild(archButton(iconEl('cat-zone', 22), 'Stockpile', 'storage',
+      items.appendChild(archButton(iconEl('cat-zone', 20), 'Stockpile', 'storage',
         UI.tool.kind === 'zone' && UI.tool.zoneKind === 'stockpile', function () {
           UI.setTool({ kind: 'zone', zoneKind: 'stockpile' });
         }));
     }
     if ('growing zone'.indexOf(q) === 0 || 'crops'.indexOf(q) === 0) {
       found++;
-      items.appendChild(archButton(iconEl('work-grow', 22), 'Growing zone', 'crops',
+      items.appendChild(archButton(iconEl('work-grow', 20), 'Growing zone', 'crops',
         UI.tool.kind === 'zone' && UI.tool.zoneKind === 'growing', function () {
           UI.setTool({ kind: 'zone', zoneKind: 'growing' });
         }));
@@ -1656,7 +1687,7 @@
     grid.appendChild(el('div', 'wg-corner', 'Colonist'));
     types.forEach(function (t) {
       var h = el('div', 'wg-head');
-      h.appendChild(iconEl('work-' + t.id, 16));
+      h.appendChild(iconEl('work-' + t.id, 14));
       h.appendChild(el('span', null, t.label || t.id));
       var skills = (t.skills || []).map(function (sk) {
         var d = Defs.maybe('skill', sk);
@@ -2430,7 +2461,7 @@
     clear(P.alerts);
     list.forEach(function (a) {
       var node = el('div', 'alert ' + a.severity);
-      node.appendChild(iconEl('alert-' + a.severity, 14));
+      node.appendChild(iconEl('alert-' + a.severity, 11));
       node.appendChild(el('span', null, a.label));
       node.addEventListener('click', function () {
         if (a.tab) { UI.openTab(a.tab); return; }
@@ -2480,7 +2511,7 @@
     for (var i = list.length - 1; i >= 0 && i >= list.length - 8; i--) {
       (function (letter) {
         var node = el('div', 'letter ' + letter.kind);
-        node.appendChild(iconEl('letter-' + letter.kind, 18));
+        node.appendChild(iconEl('letter-' + letter.kind, 13));
         node.appendChild(el('span', null, letter.title));
         node.addEventListener('click', function () { openLetter(letter); });
         P.letterStack.appendChild(node);
@@ -3072,6 +3103,21 @@
     if (frame % BOX_FRAMES === 0) syncColonistBoxes();
     var sel = Game.selection[0] || null;
     if (sel !== lastSelected) { lastSelected = sel; sig.inspect = ''; }
+    var sheeted = !!openTabName || worldOpen();
+    if (sheeted !== sheetUp) {
+      /* The log is parked above the architect, so a sheet taller than
+         the architect reaches up into it and cuts its newest line
+         through the middle. The two boxes are measured on the one frame
+         the sheet opens, while both are still laid out, and never per
+         frame. */
+      var tall = sheeted &&
+        P.messages.getBoundingClientRect().bottom >
+        P.tabPanel.getBoundingClientRect().top;
+      sheetUp = sheeted;
+      sig.inspect = '';
+      P.messages.classList.toggle('hidden', tall);
+      syncArchitectVisibility();
+    }
     if (frame % INSPECT_FRAMES === 0 || sig.inspect === '') updateInspect();
     renderArchitect();
     if (frame % ALERT_FRAMES === 0) {
