@@ -114,12 +114,13 @@
        22-unit character stands about a tenth of the frame and the camera
        can show a wide slice of the level. */
     /* Measured off the reference art: its frame works out at about
-       160x100 art pixels, which with a 22-unit character puts a racer at
-       roughly a quarter of the screen height. Eight screen pixels an art
-       pixel, and that holds for every asset in the game. */
-    W: 160,          /* world units across the view */
-    H: 90,
-    SCALE: 8,        /* screen pixels per world unit, and per art pixel */
+       160x100 art pixels. A 22-unit character in a 120-unit frame stands
+       about a fifth of the screen, and the wider frame shows more of the
+       level. Six screen pixels an art pixel, and that holds for every
+       asset in the game. */
+    W: 213,          /* world units across the view */
+    H: 120,
+    SCALE: 6,        /* screen pixels per world unit, and per art pixel */
 
     /* The interface does NOT live in world units - it would shrink every
        time the camera pulled back. It gets a fixed space of its own. */

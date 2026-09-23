@@ -88,6 +88,12 @@ jobs:
             node getaway-daun/tools/verify-levels.js
           fi
 
+      - name: Getaway Daun's bots can finish every course
+        run: |
+          if [ -f getaway-daun/tools/race-bots.js ]; then
+            cd getaway-daun && node tools/race-bots.js 8
+          fi
+
       - name: Chromewood's content, worlds, arc and wire format
         run: node chromewood/tools/verify.js --seeds 4 --minutes 15
 

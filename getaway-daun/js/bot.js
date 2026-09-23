@@ -29,6 +29,20 @@
     return s.vx * t;
   }
 
+  /* Reach alone is a lie when the landing is above you: the arc has to
+     already be over the lip by the time it gets there, or you clip the
+     face and slide back down. A bot pressed up against an eighteen-high
+     step can measure a jump that lands well past it and still never get
+     on, which from the outside looks exactly like a bot that has given
+     up. */
+  function clears(c, gap, dy) {
+    if (dy >= 0) return true;                      /* landing is below us */
+    var s = shot(c);
+    if (s.vx <= 0 || gap <= 0) return true;
+    var t = gap / s.vx;
+    return s.vy * t - 0.5 * GRAVITY * t * t >= -dy + 1;
+  }
+
   var PERSONALITY = [
     { name: 'steady', margin: 8,  react: 0.10, greed: 0.5, itemAt: 0.5 },
     { name: 'reckless', margin: 2, react: 0.05, greed: 0.9, itemAt: 0.2 },
@@ -42,6 +56,7 @@
     this.want = 0;          /* the charge it is holding out for */
     this.think = 0;
     this.stuckFor = 0;
+    this.backOff = 0;
     this.lastX = racer.x;
     this.useItem = false;
   }
@@ -62,24 +77,41 @@
     return best;
   };
 
+  /* The three things a bot can aim at from where it stands, in the
+     order it should want them:
+
+       ahead - new ground, starting past our toes. The race is that way.
+       up    - something overlapping us but higher: an awning, the top
+               deck of a bus. Worth a hop when there is nothing ahead.
+       down  - the floor we are already above. Boring, but it is how you
+               get off a high ledge whose far side is a gap - and a bot
+               that never considers it walks straight off into the drop.
+
+     Measured from just ahead of US, not from the end of what we are
+     standing on: on a floor that runs the length of the level, the end
+     of it is the finish line, and everything worth climbing onto looks
+     like it is behind us. `cur` is excluded by identity instead. */
   Bot.prototype.nextSurface = function (world, cur) {
-    var r = this.r, feet = r.y + r.h, best = null;
-    /* Measure from just ahead of US, not from the end of what we are
-       standing on: on a floor that runs the length of the level, the end
-       of it is the finish line, and everything worth climbing onto looks
-       like it is behind us. `cur` is excluded by identity instead. */
+    var r = this.r, feet = r.y + r.h;
     var from = r.x + r.w;
+    var ahead = null, up = null, down = null;
     for (var i = 0; i < world.solids.length; i++) {
       var s = world.solids[i];
       if (s.type === 'bounce') continue;
       if (s === cur) continue;
-      if (s.x + s.w <= from + 1) continue;          /* behind or under us */
+      if (s.x + s.w <= from + 1) continue;          /* behind us */
       if (s.y > feet + 80) continue;                /* a long way down */
       if (s.y < feet - 30) continue;                /* above what we can climb */
-      var edge = Math.max(s.x, from);
-      if (!best || edge < best.edge) best = { edge: edge, y: s.y, solid: s };
+      var cand = { edge: Math.max(s.x, from), y: s.y, solid: s };
+      if (s.x > from) {
+        if (!ahead || cand.edge < ahead.edge) ahead = cand;
+      } else if (s.y < feet - 3) {
+        if (!up || s.y > up.y) up = cand;           /* the lowest step up */
+      } else if (!down || s.y < down.y) {
+        down = cand;
+      }
     }
-    return best;
+    return { ahead: ahead, up: up, down: down };
   };
 
   /* Is anyone roughly down the barrel? Aim follows the body, so a bot
@@ -123,20 +155,39 @@
       this.think = this.p.react;
       var goal = world.level.goal;
       var cur = this.ground(world);
-      var next = this.nextSurface(world, cur);
-      var need, dy, c;
+      var opts = this.nextSurface(world, cur);
+      var order = [opts.ahead, opts.up, opts.down];
+      var next = null, need, dy, c, k, pick = -1, blocked = false;
 
-      if (!next || next.edge >= goal.x) {
+      for (k = 0; k < order.length; k++) {
+        var o = order[k];
+        if (!o || o.edge >= goal.x) continue;
+        var oNeed = o.edge - (r.x + r.w) + this.p.margin;
+        var oDy = o.y - (r.y + r.h);
+        var oGap = o.edge - (r.x + r.w);
+        var oPick = -1, oCarries = false;
+        for (c = 0; c <= 1.0001; c += 0.05) {
+          if (reach(c, oDy) < oNeed) continue;
+          oCarries = true;                               /* far enough... */
+          if (clears(c, oGap, oDy)) { oPick = c; break; } /* ...and high enough */
+        }
+        if (!next) {
+          next = o; need = oNeed; dy = oDy;              /* the one we want */
+          blocked = oCarries && oPick < 0;               /* close, but low */
+        }
+        if (oPick >= 0) { next = o; need = oNeed; dy = oDy; pick = oPick; break; }
+      }
+      if (!next) {
         need = Math.max(16, goal.x - (r.x + r.w));
         dy = 0;
-      } else {
-        need = next.edge - (r.x + r.w) + this.p.margin;
-        dy = next.y - (r.y + r.h);
       }
 
-      var pick = -1;
-      for (c = 0; c <= 1.0001; c += 0.05) {
-        if (reach(c, dy) >= need) { pick = c; break; }
+      /* Nothing gets over the lip from here, and the only cure for that
+         is distance: an arc peaks a way out from where it left the
+         ground. So give up a little ground and come at it again. */
+      if (pick < 0 && blocked && this.backOff <= 0 && this.stuckFor > 0.5) {
+        this.backOff = 0.45;
+        this.stuckFor = 0;
       }
 
       var room = cur ? (cur.x + cur.w) - (r.x + r.w) - 5 : -1;
@@ -183,6 +234,13 @@
         if (r.util === 'shield' && near && nd < 40) this.useItem = true;
         else if (r.util === 'boost' && this.want > 0.9) this.useItem = true;
       }
+    }
+
+    if (this.backOff > 0) {
+      this.backOff -= dt;
+      out.left = r.charge < 0.3;
+      out.fire = false;
+      return out;
     }
 
     out.firePressed = this.useItem;

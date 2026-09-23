@@ -67,20 +67,19 @@ for (const L of LEVELS) {
     }
   }
 
-  const ok = problems.length === 0;
-  if (!ok) bad++;
-  console.log(`${ok ? 'OK  ' : 'FAIL'} ${L.name}  (${tops.length} surfaces, ${L.width}px long)`);
-  problems.slice(0, 6).forEach(p => console.log(p));
-
   /* checkpoints must not sit inside anything solid */
   for (const cp of L.checkpoints) {
     for (const s of L.solids) {
       if (cp.x + 7 > s.x && cp.x < s.x + s.w && cp.y + 20 > s.y && cp.y < s.y + s.h) {
-        console.log(`  checkpoint at ${cp.x},${cp.y} is inside a solid`);
-        bad++;
+        problems.push(`  checkpoint at ${cp.x},${cp.y} is inside a solid`);
       }
     }
   }
+
+  const ok = problems.length === 0;
+  if (!ok) bad++;                       /* one course, however many faults */
+  console.log(`${ok ? 'OK  ' : 'FAIL'} ${L.name}  (${tops.length} surfaces, ${L.width}px long)`);
+  problems.slice(0, 8).forEach(p => console.log(p));
 }
 
 console.log(bad === 0 ? '\nall courses completable' : `\n${bad} course(s) need work`);

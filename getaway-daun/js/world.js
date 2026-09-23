@@ -546,7 +546,12 @@
     var tx = c.x - viewW / 2 + U.clamp(target.vx * 0.22, -30, 30);
     var ty = c.y - viewH * 0.50 + U.clamp(target.vy * 0.07, -14, 20);
     tx = U.clamp(tx, 0, Math.max(0, this.level.width - viewW));
-    ty = U.clamp(ty, -20, Math.max(0, this.level.height - viewH));
+    /* On a course no taller than the view - the street, where everything
+       stands on one line - the camera pins that line to the floor of the
+       frame. Letting it drift up would put the road in the middle of the
+       picture the moment the pack spread out and the view zoomed wide. */
+    if (this.level.height <= viewH) ty = this.level.height - viewH;
+    else ty = U.clamp(ty, -20, this.level.height - viewH);
     if (snap) { this.cam.x = tx; this.cam.y = ty; return; }
     var k = Math.min(1, dt * 5.5);
     this.cam.x += (tx - this.cam.x) * k;

@@ -36,11 +36,11 @@
       [1310, 90, 130], [1450, 130, 148], [1620, 110, 136], [1780, 160, 150],
       [1990, 120, 140], [2150, 310, 148]
     ];
-    /* A roof is a THIN slab with a long drop under it, not a block that
-       fills the bottom of the screen. Thirty units is about a character
-       and a half - enough to read as a building top, little enough that
-       the gaps between them are obviously gaps. */
-    var DECK = 30;
+    /* A roof is a THIN slab with a building hanging under it, not a block
+       that fills the bottom of the screen. Eight units is a parapet and
+       its coping - the storeys below are drawn as a facade, so the deck
+       reads as the top of a tower without being a grey bar. */
+    var DECK = 8;
     for (var i = 0; i < roofs.length; i++) {
       var r = roofs[i];
       L.solids.push(block(r[0], r[1], r[2], r[2] + DECK));
@@ -56,7 +56,7 @@
       if (i % 5 === 3) L.decor.push({ kind: 'tank', x: r[0] + 20, y: r[2] });
       if (i % 3 === 2) L.decor.push({ kind: 'pipes', x: r[0] + r[1] - 34, y: r[2] });
       if (i % 4 === 1) L.decor.push({ kind: 'chimney', x: mid + 18, y: r[2] });
-      if (r[1] > 110) L.decor.push({ kind: 'rail', x: r[0] + 6, w: Math.min(34, r[1] - 12), y: r[2] });
+      if (r[1] > 110) L.decor.push({ kind: 'railing', x: r[0] + 6, w: Math.min(34, r[1] - 12), y: r[2] });
       if (i % 3 === 0) L.decor.push({ kind: 'ladder', x: r[0] + r[1] - 8, y: r[2] + DECK });
       if (i % 5 === 1) L.decor.push({ kind: 'sign', x: mid - 10, y: r[2] + 8, seed: i });
       if (i > 0 && i % 2 === 0) L.checkpoints.push({ x: r[0] + 10, y: r[2] - 22 });
@@ -168,5 +168,90 @@
     return L;
   }
 
-  root.LEVELS = [rooftopRow(), freightLine(), nightOffice()];
+  /* --------------------------------------------------------- street
+     Everything in this one stands on a single flat line. The street is a
+     thin strip at the bottom of the frame with no depth to it, and every
+     vehicle, bin and building sits exactly on top - nothing is ever drawn
+     below or inside the road surface.
+
+     Heights are laid against the jump: a wind-up lifts about 24 units, so
+     a bin is 10 up, a taxi roof 14, a bus deck 22, and a shop awning is
+     the step that makes a brick roof reachable at all. */
+  function downtown() {
+    var ST = 104;                 /* the one ground line, and the only one */
+    var L = {
+      name: 'DOWNTOWN',
+      theme: 'day',
+      width: 2040, height: 120,
+      sky: ['#29c7f0', '#29c7f0', '#29c7f0'],
+      city: ['#cdc49f', '#b09a72', '#7e6c4c'],
+      cityWarm: '#ded4a2', cityCool: '#655c46',
+      spawn: { x: 26, y: ST - 20 },
+      goal: { x: 1940, y: ST - 20, w: 30, h: 20 },
+      solids: [], items: [], checkpoints: [], decor: []
+    };
+    L.solids.push(block(0, L.width, ST, ST + 16, 'street'));
+    L.groundY = ST;               /* the far skyline stands on it too */
+
+    /* Every climb on this street is one step of sixteen, and every solid
+       piece is the same height from BOTH sides. That second rule is the
+       one that matters: a racer shoved off the back of a bus has to be
+       able to get over it again, and a face taller than a jump lifts is
+       where the race quietly ends. The buildings themselves are backdrop
+       - the pavement runs in front of them - so the only things on the
+       brickwork you can stand on are the shop awning and the air-con box
+       bolted to the wall above it. */
+    var STEP = 16;
+    var plan = [
+      ['taxi', 130], ['brick', 260], ['fence', 396], ['bus', 470],
+      ['bin', 600], ['brick', 680], ['taxi', 830], ['hoarding', 906],
+      ['bus', 990], ['brick', 1130], ['bin', 1280], ['taxi', 1360],
+      ['bus', 1470], ['fence', 1596], ['brick', 1670], ['bin', 1850],
+      ['hoarding', 1890]
+    ];
+    var bricks = 0;
+    for (var i = 0; i < plan.length; i++) {
+      var kind = plan[i][0], x = plan[i][1];
+      if (kind === 'taxi') {
+        L.solids.push(block(x, 36, ST - 14, ST, 'prop'));
+        L.decor.push({ kind: 'taxi', x: x, y: ST, seed: i });
+      } else if (kind === 'bin') {
+        L.solids.push(block(x, 20, ST - 12, ST, 'prop'));
+        L.decor.push({ kind: 'dumpster', x: x, y: ST });
+        L.decor.push({ kind: 'bags', x: x + 22, y: ST, seed: i });
+      } else if (kind === 'bus') {
+        /* a Routemaster: open platform at either end, upper deck between
+           them, so it is a staircase from whichever side you arrive */
+        L.solids.push(block(x, 14, ST - STEP, ST, 'prop'));
+        L.solids.push(block(x + 14, 48, ST - STEP * 2, ST, 'prop'));
+        L.solids.push(block(x + 62, 14, ST - STEP, ST, 'prop'));
+        L.decor.push({ kind: 'bus', x: x, y: ST });
+        L.items.push({ x: x + 38, y: ST - STEP * 2 - 10 });
+      } else if (kind === 'brick') {
+        var w = 84 + (i % 3) * 8;
+        L.decor.push({ kind: 'brick', x: x, w: w, y: ST, red: (bricks++ % 2) === 1, seed: i, back: true });
+        /* the shops take the left half; the right half stays plain wall,
+           which is what the air-con box is bolted to */
+        L.decor.push({ kind: 'shopfront', x: x + 2, w: 54, y: ST, seed: i, back: true });
+        /* both one-way, so neither is ever a wall in the running lane */
+        L.solids.push(ledge(x + 4, 46, ST - STEP, 'prop'));
+        L.solids.push(ledge(x + 56, 18, ST - STEP * 2, 'prop'));
+        L.decor.push({ kind: 'awning', x: x + 4, w: 46, y: ST - STEP, seed: i });
+        L.decor.push({ kind: 'wallbox', x: x + 56, w: 18, y: ST - STEP * 2 });
+        L.decor.push({ kind: 'shopdoor', x: x + 60, w: 14, y: ST, seed: i, back: true });
+        L.items.push({ x: x + 64, y: ST - STEP * 2 - 10 });
+        L.checkpoints.push({ x: x - 30, y: ST - 20 });
+      } else if (kind === 'fence') {
+        L.decor.push({ kind: 'fence', x: x, w: 62, y: ST });
+      } else if (kind === 'hoarding') {
+        L.decor.push({ kind: 'hoarding', x: x, w: 56, y: ST, seed: i });
+      }
+    }
+
+    L.items.push({ x: 380, y: ST - 12 }, { x: 930, y: ST - 12 },
+                  { x: 1620, y: ST - 12 });
+    return L;
+  }
+
+  root.LEVELS = [downtown(), rooftopRow(), freightLine(), nightOffice()];
 })(typeof window !== 'undefined' ? window : globalThis);

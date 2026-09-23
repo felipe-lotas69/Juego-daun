@@ -25,7 +25,7 @@
       /* Keep the tallest block clear of the top edge. A skyline that runs
          off the frame reads as a wall; the reference keeps a good band of
          sky above it, and that sky is most of the daylight in the shot. */
-      var minH = 12 + layer * 7, maxH = 26 + layer * 14;
+      var minH = 11 + layer * 6, maxH = 24 + layer * 11;
       while (x < L.width + 140) {
         var w = 14 + Math.floor(rnd() * 20);
         band.push({
@@ -163,13 +163,24 @@
   /* The street the whole skyline stands on: a flat pale strip with one
      darker curb line, running under everything. */
   function drawStreet(L, cam) {
-    /* A thin band, not a floor. It is the street the distant skyline
-       stands on; filling everything below it just buries the frame in
-       flat grey and swallows the drops the level is built around. */
-    var y = Math.round(Pixel.H * 0.64 - cam.y * 0.05);
-    Pixel.rect(P, 0, y, Pixel.W, 7, '#cfcac1');
-    Pixel.rect(P, 0, y, Pixel.W, 1, '#b9b4ab');
-    Pixel.rect(P, 0, y + 6, Pixel.W, 1, '#a9a399');
+    /* One line. Everything in the picture stands on it - the racers, the
+       bus, the far skyline - and nothing is ever drawn below it except
+       more of it. A course that names its own ground line gets that;
+       the rooftop courses, which have no single floor, keep the thin
+       band near the bottom of the frame for the skyline to sit on. */
+    var y = L.groundY !== undefined
+      ? Math.round(L.groundY - cam.y)
+      : Math.round(Pixel.H * 0.88 - U.clamp(cam.y * 0.05, -6, 6));
+    Pixel.rect(P, -170, y, Pixel.W + 340, 280, '#cfcac1');
+    Pixel.rect(P, -170, y, Pixel.W + 340, 1, '#a9a399');
+    if (L.groundY === undefined) return;
+    Pixel.rect(P, -170, y + 5, Pixel.W + 340, 1, '#bdb8af');      /* the kerb */
+    var first = Math.floor((cam.x - 140) / 130) * 130;
+    for (var gx = first; gx < cam.x + Pixel.W * 2.2; gx += 130) {
+      var sx = Math.round(gx - cam.x);
+      Pixel.rect(P, sx, y + 8, 9, 3, '#bdb8af');                  /* drain */
+      Pixel.rect(P, sx + 1, y + 9, 7, 1, '#a9a399');
+    }
   }
 
   function drawSkyline(L, cam, sc) {
@@ -179,8 +190,12 @@
       var band = sc.layers[l], col = L.city[l];
       var winLit = L.theme === 'indoor' ? '#6a6a96' : mix(col, '#ffffff', 0.55);
       var winDark = mix(col, '#000000', 0.10);
-      /* the skyline sits low - roughly the bottom 40% of the frame */
-      var baseY = Math.round(Pixel.H * 0.64 - l * 3 - cam.y * par[l] * 0.5);
+      /* Low and far. The sky owns the top 55-60% of the frame, so the
+         base is pinned near the bottom and the parallax drift is clamped
+         - a background building must never reach the top of the screen. */
+      var baseY = L.groundY !== undefined
+        ? Math.round(L.groundY - cam.y) - l
+        : Math.round(Pixel.H * 0.88 - l * 3 - U.clamp(cam.y * par[l] * 0.4, -10, 10));
       /* Warm and low, not hazy and blue. Distance is carried by the
          palette getting darker and browner, and by parallax, rather than
          by fading everything into the sky. */
@@ -253,7 +268,7 @@
      lip. The first cut had warm tan with staggered brick courses, which
      at this size is just noise competing with the racers. */
   var FACE = {
-    day:    { lip: '#5d5d5d', body: '#b3b3b3', low: '#9c9c9c', edge: '#2b2b30' },
+    day:    { lip: '#8e8578', body: '#cfc7b6', low: '#b0a795', edge: '#2b2b30' },
     desert: { lip: '#6b6152', body: '#bdb5a4', low: '#a49c8c', edge: '#312c24' },
     indoor: { lip: '#1d1d28', body: '#3f3f52', low: '#33333f', edge: '#12121a' }
   };
@@ -262,6 +277,10 @@
     var f = FACE[L.theme] || FACE.day;
     var x = Math.round(s.x - cam.x), y = Math.round(s.y - cam.y);
     if (x > Pixel.W * 1.9 || x + s.w < -Pixel.W * 0.5) return;
+    /* A taxi is drawn as a taxi. The generic slab under one would only
+       show as a grey box poking out of the bodywork, so the pieces on
+       the street opt out and their decor does the drawing. */
+    if (s.type === 'prop' || s.type === 'street') return;
     if (s.type === 'bounce') {
       Pixel.rect(P, x, y, s.w, s.h, '#57c96a');
       Pixel.rect(P, x, y, s.w, 1, '#a8f890');
@@ -307,13 +326,184 @@
       drawFreightCar(d, x, y);
     } else if (d.kind === 'crate') {
       for (var cx = 0; cx < d.w; cx += 12) Pixel.stamp(P, ART.CRATE, ART.CRATE_MAP, x + cx + 6, y + 5, 0, false);
+    } else if (d.kind === 'taxi') {
+      /* a cab: flat yellow, one darker shade, glass in pale blue. Nothing
+         pokes above y-14, which is the line you stand on. */
+      Pixel.rect(P, x + 9, y - 14, 18, 6, '#f2c230');
+      Pixel.rect(P, x + 10, y - 13, 7, 4, '#a9dcef');
+      Pixel.rect(P, x + 19, y - 13, 7, 4, '#a9dcef');
+      Pixel.rect(P, x + 15, y - 14, 6, 1, '#f0ece2');       /* roof sign */
+      Pixel.rect(P, x + 1, y - 9, 34, 9, '#f2c230');
+      Pixel.rect(P, x + 1, y - 8, 10, 3, '#2b2b30');        /* chequer band */
+      Pixel.rect(P, x + 3, y - 8, 2, 3, '#f2c230');
+      Pixel.rect(P, x + 7, y - 8, 2, 3, '#f2c230');
+      Pixel.rect(P, x + 1, y - 3, 34, 2, '#d3a221');
+      Pixel.rect(P, x + 4, y - 3, 7, 3, '#2b2b30');
+      Pixel.rect(P, x + 25, y - 3, 7, 3, '#2b2b30');
+      Pixel.rect(P, x + 33, y - 8, 2, 2, '#f4e6a8');
+    } else if (d.kind === 'bus') {
+      /* A Routemaster, and the same shape you can stand on: cab roof at
+         y-16, upper deck at y-32, open platform at the back at y-16. */
+      Pixel.rect(P, x, y - 16, 76, 16, '#d8402f');
+      Pixel.rect(P, x + 14, y - 32, 48, 16, '#d8402f');
+      Pixel.rect(P, x, y - 16, 76, 1, '#f0ece2');
+      Pixel.rect(P, x + 14, y - 32, 48, 1, '#f0ece2');
+      Pixel.rect(P, x, y - 4, 76, 2, '#a62c20');
+      var wq;
+      for (wq = 0; wq < 4; wq++) {
+        Pixel.rect(P, x + 18 + wq * 11, y - 30, 8, 7, '#bfe4f2');
+        Pixel.rect(P, x + 18 + wq * 11, y - 25, 8, 2, '#3f6fbf');
+      }
+      for (wq = 0; wq < 4; wq++) {
+        Pixel.rect(P, x + 16 + wq * 11, y - 14, 8, 7, '#bfe4f2');
+        Pixel.rect(P, x + 16 + wq * 11, y - 9, 8, 2, '#3f6fbf');
+      }
+      Pixel.rect(P, x + 1, y - 14, 11, 4, '#f0ece2');       /* destination blind */
+      Pixel.rect(P, x + 2, y - 13, 9, 2, '#43403c');
+      Pixel.rect(P, x + 64, y - 14, 10, 14, '#7a2418');     /* open platform */
+      Pixel.rect(P, x + 64, y - 14, 10, 1, '#a62c20');
+      Pixel.rect(P, x + 8, y - 3, 9, 3, '#2b2b30');
+      Pixel.rect(P, x + 56, y - 3, 9, 3, '#2b2b30');
+    } else if (d.kind === 'brick') {
+      /* Backdrop, not something you climb: the pavement runs in front of
+         it, so it is drawn from the kerb straight up and off the top of
+         the frame. Flat brick, one darker tone, no outline anywhere. */
+      var base = d.red ? '#c04f39' : '#f0e2a0';
+      var dark = d.red ? '#a54331' : '#dccd8a';
+      var mortar = d.red ? '#d0705a' : '#fcf3bd';
+      var top = -12;
+      if (y <= top) return;
+      Pixel.rect(P, x, top, d.w, y - top, base);
+      for (var by2 = y - 5; by2 > top; by2 -= 5) Pixel.rect(P, x, by2, d.w, 1, mortar);
+      Pixel.rect(P, x, y - 32, d.w, 32, dark);              /* shop storey */
+      Pixel.rect(P, x - 2, y - 36, d.w + 4, 4, '#f4f1e6');  /* cornice */
+      Pixel.rect(P, x - 1, y - 33, d.w + 2, 1, '#d9d4c4');
+      Pixel.rect(P, x + d.w - 5, y - 36, 2, 36, '#8d8471');  /* drainpipe */
+      Pixel.rect(P, x + d.w - 6, y - 36, 4, 2, '#a49a85');
+      for (var uy = y - 56; uy > top + 2; uy -= 22) {
+        for (var ux = x + 9; ux < x + d.w - 14; ux += 21) {
+          Pixel.rect(P, ux, uy, 12, 14, '#8fb4c9');
+          Pixel.rect(P, ux, uy, 12, 2, '#b9d3e0');
+          Pixel.rect(P, ux, uy + 6, 12, 1, '#6d92a8');
+          Pixel.rect(P, ux - 1, uy + 14, 14, 2, '#f4f1e6');
+        }
+      }
+    } else if (d.kind === 'shopfront') {
+      /* A cutaway, the length of the building: the wall that would hide
+         the ground floor is simply not drawn, so the whole parade of
+         shops is open to the street. */
+      Pixel.rect(P, x, y - 26, d.w, 26, '#33291f');
+      Pixel.rect(P, x, y - 26, d.w, 1, '#1f1913');
+      var bay, bw = 24, bays = Math.max(1, Math.round(d.w / bw));
+      bw = Math.floor(d.w / bays);
+      for (bay = 0; bay < bays; bay++) {
+        var bxx = x + bay * bw, seed = (d.seed || 0) + bay;
+        Pixel.rect(P, bxx + 1, y - 24, bw - 2, 23, seed % 2 ? '#54463a' : '#4a4033');
+        if (seed % 3 === 0) {
+          /* a doorway, lit from inside */
+          Pixel.rect(P, bxx + 6, y - 20, 9, 20, '#8c6a41');
+          Pixel.rect(P, bxx + 6, y - 20, 9, 1, '#b08b58');
+          Pixel.rect(P, bxx + 12, y - 12, 2, 2, '#e8c87a');
+        } else {
+          Pixel.rect(P, bxx + 2, y - 10, bw - 4, 4, '#7a5f3a');        /* counter */
+          Pixel.rect(P, bxx + 3, y - 21, 6, 7, seed % 2 ? '#d8c9a0' : '#c47a4a');
+          Pixel.rect(P, bxx + 11, y - 21, 6, 7, seed % 2 ? '#8fb46a' : '#d8c9a0');
+          Pixel.rect(P, bxx + 3, y - 13, bw - 7, 1, '#6b5436');
+        }
+      }
+      var sgn = ['#d8402f', '#3f7fd8', '#e8a72c', '#46a86a'][(d.seed || 0) % 4];
+      Pixel.rect(P, x - 2, y - 32, d.w + 4, 6, sgn);                   /* fascia */
+      Pixel.rect(P, x + 4, y - 30, d.w - 14, 2, '#f4f1e6');
+      Pixel.rect(P, x - 2, y - 27, d.w + 4, 1, mix(sgn, '#000000', 0.3));
+    } else if (d.kind === 'awning') {
+      /* hangs BELOW the line you stand on, so the canopy and the ledge
+         are the same object from either side of the screen */
+      Pixel.rect(P, x, y, d.w, 4, '#efe7d2');
+      for (var aw = 0; aw < d.w; aw += 8) Pixel.rect(P, x + aw, y, 4, 4, '#d8402f');
+      Pixel.rect(P, x, y + 4, d.w, 1, '#b3a58c');
+    } else if (d.kind === 'shopdoor') {
+      /* the way in upstairs: a recessed door with a fanlight over it */
+      Pixel.rect(P, x, y - 22, d.w, 22, '#4a3c2c');
+      Pixel.rect(P, x + 2, y - 20, d.w - 4, 20, '#7a5f3a');
+      Pixel.rect(P, x + 2, y - 20, d.w - 4, 3, '#c6d8e0');
+      Pixel.rect(P, x + 4, y - 16, d.w - 8, 1, '#6b5436');
+      Pixel.rect(P, x + 4, y - 9, d.w - 8, 1, '#6b5436');
+      Pixel.rect(P, x + d.w - 5, y - 11, 2, 2, '#e8c87a');
+      Pixel.rect(P, x - 1, y - 24, d.w + 2, 2, '#f4f1e6');
+    } else if (d.kind === 'wallbox') {
+      Pixel.rect(P, x, y, d.w, 10, '#9aa2ae');
+      Pixel.rect(P, x, y, d.w, 2, '#bcc3cd');
+      Pixel.rect(P, x + 2, y + 4, d.w - 4, 1, '#6f7681');
+      Pixel.rect(P, x + 2, y + 6, d.w - 4, 1, '#6f7681');
+      Pixel.rect(P, x, y + 10, d.w, 1, '#6f7681');
+    } else if (d.kind === 'fence') {
+      /* A builder's yard seen through chain-link. The mesh alone read as
+         a chequerboard hung in mid air; what sells it is having
+         something behind it worth looking at. */
+      Pixel.rect(P, x + 4, y - 15, 18, 15, '#a8814e');        /* pallets */
+      Pixel.rect(P, x + 4, y - 15, 18, 2, '#c49a60');
+      Pixel.rect(P, x + 4, y - 10, 18, 2, '#8c6a3d');
+      Pixel.rect(P, x + 4, y - 5, 18, 2, '#8c6a3d');
+      Pixel.rect(P, x + 26, y - 11, 14, 11, '#4a6f9a');       /* a skip */
+      Pixel.rect(P, x + 26, y - 11, 14, 2, '#6a91bd');
+      Pixel.rect(P, x + 27, y - 14, 5, 3, '#6b5a44');
+      Pixel.rect(P, x + 44, y - 20, 3, 20, '#8a949f');        /* a post in the yard */
+      Pixel.rect(P, x + 41, y - 22, 9, 3, '#e8a72c');
+      /* a diamond mesh, not a chequerboard: two sets of diagonals every
+         four pixels reads as wire, while filling every other pixel reads
+         as a pale wall with something behind it */
+      var fy, fx2;
+      for (fy = y - 22; fy < y; fy++) {
+        for (fx2 = x; fx2 < x + d.w; fx2++) {
+          if ((fx2 + fy) % 4 === 0 || (fx2 - fy + 400) % 4 === 0) {
+            Pixel.rect(P, fx2, fy, 1, 1, 'rgba(226,234,240,0.5)');
+          }
+        }
+      }
+      Pixel.rect(P, x, y - 23, d.w, 2, '#9aa3ab');            /* top rail */
+      for (var fp = x; fp <= x + d.w; fp += 20) Pixel.rect(P, fp, y - 23, 2, 23, '#9aa3ab');
+    } else if (d.kind === 'hoarding') {
+      /* an advertising hoarding on legs - flat colour, big type-block */
+      var hc = ['#d8402f', '#3f7fd8', '#e8a72c', '#46a86a'][(d.seed || 0) % 4];
+      Pixel.rect(P, x + 6, y - 6, 3, 6, '#6d6459');
+      Pixel.rect(P, x + d.w - 9, y - 6, 3, 6, '#6d6459');
+      Pixel.rect(P, x, y - 30, d.w, 24, hc);
+      Pixel.rect(P, x, y - 30, d.w, 2, mix(hc, '#ffffff', 0.3));
+      Pixel.rect(P, x, y - 8, d.w, 2, mix(hc, '#000000', 0.25));
+      Pixel.rect(P, x + 4, y - 26, d.w - 20, 5, '#f4f1e6');
+      Pixel.rect(P, x + 4, y - 19, d.w - 30, 3, 'rgba(255,255,255,0.65)');
+      Pixel.rect(P, x + 4, y - 14, d.w - 24, 3, 'rgba(255,255,255,0.45)');
+    } else if (d.kind === 'dumpster') {
+      Pixel.rect(P, x, y - 12, 20, 12, '#3f7a5c');
+      Pixel.rect(P, x, y - 12, 20, 2, '#579a76');
+      Pixel.rect(P, x, y - 6, 20, 1, '#2e5f46');
+      Pixel.rect(P, x + 2, y - 2, 3, 2, '#2b2b30');
+      Pixel.rect(P, x + 15, y - 2, 3, 2, '#2b2b30');
+    } else if (d.kind === 'bags') {
+      Pixel.rect(P, x, y - 6, 7, 6, '#2f2f38');
+      Pixel.rect(P, x + 1, y - 7, 5, 1, '#2f2f38');
+      Pixel.rect(P, x + 8, y - 5, 6, 5, '#26262e');
+      Pixel.rect(P, x + 9, y - 6, 4, 1, '#26262e');
     } else if (d.kind === 'facade') {
-      /* the few rows of wall hanging under a roof slab, so the deck reads
-         as the top of a building rather than a bar floating in the sky */
-      Pixel.rect(P, x, y, d.w, 5, mix(f.body, '#000000', 0.42));
-      Pixel.rect(P, x, y, d.w, 1, mix(f.body, '#000000', 0.55));
-      for (var fw = x + 3; fw < x + d.w - 3; fw += 6) {
-        Pixel.rect(P, fw, y - 5, 2, 3, 'rgba(30,36,50,0.45)');
+      /* the tower under a roof deck: it runs off the bottom of the frame,
+         so the deck reads as the top of a building rather than a bar
+         floating in the sky */
+      /* warm, so a tower reads as brick standing in the same city as the
+         skyline behind it rather than as a slab of concrete */
+      var fb = L.theme === 'indoor' ? mix(f.body, '#000000', 0.30) : mix(L.city[2], '#ffffff', 0.12);
+      var fd = mix(fb, '#000000', 0.16);
+      Pixel.rect(P, x, y, d.w, 220, fb);
+      Pixel.rect(P, x, y, d.w, 1, mix(f.body, '#000000', 0.52));
+      Pixel.rect(P, x + d.w - 2, y, 2, 220, fd);
+      var fcols = Math.max(1, Math.floor((d.w - 6) / 11));
+      var finset = Math.max(3, (d.w - fcols * 11) >> 1);
+      for (var fwy = y + 6; fwy < y + 190; fwy += 13) {
+        for (var fci = 0; fci < fcols; fci++) {
+          var fwx = x + finset + fci * 11;
+          var key2 = (fci * 7 + fwy * 3 + (d.seed || 0) * 5) % 11;
+          Pixel.rect(P, fwx, fwy, 6, 7, key2 === 0 ? '#f0c063' : '#a8c6d8');
+          Pixel.rect(P, fwx, fwy, 6, 1, key2 === 0 ? '#ffe2a2' : '#c9dde8');
+        }
       }
     } else if (d.kind === 'tank') {
       /* a water tank on legs */
@@ -347,11 +537,11 @@
       Pixel.rect(P, x + 2, y - 16, 10, 2, 'rgba(255,255,255,0.7)');
       Pixel.rect(P, x + 2, y - 13, 7, 2, 'rgba(255,255,255,0.45)');
     } else if (d.kind === 'rail') {
-
+      /* the freight track */
       Pixel.rect(P, x, y, d.w, 3, '#1b1b22');
       Pixel.rect(P, x, y + 3, d.w, 1, '#3a3630');
       for (var sl = 0; sl < d.w; sl += 9) Pixel.rect(P, x + sl, y + 3, 5, 2, '#5b5044');
-    } else if (d.kind === 'rail') {
+    } else if (d.kind === 'railing') {
       /* a safety railing along a roof edge */
       Pixel.rect(P, x, y - 9, d.w, 1, '#8a949f');
       Pixel.rect(P, x, y - 5, d.w, 1, '#767f8a');
@@ -531,13 +721,8 @@
     Pixel.stamp(P, ART.HAND, m.hand, p[J.HAND_A].x + ox, p[J.HAND_A].y + oy, 0, flip);
     drawGun(r, cam);
 
-    /* the wind-up meter, right under the feet where you are looking */
-    if (r.winding && r.charge > 0.04) {
-      var bx = Math.round(r.x + r.w / 2 + ox) - 7, by = Math.round(r.y + r.h + oy) + 3;
-      Pixel.rect(P, bx, by, 14, 3, 'rgba(0,0,0,0.5)');
-      Pixel.rect(P, bx + 1, by + 1, Math.round(12 * r.charge), 1,
-                 r.charge > 0.86 ? '#ff5e4d' : '#ffc23c');
-    }
+    /* No meter under the feet. The wind-up already shows in the body:
+       the further you have leaned, the longer you have held it. */
   }
 
   /* ---------------------------------------------------------- draw */
@@ -551,9 +736,12 @@
     drawSky(L, cam, time);
 
     var i;
-    for (i = 0; i < L.decor.length; i++) if (L.decor[i].kind === 'ground' || L.decor[i].kind === 'carpet') drawDecor(L.decor[i], L, cam, time);
+    /* three passes: what stands behind the street, the street and the
+       structure itself, then everything parked on it */
+    for (i = 0; i < L.decor.length; i++) if (L.decor[i].back) drawDecor(L.decor[i], L, cam, time);
+    for (i = 0; i < L.decor.length; i++) if (!L.decor[i].back && (L.decor[i].kind === 'ground' || L.decor[i].kind === 'carpet')) drawDecor(L.decor[i], L, cam, time);
     for (i = 0; i < w.solids.length; i++) drawSolid(w.solids[i], L, cam);
-    for (i = 0; i < L.decor.length; i++) if (L.decor[i].kind !== 'ground' && L.decor[i].kind !== 'carpet') drawDecor(L.decor[i], L, cam, time);
+    for (i = 0; i < L.decor.length; i++) if (!L.decor[i].back && L.decor[i].kind !== 'ground' && L.decor[i].kind !== 'carpet') drawDecor(L.decor[i], L, cam, time);
 
     /* the van you are all running for */
     var g = L.goal;
@@ -563,10 +751,14 @@
       var it = w.items[i];
       if (it.cool > 0) continue;
       var ix = Math.round(it.x - cam.x), iy = Math.round(it.y - cam.y + Math.sin(time * 3 + it.bob) * 1.5);
-      Pixel.rect(P, ix - 5, iy - 5, 10, 10, 'rgba(20,24,34,0.45)');
-      Pixel.frame(P, ix - 5, iy - 5, 10, 10, '#ffc23c');
-      Pixel.rect(P, ix - 1, iy - 3, 2, 4, '#ffffff');
-      Pixel.rect(P, ix - 1, iy + 2, 2, 2, '#ffffff');
+      /* a solid crate, not a translucent plate: nothing in this style is
+         see-through, and a dark pane floating over the street reads as a
+         hole in the picture */
+      Pixel.rect(P, ix - 5, iy - 5, 10, 10, '#c98a3f');
+      Pixel.rect(P, ix - 5, iy - 5, 10, 2, '#e0a85a');
+      Pixel.rect(P, ix - 5, iy + 3, 10, 2, '#a86f2f');
+      Pixel.rect(P, ix - 1, iy - 3, 2, 6, '#fff3c4');
+      Pixel.rect(P, ix - 3, iy - 1, 6, 2, '#fff3c4');
     }
 
     for (i = 0; i < w.racers.length; i++) drawRacer(w.racers[i], cam);
