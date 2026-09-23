@@ -8,12 +8,14 @@
   var CANVAS_W = 1280, CANVAS_H = 720;
   var ctx = Pixel.init(canvas);
 
-  /* W and E lean left and right and let go to jump; R spends the item.
-     Two keys side by side, because the wind-up wants a key you can hold
-     without thinking about which finger is where. */
+  /* Three keys each, and that is the whole control surface: lean left,
+     lean right, use what you are holding. Everything hard about moving
+     comes from timing those three, not from having more of them. */
   var SCHEMES = [
-    { left: 'KeyW', right: 'KeyE', item: 'KeyR', label: 'W  E  R' },
-    { left: 'ArrowLeft', right: 'ArrowRight', item: 'ArrowUp', label: '< > ^' }
+    { left: 'KeyA', right: 'KeyD', item: 'KeyW', label: 'A  D  W' },
+    { left: 'ArrowLeft', right: 'ArrowRight', item: 'ArrowUp', label: '< > ^' },
+    { left: 'KeyF', right: 'KeyH', item: 'KeyT', label: 'F  H  T' },
+    { left: 'KeyJ', right: 'KeyL', item: 'KeyI', label: 'J  L  I' }
   ];
 
   var TARGET_WINS = 3;
@@ -21,7 +23,7 @@
   var Game = {
     state: 'menu',
     menuIndex: 0,
-    menuItems: ['ONE PLAYER', 'TWO PLAYER', 'CONTROLS'],
+    menuItems: ['ONE PLAYER', 'TWO PLAYER', 'THREE PLAYER', 'FOUR PLAYER', 'CONTROLS'],
     world: null,
     bots: [],
     humans: 1,
@@ -46,7 +48,7 @@
       var level = LEVELS[this.roundIndex % LEVELS.length];
       this.world = new World(level, {
         toast: function (t) { self.toast = t; self.toastT = 1.1; },
-        pickup: function () { self.toast = 'ITEM'; self.toastT = 0.8; },
+        pickup: function (r, what) { self.toast = what || 'ITEM'; self.toastT = 0.8; },
         fell: function (r) { self.toast = r.name + ' DOWN'; self.toastT = 0.9; },
         finished: function (r, place) {
           if (place === 1) {
@@ -131,7 +133,8 @@
           inputs.push({
             left: Input.isDown(k.left),
             right: Input.isDown(k.right),
-            item: Input.pressed(k.item)
+            fire: Input.isDown(k.item),
+            firePressed: Input.pressed(k.item)
           });
         }
       }
@@ -144,8 +147,7 @@
       if (Input.pressed('ArrowDown') || Input.pressed('KeyS')) this.menuIndex = (this.menuIndex + 1) % n;
       if (Input.pressed('ArrowUp') || Input.pressed('KeyW')) this.menuIndex = (this.menuIndex + n - 1) % n;
       if (Input.pressed('Enter') || Input.pressed('Space')) {
-        if (this.menuIndex === 0) this.startMatch(1);
-        else if (this.menuIndex === 1) this.startMatch(2);
+        if (this.menuIndex < 4) this.startMatch(this.menuIndex + 1);
         else this.state = 'controls';
       }
     },
@@ -159,28 +161,30 @@
       var sc = Pixel.screen(true);
       Draw.backdrop(sc, w.level, { x: Math.round(w.cam.x), y: Math.round(w.cam.y) }, this.time);
 
-      var c = Pixel.begin();
+      var c = Pixel.begin(this.world ? this.world.zoom : 1);
       if (this.state === 'menu') this.drawMenu(c);
       else if (this.state === 'controls') this.drawControls(c);
       else {
         Draw.world(c, this.world, this.time);
+        /* the HUD never zooms with the camera */
+        c = Pixel.begin(1);
         this.drawHud(c);
         if (this.countdown > 0) {
           var n = Math.ceil(this.countdown - 0.2);
-          if (n > 0) Pixel.outlineText(c, String(n), Pixel.W / 2, 64, 4, '#ffc23c', '#101018', 'center');
-          else Pixel.outlineText(c, 'GO', Pixel.W / 2, 64, 4, '#57c96a', '#101018', 'center');
+          if (n > 0) Pixel.outlineText(c, String(n), Pixel.W / 2, 44, 2.5, '#ffc23c', '#101018', 'center');
+          else Pixel.outlineText(c, 'GO', Pixel.W / 2, 44, 2.5, '#57c96a', '#101018', 'center');
         }
         if (this.state === 'paused') {
           Pixel.rect(c, 0, 0, Pixel.W, Pixel.H, 'rgba(12,14,22,0.66)');
-          Pixel.outlineText(c, 'PAUSED', Pixel.W / 2, 70, 3, '#ffffff', '#101018', 'center');
-          Pixel.text(c, 'P TO RESUME   BACKSPACE TO QUIT', Pixel.W / 2, 100, 1, '#c8d2e0', 'center');
+          Pixel.outlineText(c, 'PAUSED', Pixel.W / 2, 44, 2, '#ffffff', '#101018', 'center');
+          Pixel.text(c, 'P TO RESUME   BACKSPACE TO QUIT', Pixel.W / 2, 66, 0.6, '#c8d2e0', 'center');
         }
         if (this.state === 'roundover' || this.state === 'matchover') {
           Pixel.rect(c, 0, 0, Pixel.W, Pixel.H, 'rgba(12,14,22,0.6)');
-          Pixel.outlineText(c, this.banner, Pixel.W / 2, 62, 2, '#ffc23c', '#101018', 'center');
-          this.drawScoreboard(c, 62);
+          Pixel.outlineText(c, this.banner, Pixel.W / 2, 26, 1.25, '#ffc23c', '#101018', 'center');
+          this.drawScoreboard(c, 46);
           Pixel.text(c, this.state === 'matchover' ? 'ENTER FOR THE MENU' : 'ENTER FOR THE NEXT MAP',
-                     Pixel.W / 2, 128, 1, '#ffffff', 'center');
+                     Pixel.W / 2, 110, 0.6, '#ffffff', 'center');
         }
       }
     },
@@ -201,7 +205,7 @@
         this.drawPortrait(c, r, x, 3);
         Pixel.rect(c, x + 13, 3, 9, 13, '#101018');
         Pixel.rect(c, x + 14, 4, 7, 11, r.def.mark);
-        Pixel.text(c, String(this.scores[i]), x + 16, 6, 1, '#101018');
+        Pixel.text(c, String(this.scores[i]), x + 15, 6, 0.5, '#101018');
       }
 
       /* the race bar: everyone's furthest point, on one line */
@@ -216,20 +220,30 @@
       }
 
       if (this.toastT > 0) {
-        Pixel.outlineText(c, this.toast, Pixel.W / 2, 30, 1, '#ffc23c', '#101018', 'center');
+        Pixel.outlineText(c, this.toast, Pixel.W / 2, 28, 0.75, '#ffc23c', '#101018', 'center');
       }
       if (this.bannerT > 0 && this.state === 'playing') {
-        Pixel.outlineText(c, this.banner, Pixel.W / 2, 44, 2, '#ffffff', '#101018', 'center');
+        Pixel.outlineText(c, this.banner, Pixel.W / 2, 40, 1.25, '#ffffff', '#101018', 'center');
       }
 
       /* what the local players are holding */
       for (i = 0; i < this.humans; i++) {
         var hp = w.racers[i];
-        var hx = i === 0 ? 5 : Pixel.W - 17;
-        Pixel.rect(c, hx, Pixel.H - 15, 12, 12, 'rgba(16,20,30,0.66)');
-        Pixel.frame(c, hx, Pixel.H - 15, 12, 12, hp.item ? '#ffc23c' : hp.def.mark);
-        if (hp.item) Pixel.stamp(c, ART.ITEMS[hp.item], ART.ITEM_MAP, hx + 6, Pixel.H - 9, 0, false);
-        else Pixel.text(c, '-', hx + 4, Pixel.H - 12, 1, '#5a6478');
+        /* Two slots down each side rather than four along the bottom -
+           the boxes are wider than the gap between them otherwise. */
+        var held = hp.weapon ? WEAPONS[hp.weapon.key].name : (hp.util ? hp.util.toUpperCase() : null);
+        var boxW = held ? Pixel.textWidth(held, 0.5) + 5 : 10;
+        var bxh = (i % 2 === 0) ? 5 : Pixel.W - 5 - boxW;
+        var byh = Pixel.H - 13 - (i >> 1) * 13;
+        Pixel.rect(c, bxh, byh, boxW, 11, 'rgba(16,20,30,0.72)');
+        Pixel.frame(c, bxh, byh, boxW, 11, held ? '#ffc23c' : hp.def.mark);
+        Pixel.rect(c, bxh + 1, byh + 1, 2, 9, hp.def.mark);
+        if (held) {
+          Pixel.text(c, held, bxh + 4, byh + 2, 0.5, '#ffffff');
+          if (hp.weapon) Pixel.text(c, String(hp.weapon.ammo), bxh + 4, byh + 6, 0.5, '#ffc23c');
+        } else {
+          Pixel.text(c, '-', bxh + 4, byh + 3, 0.5, '#5a6478');
+        }
       }
     },
 
@@ -250,12 +264,12 @@
     drawScoreboard: function (c, y) {
       for (var i = 0; i < this.world.racers.length; i++) {
         var r = this.world.racers[i];
-        var rowY = y + i * 15;
-        Pixel.rect(c, 44, rowY, 126, 13, 'rgba(16,20,30,0.7)');
-        Pixel.rect(c, 44, rowY, 2, 13, r.def.mark);
-        this.drawPortrait(c, r, 49, rowY, true);
-        Pixel.text(c, r.name + (r.isBot ? '' : ' (YOU)'), 64, rowY + 3, 1, '#ffffff');
-        Pixel.text(c, String(this.scores[i]), 162, rowY + 3, 1, '#ffc23c', 'right');
+        var rowY = y + i * 13;
+        Pixel.rect(c, 56, rowY, 102, 11, 'rgba(16,20,30,0.7)');
+        Pixel.rect(c, 56, rowY, 2, 11, r.def.mark);
+        this.drawPortrait(c, r, 60, rowY - 1, true);
+        Pixel.text(c, r.name + (r.isBot ? '' : ' (YOU)'), 74, rowY + 3, 0.6, '#ffffff');
+        Pixel.text(c, String(this.scores[i]), 152, rowY + 3, 0.6, '#ffc23c', 'right');
       }
     },
 
@@ -265,28 +279,28 @@
       Draw.world(c, menuWorld(), this.time);
       Pixel.rect(c, 0, 0, Pixel.W, Pixel.H, 'rgba(10,16,30,0.28)');
 
-      Pixel.outlineText(c, 'SKYLINE', Pixel.W / 2, 10, 3, '#ffffff', '#101018', 'center');
-      Pixel.outlineText(c, 'SCRAMBLE', Pixel.W / 2, 34, 3, '#ffc23c', '#101018', 'center');
+      Pixel.outlineText(c, 'GETAWAY', Pixel.W / 2, 12, 2, '#ffffff', '#101018', 'center');
+      Pixel.outlineText(c, 'DAUN', Pixel.W / 2, 32, 2, '#ffc23c', '#101018', 'center');
       Pixel.outlineText(c, 'YOU CANNOT WALK. LEAN, LET GO, PRAY.',
-                        Pixel.W / 2, 58, 1, '#dbe6f2', '#101018', 'center');
+                        Pixel.W / 2, 50, 0.6, '#dbe6f2', '#101018', 'center');
 
       for (var i = 0; i < this.menuItems.length; i++) {
-        var y = 72 + i * 16;
+        var y = 62 + i * 11;
         var on = i === this.menuIndex;
-        var w = 84, x = Pixel.W / 2 - w / 2;
-        Pixel.rect(c, x, y, w, 13, on ? '#ffc23c' : 'rgba(16,20,30,0.72)');
-        Pixel.frame(c, x, y, w, 13, on ? '#ffffff' : '#5a6478');
-        Pixel.text(c, this.menuItems[i], Pixel.W / 2, y + 3, 1,
+        var w = 68, x = Pixel.W / 2 - w / 2;
+        Pixel.rect(c, x, y, w, 9, on ? '#ffc23c' : 'rgba(16,20,30,0.72)');
+        Pixel.frame(c, x, y, w, 9, on ? '#ffffff' : '#5a6478');
+        Pixel.text(c, this.menuItems[i], Pixel.W / 2, y + 2, 0.6,
                    on ? '#101018' : '#dbe6f2', 'center');
       }
-      Pixel.text(c, 'ARROWS OR W/S  -  ENTER', Pixel.W / 2, Pixel.H - 14, 1, '#9fb0c4', 'center');
+      Pixel.text(c, 'ARROWS OR W/S  -  ENTER', Pixel.W / 2, Pixel.H - 12, 0.6, '#9fb0c4', 'center');
       void L;
     },
 
     drawControls: function (c) {
       Draw.world(c, menuWorld(), this.time);
       Pixel.rect(c, 0, 0, Pixel.W, Pixel.H, 'rgba(10,16,30,0.72)');
-      Pixel.outlineText(c, 'CONTROLS', Pixel.W / 2, 8, 2, '#57c96a', '#101018', 'center');
+      Pixel.outlineText(c, 'CONTROLS', Pixel.W / 2, 10, 1.5, '#57c96a', '#101018', 'center');
 
       var rows = [
         ['HOLD', 'LEAN THAT WAY AND WIND UP'],
@@ -296,13 +310,13 @@
         ['IN THE AIR', 'THE SAME KEYS SPIN YOU']
       ];
       for (var i = 0; i < rows.length; i++) {
-        var y = 32 + i * 12;
-        Pixel.text(c, rows[i][0], 16, y, 1, '#ffc23c');
-        Pixel.text(c, rows[i][1], 78, y, 1, '#ffffff');
+        var y = 32 + i * 10;
+        Pixel.text(c, rows[i][0], 20, y, 0.6, '#ffc23c');
+        Pixel.text(c, rows[i][1], 68, y, 0.6, '#ffffff');
       }
-      Pixel.text(c, 'PLAYER 1   W  E  R', Pixel.W / 2, 96, 1, '#8fd4f2', 'center');
-      Pixel.text(c, 'PLAYER 2   LEFT RIGHT UP', Pixel.W / 2, 106, 1, '#c0a0f2', 'center');
-      Pixel.text(c, 'PRESS ANY KEY', Pixel.W / 2, Pixel.H - 14, 1, '#9fb0c4', 'center');
+      Pixel.text(c, 'P1 A D W    P2 LEFT RIGHT UP', Pixel.W / 2, 90, 0.6, '#8fd4f2', 'center');
+      Pixel.text(c, 'P3 F H T    P4 J L I', Pixel.W / 2, 100, 0.6, '#c0a0f2', 'center');
+      Pixel.text(c, 'PRESS ANY KEY', Pixel.W / 2, Pixel.H - 12, 0.6, '#9fb0c4', 'center');
     }
   };
 

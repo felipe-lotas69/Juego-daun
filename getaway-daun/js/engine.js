@@ -128,9 +128,10 @@
 
     /* world space: one unit is SCALE screen pixels, so a sprite pixel
        comes out as a crisp SCALE-wide block */
-    begin: function () {
+    begin: function (zoom) {
       var c = this.ctx;
-      c.setTransform(this.SCALE, 0, 0, this.SCALE, 0, 0);
+      var z = this.SCALE * (zoom || 1);
+      c.setTransform(z, 0, 0, z, 0, 0);
       c.imageSmoothingEnabled = false;
       this.world = true;
       return c;
@@ -146,9 +147,10 @@
       return c;
     },
 
-    /* Snap to the SCREEN pixel grid, whichever space we are in. In world
-       space that is a quarter of a unit, so terrain edges and lamp posts
-       can be finer than the art grid without ever blurring. */
+    /* Snap to the SCREEN pixel grid, whichever space we are in. Terrain
+       and UI use it so their edges stay hard. SPRITES DO NOT: they move
+       and rotate freely, which is what keeps chunky art from juddering
+       onto a grid every time the camera drifts half a unit. */
     s: function (v) {
       return this.world ? Math.round(v * this.SCALE) / this.SCALE : Math.round(v);
     },
@@ -244,11 +246,11 @@
       var w = img.width, h = img.height;
       if (!angle && !flip) {
         c.imageSmoothingEnabled = false;
-        c.drawImage(img, this.s(cx) - (w >> 1), this.s(cy) - (h >> 1), w, h);
+        c.drawImage(img, cx - w / 2, cy - h / 2, w, h);
         return;
       }
       c.save();
-      c.translate(this.s(cx), this.s(cy));
+      c.translate(cx, cy);
       if (angle) c.rotate(angle);
       if (flip) c.scale(-1, 1);
       c.imageSmoothingEnabled = false;
@@ -263,7 +265,7 @@
       var len = Math.max(1, Math.round(Math.sqrt(dx * dx + dy * dy)) + 1);
       var img = this.bakeBar(len, thick, col);
       c.save();
-      c.translate(this.s((x0 + x1) / 2), this.s((y0 + y1) / 2));
+      c.translate((x0 + x1) / 2, (y0 + y1) / 2);
       c.rotate(Math.atan2(dy, dx));
       c.imageSmoothingEnabled = false;
       c.drawImage(img, -len / 2, -thick / 2, len, thick);

@@ -146,7 +146,10 @@
     this.coyote = 0;
     this.spin = 0;
 
-    this.item = null;
+    this.weapon = null;      /* { key, ammo } */
+    this.util = null;        /* shield / boost */
+    this.cooldown = 0;
+    this.flash = 0;
     this.shield = 0;
     this.stun = 0;
     this.respawnAt = { x: opts.x, y: opts.y };
@@ -186,10 +189,13 @@
     return true;
   };
 
-  Racer.prototype.control = function (dt, left, right, useItem, world) {
+  Racer.prototype.control = function (dt, left, right, fire, firePressed, world) {
     if (this.stun > 0) { this.stun -= dt; this.winding = false; this.charge = 0; return; }
 
-    if (useItem && this.item) world.useItem(this, this.item);
+    /* One key does both jobs: held, it empties whatever gun you picked up
+       at that gun's own rate; tapped with no gun, it spends a utility. */
+    if (fire && this.weapon) Guns.fire(world, this);
+    else if (firePressed && this.util) world.useUtil(this, this.util);
 
     var dir = 0;
     if (left && !right) dir = -1;
@@ -225,6 +231,7 @@
     this.hooks = hooks || {};
     this.solids = level.solids.slice();
     this.items = [];
+    this.bullets = [];
     this.bombs = [];
     this.puffs = [];
     this.racers = [];
@@ -232,6 +239,7 @@
     this.shake = 0;
     this.finishedOrder = [];
     this.cam = { x: 0, y: 0 };
+    this.zoom = 1;
 
     for (var i = 0; i < level.items.length; i++) {
       var it = level.items[i];
@@ -278,26 +286,16 @@
     return { hitX: hitX, hitY: hitY, landed: landed, ice: onIce, bounce: bounce };
   }
 
-  World.prototype.useItem = function (r, kind) {
-    r.item = null;
+  World.prototype.useUtil = function (r, kind) {
+    r.util = null;
     if (kind === 'boost') {
       var a = 0.9 * r.facing;
       r.vx += Math.sin(a) * 190;
       r.vy -= 40;
       r.spin += r.facing * 6;
       this.puff(r.x + r.w / 2, r.y + r.h, 8, '#ffc23c');
-    } else if (kind === 'spring') {
-      r.vy = -250;
-      r.grounded = false;
-      this.puff(r.x + r.w / 2, r.y + r.h, 8, '#57c96a');
     } else if (kind === 'shield') {
       r.shield = 5;
-    } else if (kind === 'bomb') {
-      this.bombs.push({
-        x: r.x + r.w / 2, y: r.y + 4,
-        vx: r.vx * 0.6 + r.facing * 110, vy: -90,
-        fuse: 1.1, owner: r
-      });
     }
     if (this.hooks.toast) this.hooks.toast(kind.toUpperCase());
   };
@@ -338,10 +336,12 @@
       r = this.racers[i];
       if (r.finished) continue;
 
-      var inp = inputs[i] || { left: false, right: false, item: false };
-      r.control(dt, inp.left, inp.right, inp.item, this);
+      var inp = inputs[i] || { left: false, right: false, fire: false, firePressed: false };
+      r.control(dt, inp.left, inp.right, inp.fire, inp.firePressed, this);
 
       if (r.shield > 0) r.shield -= dt;
+      if (r.cooldown > 0) r.cooldown -= dt;
+      if (r.flash > 0) r.flash -= dt;
 
       /* gravity, and a hard cap so a long drop stays readable */
       r.vy = Math.min(r.vy + GRAVITY * dt, TERMINAL);
@@ -415,11 +415,18 @@
       for (j = 0; j < this.items.length; j++) {
         var it = this.items[j];
         if (it.cool > 0) continue;
-        if (r.item) break;
-        if (Math.abs((r.x + r.w / 2) - it.x) < 8 && Math.abs((r.y + r.h / 2) - it.y) < 10) {
+        if (r.weapon || r.util) break;
+        if (Math.abs((r.x + r.w / 2) - it.x) < 9 && Math.abs((r.y + r.h / 2) - it.y) < 11) {
           it.cool = 7;
-          r.item = it.kind || U.pick(['boost', 'bomb', 'shield', 'spring']);
-          if (this.hooks.pickup) this.hooks.pickup(r);
+          if (it.kind === 'shield' || it.kind === 'boost') {
+            r.util = it.kind;
+          } else if (Math.random() < 0.22) {
+            r.util = U.pick(['shield', 'boost']);
+          } else {
+            var key = it.kind || U.pick(WEAPON_ORDER);
+            r.weapon = { key: key, ammo: WEAPONS[key].ammo };
+          }
+          if (this.hooks.pickup) this.hooks.pickup(r, r.weapon ? WEAPONS[r.weapon.key].name : r.util.toUpperCase());
         }
       }
 
@@ -451,6 +458,8 @@
       if (this.items[i].cool > 0) this.items[i].cool -= dt;
     }
 
+    Guns.update(this, dt);
+
     /* --- bombs --- */
     for (i = this.bombs.length - 1; i >= 0; i--) {
       var bm = this.bombs[i];
@@ -480,13 +489,17 @@
      being behind. With two locals it sits between them. */
   World.prototype.focus = function (humans) {
     if (humans >= 2) {
-      var a = this.racers[0], b = this.racers[1];
+      var group = this.racers.slice(0, humans);
       return {
         centre: function () {
-          var ac = a.centre(), bc = b.centre();
-          return { x: (ac.x + bc.x) / 2, y: (ac.y + bc.y) / 2 };
+          var x = 0, y = 0, n = 0;
+          for (var i = 0; i < group.length; i++) {
+            var c = group[i].centre();
+            x += c.x; y += c.y; n++;
+          }
+          return { x: x / n, y: y / n };
         },
-        vx: (a.vx + b.vx) / 2, vy: (a.vy + b.vy) / 2
+        vx: 0, vy: 0
       };
     }
     return this.racers[0] || this.leader();
@@ -501,14 +514,35 @@
   };
 
   World.prototype.follow = function (target, dt, snap) {
+    /* Pull back far enough to hold everyone still racing. Four players in
+       a scrum want a tight frame; four players strung out across a map
+       want a loose one, and the camera is the only thing that can say so. */
+    var live = [], i;
+    for (i = 0; i < this.racers.length; i++) {
+      if (!this.racers[i].finished) live.push(this.racers[i]);
+    }
+    var wantZoom = 1;
+    if (live.length > 1) {
+      var minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+      for (i = 0; i < live.length; i++) {
+        var lc = live[i].centre();
+        if (lc.x < minX) minX = lc.x;
+        if (lc.x > maxX) maxX = lc.x;
+        if (lc.y < minY) minY = lc.y;
+        if (lc.y > maxY) maxY = lc.y;
+      }
+      var needW = (maxX - minX) + 70, needH = (maxY - minY) + 60;
+      wantZoom = Math.min(1, Pixel.W / needW, Pixel.H / needH);
+      wantZoom = U.clamp(wantZoom, 0.55, 1);
+    }
+    this.zoom = snap ? wantZoom : this.zoom + (wantZoom - this.zoom) * Math.min(1, dt * 2.2);
+
+    var viewW = Pixel.W / this.zoom, viewH = Pixel.H / this.zoom;
     var c = target.centre();
-    var tx = c.x - Pixel.W / 2 + U.clamp(target.vx * 0.22, -30, 30);
-    /* Sit the racer a little above centre. Two thirds down was tuned for
-       a taller frame and now leaves most of the screen empty sky with the
-       ground you are aiming at cut off the bottom. */
-    var ty = c.y - Pixel.H * 0.50 + U.clamp(target.vy * 0.07, -14, 20);
-    tx = U.clamp(tx, 0, Math.max(0, this.level.width - Pixel.W));
-    ty = U.clamp(ty, -20, Math.max(0, this.level.height - Pixel.H));
+    var tx = c.x - viewW / 2 + U.clamp(target.vx * 0.22, -30, 30);
+    var ty = c.y - viewH * 0.50 + U.clamp(target.vy * 0.07, -14, 20);
+    tx = U.clamp(tx, 0, Math.max(0, this.level.width - viewW));
+    ty = U.clamp(ty, -20, Math.max(0, this.level.height - viewH));
     if (snap) { this.cam.x = tx; this.cam.y = ty; return; }
     var k = Math.min(1, dt * 5.5);
     this.cam.x += (tx - this.cam.x) * k;

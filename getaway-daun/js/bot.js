@@ -82,9 +82,29 @@
     return best;
   };
 
+  /* Is anyone roughly down the barrel? Aim follows the body, so a bot
+     cannot line a shot up deliberately - it just takes the ones its own
+     tumbling happens to offer. */
+  Bot.prototype.lineUp = function (world) {
+    var r = this.r;
+    if (!r.weapon || r.cooldown > 0) return false;
+    var a = Guns.aimOf(r), c = r.centre();
+    for (var i = 0; i < world.racers.length; i++) {
+      var o = world.racers[i];
+      if (o === r || o.finished || o.shield > 0) continue;
+      var oc = o.centre();
+      var d = U.dist(c.x, c.y, oc.x, oc.y);
+      if (d > 150) continue;
+      var want = Math.atan2(oc.y - c.y, oc.x - c.x);
+      var diff = Math.abs(((want - a + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+      if (diff < 0.30) return true;
+    }
+    return false;
+  };
+
   Bot.prototype.update = function (dt, world) {
     var r = this.r;
-    var out = { left: false, right: false, item: false };
+    var out = { left: false, right: false, fire: false, firePressed: false };
     if (r.finished || r.stun > 0) return out;
 
     /* nudge in the air so it lands on its feet rather than its head */
@@ -92,7 +112,9 @@
       if (r.spin > 2.2) out.left = true;
       else if (r.spin < -2.2) out.right = true;
       /* a boost mid-flight is how it clears the long ones */
-      if (r.item === 'boost' && r.vy > 20 && r.vx > 40) out.item = true;
+      if (r.util === 'boost' && r.vy > 20 && r.vx > 40) out.firePressed = true;
+      /* and it will take a shot on the way past if one lines up */
+      if (r.weapon && this.lineUp(world)) { out.fire = true; }
       return out;
     }
 
@@ -147,9 +169,10 @@
         }
       }
 
-      /* items: shove whoever is in the way, shield when crowded */
+      /* guns: it shoots when someone is roughly down the barrel, and
+         saves a shield for when the scrum closes in */
       this.useItem = false;
-      if (r.item) {
+      if (r.util) {
         var near = null, nd = 1e9;
         for (var i = 0; i < world.racers.length; i++) {
           var o = world.racers[i];
@@ -157,15 +180,14 @@
           var d = Math.abs(o.x - r.x);
           if (d < nd) { nd = d; near = o; }
         }
-        if (r.item === 'bomb' && near && nd < 70 && near.x > r.x) this.useItem = true;
-        else if (r.item === 'shield' && near && nd < 40) this.useItem = true;
-        else if (r.item === 'spring' && this.want > 0.9) this.useItem = true;
-        else if (Math.random() < this.p.itemAt * dt) this.useItem = true;
+        if (r.util === 'shield' && near && nd < 40) this.useItem = true;
+        else if (r.util === 'boost' && this.want > 0.9) this.useItem = true;
       }
     }
 
-    out.item = this.useItem;
+    out.firePressed = this.useItem;
     if (this.useItem) this.useItem = false;
+    if (r.weapon && this.lineUp(world)) out.fire = true;
 
     /* hold right until the wind-up is long enough, then let go */
     out.right = r.charge < this.want;

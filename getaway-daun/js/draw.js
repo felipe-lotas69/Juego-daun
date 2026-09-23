@@ -9,7 +9,10 @@
 (function (root) {
   'use strict';
 
-  var P = null;   /* the buffer context, set each frame */
+  var P = null;   /* the canvas context, set each frame */
+
+  var ROCKET = ['.ffbbn', 'ffbbbn', '.ffbbn'];
+  var ROCKET_MAP = { b: '#d8d3c6', n: '#ff6a4d', f: '#ffbe50' };
 
   /* Build the scenery once per level and keep it: a skyline that
      reshuffles every frame is worse than no skyline. */
@@ -227,7 +230,7 @@
   function drawSolid(s, L, cam) {
     var f = FACE[L.theme] || FACE.day;
     var x = Math.round(s.x - cam.x), y = Math.round(s.y - cam.y);
-    if (x > Pixel.W || x + s.w < 0) return;
+    if (x > Pixel.W * 1.9 || x + s.w < -Pixel.W * 0.5) return;
     if (s.type === 'bounce') {
       Pixel.rect(P, x, y, s.w, s.h, '#57c96a');
       Pixel.rect(P, x, y, s.w, 1, '#a8f890');
@@ -250,7 +253,7 @@
   /* --------------------------------------------------------- decor */
   function drawDecor(d, L, cam, time) {
     var x = Math.round(d.x - cam.x), y = Math.round(d.y - cam.y);
-    if (x > Pixel.W + 60 || x + (d.w || 30) < -60) return;
+    if (x > Pixel.W * 1.9 || x + (d.w || 30) < -Pixel.W * 0.5) return;
     var f = FACE[L.theme] || FACE.day;
 
     if (d.kind === 'parapet') {
@@ -344,6 +347,48 @@
     }
   }
 
+  /* ---------------------------------------------------------- guns
+     Built from the weapon's own barrel length, so the thing in your hand
+     is the same size as the thing the maths uses. */
+  var gunCache = {};
+  function gunSprite(key, def) {
+    var hit = gunCache[key];
+    if (hit) return hit;
+    var n = Math.max(3, Math.round(def.len));
+    var bar = new Array(n + 1).join('B');
+    var gap = new Array(n).join('.');
+    var out = {
+      rows: [
+        '.' + new Array(n + 1).join('H'),
+        'G' + bar,
+        'G' + bar,
+        'GG' + gap,
+        '.G' + gap
+      ],
+      map: { H: '#9aa2b4', B: def.body, G: '#20232f' }
+    };
+    gunCache[key] = out;
+    return out;
+  }
+
+  function drawGun(r, cam) {
+    if (!r.weapon) return;
+    var def = WEAPONS[r.weapon.key];
+    if (!def) return;
+    var g = gunSprite(r.weapon.key, def);
+    var a = Guns.aimOf(r);
+    var c = r.centre();
+    var gx = c.x + Math.cos(a) * (def.len * 0.45) - cam.x;
+    var gy = c.y + Math.sin(a) * (def.len * 0.45) - cam.y;
+    Pixel.stamp(P, g.rows, g.map, gx, gy, a, false);
+
+    if (r.flash > 0) {
+      var m = Guns.muzzle(r, def);
+      Pixel.disc(P, m.x - cam.x, m.y - cam.y, def.pellets > 1 ? 4 : 3, '#fff3c4');
+      Pixel.disc(P, m.x - cam.x, m.y - cam.y, 2, '#ffffff');
+    }
+  }
+
   /* -------------------------------------------------------- racers */
   /* Cached per racer: the bake cache is keyed on the map OBJECT, so
      handing it a freshly built one every frame would re-bake every
@@ -376,7 +421,7 @@
   function drawRacer(r, cam) {
     var J = RAG_JOINTS, p = r.rag.p, m = racerMaps(r);
     var ox = -cam.x, oy = -cam.y;
-    if (r.x - cam.x < -40 || r.x - cam.x > Pixel.W + 40) return;
+    if (r.x - cam.x < -60 || r.x - cam.x > Pixel.W * 1.9) return;
     var flip = r.facing !== 1;
 
     if (r.shield > 0 && Math.floor(r.shield * 10) % 2) {
@@ -406,6 +451,7 @@
     Pixel.limb(P, p[J.CHEST].x + ox, p[J.CHEST].y + oy, p[J.ELB_A].x + ox, p[J.ELB_A].y + oy, 3, m.limbJacket);
     Pixel.limb(P, p[J.ELB_A].x + ox, p[J.ELB_A].y + oy, p[J.HAND_A].x + ox, p[J.HAND_A].y + oy, 3, m.limbJacket);
     Pixel.stamp(P, ART.HAND, m.hand, p[J.HAND_A].x + ox, p[J.HAND_A].y + oy, 0, flip);
+    drawGun(r, cam);
 
     /* the wind-up meter, right under the feet where you are looking */
     if (r.winding && r.charge > 0.04) {
@@ -446,6 +492,17 @@
     }
 
     for (i = 0; i < w.racers.length; i++) drawRacer(w.racers[i], cam);
+
+    for (i = 0; i < w.bullets.length; i++) {
+      var bu = w.bullets[i];
+      if (bu.def.explosive) {
+        /* a rocket, nose first, with its exhaust trailing behind */
+        var ra = Math.atan2(bu.vy, bu.vx);
+        Pixel.stamp(P, ROCKET, ROCKET_MAP, bu.x - cam.x, bu.y - cam.y, ra, false);
+      } else {
+        Pixel.rect(P, bu.x - cam.x - 1, bu.y - cam.y - 0.5, 2.5, 1, '#fff3c4');
+      }
+    }
 
     for (i = 0; i < w.bombs.length; i++) {
       var b = w.bombs[i];
