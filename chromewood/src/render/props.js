@@ -29,6 +29,9 @@ export const GROUND_COLORS = {
   [BIOME.SCRAP]:    [0x8fa963, 0x849d5b, 0x646b78, 0x474d58],
   [BIOME.ASH]:      [0x5a5068, 0x52485f, 0x3c3348, 0x2a2434],
   [BIOME.PLAZA]:    [0xb3a9bd, 0xa89db3, 0x7d7488, 0x5d5566],
+  /* Underground. Dark enough that a torch is the difference between
+     seeing the floor and not, which is the whole point of going in. */
+  [BIOME.CAVE]:     [0x3b3742, 0x35313c, 0x2a2731, 0x1c1a22],
 };
 
 export const GROUND_TEX = {
@@ -44,6 +47,7 @@ export const GROUND_TEX = {
   [BIOME.SCRAP]:    [TEX.GRASS_DRY, TEX.GRAVEL],
   [BIOME.ASH]:      [TEX.ASH, TEX.ROCK],
   [BIOME.PLAZA]:    [TEX.TILE, TEX.STONE],
+  [BIOME.CAVE]:     [TEX.GRAVEL, TEX.ROCK],
 };
 
 export const WATER_COLOR = 0x2f9ec9;

@@ -1150,6 +1150,7 @@ requestAnimationFrame(frame);
 window.__ready = true;
 window.__game = game;
 game.__setZoom = (z) => cam.setZoom(z);
+game.__snapCam = (x, y, z) => cam.snapTo(x, y, z);
 game.__camera = cam;
 game.__pipeline = pipeline;
 game.__panels = panels;

@@ -40,6 +40,7 @@ export const BIOME = {
   SCRAP: 9,
   ASH: 10,
   PLAZA: 11,
+  CAVE: 12,
 };
 
 export const BIOME_NAME = {
@@ -47,6 +48,7 @@ export const BIOME_NAME = {
   [BIOME.FOREST]: 'Chromewood', [BIOME.PINE]: 'Pinehold', [BIOME.HIGHLAND]: 'Crags',
   [BIOME.SNOW]: 'Whitecap', [BIOME.MARSH]: 'Sump', [BIOME.BLOOM]: 'Bloomwood',
   [BIOME.SCRAP]: 'The Ruins', [BIOME.ASH]: 'Ashlands', [BIOME.PLAZA]: 'The Plaza',
+  [BIOME.CAVE]: 'Underground',
 };
 
 export const PROP = {
@@ -121,6 +123,8 @@ export const FLAG = {
   RIVER: 32,
   BUILT: 64,        /* a player structure stands here */
   SHALLOW: 128,
+  CAVE: 256,        /* carved out under a hill, with rock overhead  */
+  CAVE_MOUTH: 512,  /* where that hill opens onto the daylight      */
 };
 
 /* How far a body can climb in one step. Two levels is a scramble;
@@ -137,6 +141,13 @@ export class World {
     this.flags = new Uint16Array(n);
     this.prop = new Uint8Array(n);
     this.variant = new Uint8Array(n);
+    /* What used to be overhead before a cave was cut under it: the
+       level the hill's surface sits at, and the biome it wore. Zero
+       where there is no cave, which is almost everywhere. */
+    this.roof = new Uint8Array(n);
+    this.roofBiome = new Uint8Array(n);
+    this.caveId = new Uint8Array(n);
+    this.caves = [];
     this.propHp = new Map();
     this.landmarks = [];
     this.spawnPoints = [];
@@ -210,6 +221,13 @@ export class World {
     return false;
   }
 
+  /* Which cave, if any, is under this point. Zero is "outside". */
+  caveIdAt(x, z) {
+    const tx = this.worldToTileX(x), ty = this.worldToTileZ(z);
+    if (!this.inBounds(tx, ty)) return 0;
+    return this.caveId[this.idx(tx, ty)];
+  }
+
   setProp(tx, ty, prop) {
     const i = this.idx(tx, ty);
     this.prop[i] = prop;
@@ -237,6 +255,7 @@ export class World {
     this._connect();
     this._scatter();
     this._starterGround();
+    this._caves();
     this._ore();
     this._landmarks();
     this.stats.genMs = Date.now() - t0;
@@ -898,6 +917,278 @@ export class World {
   /* Ore sits in exposed rock: tiles with a real drop beside them,
      up in the crags and under the snow. Veins cluster, so finding
      one is worth something. */
+  /* ------------------------------------------------------ caves
+
+     A cave here is a tunnel cut into the side of a hill, one terrace
+     below the mouth, with the hill left standing over it. The floor
+     is flat: a body can only climb or drop one level in a step and
+     the land steps two levels at a time, so a tunnel that dived
+     would be a staircase with a ramp at every turn. A single ramp
+     tile in the doorway takes you down, and after that it is level.
+
+     The rock that used to be there is remembered - its height and
+     the biome it wore - and drawn back in as a roof, which is what
+     makes the hill look unbroken from outside and dark from in. */
+  _caves() {
+    const n = this.size;
+    const rng = makeRng(this.seed ^ 0x9a17e5);
+    /* Four levels of rock overhead: two terraces, about two and a
+       quarter metres, which is a tunnel rather than a crawlspace. */
+    const HEADROOM = 4;
+    const WANT = 7;
+
+    const mouths = [];
+    for (let attempt = 0; attempt < 6000 && mouths.length < WANT; attempt++) {
+      const tx = 6 + rng.int(n - 12), ty = 6 + rng.int(n - 12);
+      const i = this.idx(tx, ty);
+      if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.ROAD | FLAG.CAVE | FLAG.BLOCKED_EDGE)) continue;
+      const h = this.height[i];
+      if (h < SEA_LEVEL + 4 || h > MAX_LEVEL - 2) continue;
+      const bm = this.biome[i];
+      /* Caves belong to rock and forest. The ashlands are already a
+         dark purple everywhere, so a dark hole in them is invisible,
+         and a cave in a marsh is a well. */
+      if (bm === BIOME.ASH || bm === BIOME.MARSH || bm === BIOME.BEACH
+        || bm === BIOME.OCEAN || bm === BIOME.PLAZA) continue;
+      /* A mouth wants a hill beside it: somewhere to tunnel into.
+         One terrace up is enough, because the floor goes one terrace
+         down and the two together are the headroom.
+
+         The two directions that face the camera come first. An
+         opening in the far side of a hill is an opening nobody can
+         see, and a cave you cannot find is not content. */
+      let into = null;
+      for (const [dx, dy] of [[-1, 0], [0, -1], [1, 0], [0, 1]]) {
+        let ok = true;
+        for (let k = 2; k <= 4; k++) {
+          const hx = tx + dx * k, hy = ty + dy * k;
+          if (!this.inBounds(hx, hy) || this.height[this.idx(hx, hy)] < h + 2) { ok = false; break; }
+        }
+        if (ok) { into = [dx, dy]; break; }
+      }
+      if (!into) continue;
+      if (mouths.some(m => Math.hypot(m.tx - tx, m.ty - ty) < 26)) continue;
+      if (Math.hypot(tx - this.plaza.tx, ty - this.plaza.ty) < 24) continue;
+      mouths.push({ tx, ty, into, level: h });
+    }
+
+    for (const m of mouths) {
+      const id = this.caves.length + 1;
+      if (id > 255) break;
+      const tiles = [];
+      const floor = m.level - 2;
+
+      /* Thick enough to hollow out - or already hollowed out by this
+         same cave, which is how the digger walks along the tunnel it
+         has just made instead of stopping dead in it. */
+      const carvable = (tx, ty) => {
+        if (!this.inBounds(tx, ty)) return false;
+        const i = this.idx(tx, ty);
+        if (this.caveId[i]) return this.caveId[i] === id;
+        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.ROAD | FLAG.BLOCKED_EDGE)) return false;
+        return this.height[i] >= floor + HEADROOM;
+      };
+
+      const cut = (tx, ty) => {
+        const i = this.idx(tx, ty);
+        if (this.caveId[i]) return;
+        this.roof[i] = this.height[i];
+        this.roofBiome[i] = this.biome[i];
+        this.caveId[i] = id;
+        this.height[i] = floor;
+        this.biome[i] = BIOME.CAVE;
+        this.prop[i] = PROP.NONE;
+        this.flags[i] = (this.flags[i] & ~FLAG.SOLID) | FLAG.CAVE;
+        this.propHp.delete(i);
+        tiles.push(i);
+      };
+
+      /* Walk in, wandering. Each step hollows a small disc, so the
+         tunnel has width without being a corridor exactly one tile
+         across that you cannot turn round in. */
+      const dig = (sx, sy, dx, dy, steps, width) => {
+        let x = sx, y = sy, vx = dx, vy = dy;
+        for (let s = 0; s < steps; s++) {
+          const r = width + (rng() < 0.3 ? 1 : 0);
+          for (let oy = -r; oy <= r; oy++) {
+            for (let ox = -r; ox <= r; ox++) {
+              if (ox * ox + oy * oy > r * r + 1) continue;
+              if (carvable(x + ox, y + oy)) cut(x + ox, y + oy);
+            }
+          }
+          if (rng() < 0.32) {
+            const turn = rng() < 0.5 ? 1 : -1;
+            const nvx = vy * turn, nvy = -vx * turn;
+            vx = nvx; vy = nvy;
+          }
+          if (!carvable(x + vx, y + vy)) {
+            /* Ground too thin to tunnel under: turn rather than stop
+               dead against it. */
+            const turn = rng() < 0.5 ? 1 : -1;
+            const nvx = vy * turn, nvy = -vx * turn;
+            vx = nvx; vy = nvy;
+            if (!carvable(x + vx, y + vy)) break;
+          }
+          x += vx; y += vy;
+        }
+        return { x, y, vx, vy };
+      };
+
+      const [dx, dy] = m.into;
+      const start = dig(m.tx + dx * 2, m.ty + dy * 2, dx, dy, 24 + rng.int(18), 1);
+      if (tiles.length < 24) { for (const i of tiles) this._uncut(i); continue; }
+
+      const chamber = (cx, cy, r) => {
+        for (let oy = -r; oy <= r; oy++) {
+          for (let ox = -r; ox <= r; ox++) {
+            if (ox * ox + oy * oy > r * r) continue;
+            if (carvable(cx + ox, cy + oy)) cut(cx + ox, cy + oy);
+          }
+        }
+      };
+      chamber(start.x, start.y, 3 + rng.int(2));
+      for (let k = 0; k < 3; k++) {
+        const pick = tiles[rng.int(tiles.length)];
+        const bx = pick % n, by = (pick / n) | 0;
+        const turn = rng() < 0.5 ? 1 : -1;
+        const br = dig(bx, by, start.vy * turn, -start.vx * turn, 10 + rng.int(12), 1);
+        chamber(br.x, br.y, 2 + rng.int(2));
+      }
+
+      /* The doorway: the mouth stays at the surface, one ramp tile
+         drops a level, and the tunnel is a level below that. Nothing
+         is roofed until you are past the ramp, so what you see from
+         outside is a dark opening in a hillside. */
+      const mi = this.idx(m.tx, m.ty);
+      this.flags[mi] = (this.flags[mi] & ~FLAG.SOLID) | FLAG.CAVE_MOUTH;
+      this.prop[mi] = PROP.NONE;
+      this.caveId[mi] = id;
+
+      const rx = m.tx + dx, ry = m.ty + dy;
+      const ri = this.idx(rx, ry);
+      this.roof[ri] = 0;
+      this.roofBiome[ri] = 0;
+      this.caveId[ri] = id;
+      this.height[ri] = floor + 1;
+      this.biome[ri] = BIOME.CAVE;
+      this.prop[ri] = PROP.NONE;
+      this.flags[ri] = (this.flags[ri] & ~FLAG.SOLID) | FLAG.CAVE;
+      tiles.push(ri);
+
+      this.caves.push({ id, tx: m.tx, ty: m.ty, floor, tiles, dx, dy });
+      const cave = this.caves[this.caves.length - 1];
+      this._stockCave(cave, rng);
+      this._openCave(cave);
+    }
+    this.stats.caves = this.caves.length;
+  }
+
+  /* A boulder or a seam of ore in a one-tile passage is a wall, and
+     a cave with a wall across it is half a cave. Walk it from the
+     doorway under the same rule a body obeys, and clear whatever is
+     standing between the doorway and the rest of it. Repeated,
+     because clearing one blocker usually reveals the next. */
+  _openCave(cave) {
+    const n = this.size;
+    for (let pass = 0; pass < 80; pass++) {
+      const seen = new Uint8Array(cave.tiles.length ? n * n : 0);
+      const stack = [[cave.tx, cave.ty]];
+      seen[this.idx(cave.tx, cave.ty)] = 1;
+      while (stack.length) {
+        const [tx, ty] = stack.pop();
+        const h = this.height[this.idx(tx, ty)];
+        for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = tx + ox, ny = ty + oy;
+          if (!this.inBounds(nx, ny)) continue;
+          const j = this.idx(nx, ny);
+          if (seen[j] || this.caveId[j] !== cave.id) continue;
+          if (this.flags[j] & FLAG.SOLID) continue;
+          if (Math.abs(this.height[j] - h) > CLIMB) continue;
+          seen[j] = 1;
+          stack.push([nx, ny]);
+        }
+      }
+      /* Everything reached? Then there is nothing in the way. */
+      let missing = 0;
+      for (const i of cave.tiles) if (!seen[i]) missing++;
+      if (!missing) break;
+
+      /* Otherwise take out one blocker - the first solid thing with
+         open cave on the near side and unreached cave on the far one
+         - and look again. One at a time, because clearing the whole
+         frontier empties the cave of the very things it is for. */
+      let cleared = false;
+      for (const i of cave.tiles) {
+        if (seen[i] || !(this.flags[i] & FLAG.SOLID)) continue;
+        const tx = i % n, ty = (i / n) | 0;
+        let near = false, far = false;
+        for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = tx + ox, ny = ty + oy;
+          if (!this.inBounds(nx, ny)) continue;
+          const j = this.idx(nx, ny);
+          if (this.caveId[j] !== cave.id) continue;
+          if (seen[j]) near = true;
+          else if (!(this.flags[j] & FLAG.SOLID)) far = true;
+        }
+        if (!near || !far) continue;
+        this.clearProp(tx, ty);
+        cleared = true;
+        break;
+      }
+      if (!cleared) break;
+    }
+  }
+
+  _uncut(i) {
+    if (!this.caveId[i]) return;
+    this.height[i] = this.roof[i];
+    this.biome[i] = this.roofBiome[i];
+    this.flags[i] &= ~FLAG.CAVE;
+    this.roof[i] = 0; this.roofBiome[i] = 0; this.caveId[i] = 0;
+  }
+
+  /* What is worth the walk: metal, crystal and the things that grow
+     without light. Density is the point - a cave that pays the same
+     as a hillside is a hole in the ground. */
+  _stockCave(cave, rng) {
+    const n = this.size;
+    const table = [
+      [PROP.ORE_IRON, 0.055], [PROP.ORE_COPPER, 0.045], [PROP.ORE_GOLD, 0.022],
+      [PROP.ORE_ESSENCE, 0.020], [PROP.CRYSTAL, 0.030], [PROP.RIFT_SHARD, 0.012],
+      [PROP.MUSHROOM, 0.075], [PROP.ROCK, 0.055], [PROP.BOULDER, 0.020],
+      [PROP.BONES, 0.010],
+    ];
+    const openAround = (tx, ty) => {
+      let k = 0;
+      for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = tx + ox, ny = ty + oy;
+        if (this.inBounds(nx, ny) && this.caveId[this.idx(nx, ny)] === cave.id) k++;
+      }
+      return k;
+    };
+    for (const i of cave.tiles) {
+      const tx = i % n, ty = (i / n) | 0;
+      /* Leave the way in clear so the doorway reads as a doorway. */
+      if (Math.hypot(tx - cave.tx, ty - cave.ty) < 3) continue;
+      /* A seam of ore in a one-tile passage is a wall. Solid things
+         go in the wide parts; the narrow parts get the things you
+         can walk through. */
+      const roomy = openAround(tx, ty) >= 3;
+      let r = rng();
+      for (const [prop, p] of table) {
+        if (r < p) {
+          const use = (!roomy && SOLID_PROPS.has(prop))
+            ? (rng() < 0.5 ? PROP.MUSHROOM : PROP.ROCK)
+            : prop;
+          this.setProp(tx, ty, use);
+          this.variant[i] = rng.int(256);
+          break;
+        }
+        r -= p;
+      }
+    }
+  }
+
   _ore() {
     const n = this.size;
     const rng = makeRng(this.seed ^ 0x0e1a7e);
@@ -905,7 +1196,7 @@ export class World {
     for (let ty = 2; ty < n - 2; ty++) {
       for (let tx = 2; tx < n - 2; tx++) {
         const i = this.idx(tx, ty);
-        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID)) continue;
+        if (this.flags[i] & (FLAG.WATER | FLAG.PLAZA | FLAG.SOLID | FLAG.CAVE)) continue;
         const h = this.height[i];
         let drop = 0;
         for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -963,6 +1254,9 @@ export class World {
           if (opts.minHeight !== undefined && this.height[i] < opts.minHeight) continue;
           if (opts.maxHeight !== undefined && this.height[i] > opts.maxHeight) continue;
           if (this.landmarks.some(l => Math.abs(l.tx - tx) < 16 && Math.abs(l.ty - ty) < 16)) continue;
+          /* Flattening a landmark's ground would fill in a cave that
+             happened to run under it, roof and all. */
+          if (this._touchesCave(tx, ty, clear + 3)) continue;
           this._flatten(tx, ty, clear);
           this.landmarks.push({ kind, tx, ty, variant: rng.int(256) });
           break;
@@ -1009,6 +1303,15 @@ export class World {
       }
     }
 
+    /* Every cave gets a timbered portal over its mouth, turned to
+       face the way out. A hole two levels down in a hillside reads
+       as a shadow; a frame, a lintel and a lantern read as a door,
+       and the point of a cave is that you can find it. */
+    for (const cave of this.caves) {
+      const dir = cave.dx === 1 ? 0 : cave.dx === -1 ? 2 : cave.dy === 1 ? 1 : 3;
+      this.landmarks.push({ kind: 'cavemouth', tx: cave.tx, ty: cave.ty, variant: dir, cave: cave.id });
+    }
+
     for (const lm of this.landmarks) {
       lm.x = this.tileToWorldX(lm.tx);
       lm.z = this.tileToWorldZ(lm.ty);
@@ -1023,6 +1326,16 @@ export class World {
     }
   }
 
+  _touchesCave(cx, cy, radius) {
+    for (let ty = cy - radius; ty <= cy + radius; ty++) {
+      for (let tx = cx - radius; tx <= cx + radius; tx++) {
+        if (!this.inBounds(tx, ty)) continue;
+        if (this.caveId[this.idx(tx, ty)]) return true;
+      }
+    }
+    return false;
+  }
+
   _flatten(cx, cy, radius) {
     if (!this.inBounds(cx, cy)) return;
     const target = this.height[this.idx(cx, cy)];
@@ -1031,6 +1344,9 @@ export class World {
         if (!this.inBounds(tx, ty)) continue;
         const d = Math.hypot(tx - cx, ty - cy);
         const i = this.idx(tx, ty);
+        /* Never re-cut ground that has a cave under it: the roof is
+           measured from the height that is there now. */
+        if (this.caveId[i]) continue;
         if (d <= radius) {
           this.height[i] = target;
           this.clearProp(tx, ty);

@@ -42,41 +42,77 @@ A gamepad works: left stick moves, right stick aims, triggers swing and dash,
 face buttons cast. On a phone the left half of the screen is a stick and the
 right half aims and swings.
 
-## The run
+## What there is to do
 
 You start with your hands, in a clearing, next to a beacon that does not
-work. The run has five stages and they hand off to each other.
+work. Nothing in the list below is required, and nothing expires. It is the
+order most people find things in, not a set of objectives.
 
-1. **Survive.** Punch a tree. Wood and fiber make a stone axe and a stone
+1. **Stay alive.** Punch a tree. Wood and fiber make a stone axe and a stone
    pick, which get you stone and ore, which get you a campfire and a
    workbench, which get you everything else. Eat before your food runs out
    and stay near a fire at night or the cold takes your health.
-2. **The beacon.** It needs 25 scrap, 20 essence, 25 wood and 25 stone in its
-   store. Carry them there and hold `G`. Lighting it wakes your Core, which
-   is what abilities run on — until then there is no skill tree, because you
-   have nothing to spend points through.
-3. **The gates.** Five rift gates open around the map. Standing inside one
-   for 75 seconds seals it, and it spends that whole time spawning things at
-   you, so you go with walls, turrets and a friend. Each gate sealed makes
-   every night after it smaller.
-4. **The Heart.** The last gate wakes it at the beacon. It is the only thing
-   in the game with a health bar across the top of the screen.
-5. **Done.** Kill it and the run is won.
+2. **Build somewhere.** Walls, a bed, a forge, lamps, plots to grow things
+   in. Whatever you put up is yours and stays where you left it.
+3. **Go down a cave.** Every world has half a dozen, each with a timbered
+   portal over the mouth. Inside is where the metal is, and the crystal, and
+   the riftglass, and it is dark enough that a torch is the difference
+   between seeing the floor and not.
+4. **Light the beacon**, if you want a skill tree. It needs 25 scrap, 20
+   essence, 25 wood and 25 stone in its store. Carry them there and hold `G`.
+5. **Seal the gates**, if you want a fight. Five rift gates open around the
+   map once the beacon is lit. Standing inside one for 75 seconds seals it,
+   and it spends that whole time spawning things at you. Each one sealed
+   makes every night after it smaller. Seal all five and something wakes up
+   at the beacon with a health bar across the top of the screen.
 
-You lose when the beacon's integrity reaches zero. That is the only lose
-condition — you dying is a setback, not an ending.
+Nothing ends the run. Dying is a setback; losing the beacon puts it out and
+you can repair it again.
 
 ### The map
 
 One procedurally generated island, terraced into nine hard plateaus so cliffs
 are cliffs rather than ramps, with mountains, rivers you can wade, and twelve
-biomes: Shallows, Shore, Meadow, Chromewood, Pinehold, Crags, Whitecap, Sump,
-Bloomwood, Scrapfield, Ashlands and the Plaza in the middle. Where the terrain
-would strand you, the generator cuts a staircase rather than a ramp — every
-seed is walkable from the beacon to essentially all of it.
+biomes above ground: Shallows, Shore, Meadow, Chromewood, Pinehold, Crags,
+Whitecap, Sump, Bloomwood, The Ruins, Ashlands and the Plaza in the middle.
+Where the terrain would strand you, the generator cuts a staircase rather than
+a ramp — every seed is walkable from the beacon to essentially all of it.
 
-What is worth having is further out. Copper and iron are in the crags, gold
-and essence deeper, riftglass only near the rift itself.
+A biome is a region you walk into, not a tile you stand on: the patches are
+laid out at roughly ninety tiles across and then passed through a majority
+filter, because a map that changes character every few paces reads as noise
+rather than as places. Snow is what happens at the top of a mountain. The
+ground within about thirty tiles of the plaza is kept to meadow and forest,
+fading out rather than stopping at a circle, because the first ten minutes
+happen there and they need trees and rock.
+
+Everything standing on it is something you can name on sight: trees, bushes,
+grass, ferns, mushrooms, fallen logs, rock, boulders, ore. The Ruins are a
+town that fell over — broken walls, toppled pillars, crates nobody came back
+for — and that is where salvage comes from.
+
+What is worth having is further out, or underneath.
+
+### Caves
+
+Half a dozen per world, cut into the side of a hill one terrace below the
+mouth, with the hill left standing over them. The floor is flat: a body can
+climb or drop one level in a step and the land steps two at a time, so a
+tunnel that dived would be a staircase. One ramp tile in the doorway takes
+you down, and after that it is level.
+
+The rock that used to be there is remembered — its height and the biome it
+wore — and drawn back in as a roof. From outside a hill is a hill, with a
+timbered portal and a lantern where the way in is. Walk in and the roof of
+that one cave lifts, which is the oldest trick in isometric games and still
+the only one that works.
+
+Underground is where the density is: iron, copper, gold and essence seams,
+crystal, riftglass, and the mushrooms that grow without light. The generator
+checks afterwards that you can walk from the doorway to the back of it, and
+takes out anything that grew across a one-tile passage — but only the one
+thing that is actually in the way, because clearing the whole frontier empties
+the cave of what it is for.
 
 ### Noise
 
@@ -277,8 +313,8 @@ chromewood/
   vendor/three.module.js        the only dependency, vendored
   src/
     core/     rng, config, input, audio, small helpers
-    world/    worldgen.js       terrain, terracing, rivers, biomes, ore,
-                                props, landmarks, connectivity repair
+    world/    worldgen.js       terrain, terracing, rivers, biomes, caves,
+                                ore, props, landmarks, connectivity repair
     game/     defs.js           abilities, enemies, skills, beacon upgrades
               items.js          items, tools, buildings, recipes
               creatures.js      animals and the rest of the bestiary
@@ -332,6 +368,9 @@ Six groups, all of which have caught something real:
   upgrade cost is a real item; every building is craftable, carryable and
   placeable; a tool exists for every tier the ground asks for; the skill tree
   resolves with no cycles and every ability is reachable.
+- **Caves.** Every world has them, you can walk in from the mouth and reach
+  the back of one, there is rock over your head and enough of it to stand up
+  in, there is ore or crystal down there, and a framed doorway outside.
 - **Worlds.** Six seeds: walkable from the beacon, landmarks placed with real
   coordinates, enough terraces and cliff edges to be a landscape, water and a
   river, at least six biomes, enough to harvest, every ore present.

@@ -727,6 +727,76 @@ console.log('\ndeterminism');
     'two runs of seed 31337 diverged, so something still calls Math.random');
 }
 
+/* ----------------------------------------------------- 2b. caves */
+console.log('\ncaves');
+{
+  /* A cave has to be three things at once: somewhere you can get
+     into, somewhere with rock over your head, and somewhere worth
+     the walk. A hole in a hillside with nothing in it is scenery. */
+  let worlds = 0, caves = 0, walkable = 0, stocked = 0, roofed = 0, thin = 0;
+  const sample = [];
+  for (let k = 0; k < SEEDS; k++) {
+    const w = new World(2000 + k * 7919);
+    worlds++;
+    caves += w.caves.length;
+    for (const cave of w.caves) {
+      /* Walk in from the mouth under the same climb rule bodies use. */
+      const seen = new Set();
+      const queue = [[cave.tx, cave.ty]];
+      seen.add(cave.tx * 4096 + cave.ty);
+      let reached = 0;
+      while (queue.length) {
+        const [tx, ty] = queue.pop();
+        const h = w.height[w.idx(tx, ty)];
+        if (w.caveId[w.idx(tx, ty)] === cave.id) reached++;
+        for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = tx + ox, ny = ty + oy;
+          if (!w.inBounds(nx, ny)) continue;
+          const key = nx * 4096 + ny;
+          if (seen.has(key)) continue;
+          const i = w.idx(nx, ny);
+          if (w.caveId[i] !== cave.id) continue;
+          if (w.flags[i] & FLAG.SOLID) continue;
+          if (Math.abs(w.height[i] - h) > 1) continue;
+          seen.add(key);
+          queue.push([nx, ny]);
+        }
+      }
+      /* Most of it, not all: a disc carve can leave a pocket walled
+         off by its own boulders, and that is a cave, not a bug. */
+      if (reached >= cave.tiles.length * 0.75) walkable++;
+
+      let worth = 0, over = 0, low = 0;
+      for (const i of cave.tiles) {
+        if (HARVEST[w.prop[i]]) worth++;
+        if (!w.roof[i]) continue;
+        over++;
+        if (w.roof[i] - w.height[i] < 4) low++;
+      }
+      if (worth >= cave.tiles.length * 0.12) stocked++;
+      if (over >= cave.tiles.length * 0.8) roofed++;
+      thin += low;
+      if (sample.length < 3) sample.push(`${cave.tiles.length} tiles, ${worth} things in it`);
+    }
+  }
+  check(caves >= worlds * 3, 'every world has caves in it',
+    `${caves} caves across ${worlds} worlds`);
+  check(walkable === caves, 'you can walk in from the mouth and reach the back',
+    `${walkable} of ${caves} caves are walkable from their own doorway`);
+  check(roofed === caves, 'there is rock over your head, not sky',
+    `${roofed} of ${caves} caves are roofed`);
+  check(thin === 0, 'and enough of it to stand up in',
+    `${thin} tiles have less than two terraces of rock overhead`);
+  check(stocked === caves, 'and something down there worth the walk',
+    `${stocked} of ${caves} caves carry ore, crystal or mushrooms`);
+  /* The portal is how anyone finds the thing. */
+  const w0 = new World(2000);
+  const portals = w0.landmarks.filter(l => l.kind === 'cavemouth').length;
+  check(portals === w0.caves.length, 'and a framed doorway you can see from outside',
+    `${portals} portals for ${w0.caves.length} caves`);
+  ok('caves', sample.join('; '));
+}
+
 /* ------------------------------------------ 3b2. nobody stays stuck */
 console.log('\ngetting unstuck');
 {
