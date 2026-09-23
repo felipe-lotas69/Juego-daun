@@ -21,7 +21,7 @@ import { WorldView } from './render/worldview.js';
 import { Actor, PLAYER_COLORS, ALL_CREATURES } from './render/actors.js';
 import { FxSystem } from './render/fx.js';
 import { MeshBuilder } from './render/geom.js';
-import { makeToonMaterial } from './render/materials.js';
+import { makeToonMaterial, heroUniforms } from './render/materials.js';
 import { buildStructureMesh, makeGhostMaterial } from './render/buildings.js';
 import { TEX } from './render/textures.js';
 
@@ -43,6 +43,25 @@ import { clamp, clamp01, damp, lerp, TAU } from './core/util.js';
 import { Hud } from './ui/hud.js';
 import { Panels } from './ui/panels.js';
 import { Menus } from './ui/menus.js';
+
+/* Where the player is on screen, and how far away, so the shaders
+   can dissolve whatever stands in front of them. Recomputed every
+   frame because both the camera and the player move. */
+const _heroVec = new THREE.Vector3();
+function updateHeroFade(me) {
+  if (!me || me.state === 'dead') { heroUniforms.uHeroStrength.value = 0; return; }
+  _heroVec.set(me.x, me.y + 0.75, me.z);
+  /* View-space depth first, before project() overwrites the vector. */
+  const depth = -_heroVec.clone().applyMatrix4(cam.camera.matrixWorldInverse).z;
+  _heroVec.project(cam.camera);
+  heroUniforms.uHeroScreen.value.set(_heroVec.x * 0.5 + 0.5, _heroVec.y * 0.5 + 0.5);
+  heroUniforms.uHeroDepth.value = depth;
+  heroUniforms.uHeroFootY.value = me.y;
+  heroUniforms.uHeroStrength.value = 1;
+  const { w, h } = pipeline.internal;
+  heroUniforms.uHeroTexel.value.set(1 / w, 1 / h);
+  heroUniforms.uHeroAspect.value = w / h;
+}
 
 /* ------------------------------------------------------------- boot */
 const viewCanvas = document.getElementById('view');
@@ -460,6 +479,11 @@ function syncActors(dt, sim) {
     /* A carried torch lights the ground around you. */
     if (p.lightItem) {
       rig.addDynamicLight(p.x, p.y + 1.0, p.z, p.lightItem.color, p.lightItem.intensity, p.lightItem.range);
+    } else if (sim.world.caveIdAt && sim.world.caveIdAt(p.x, p.z)) {
+      /* And underground with no torch there is still just enough to
+         see yourself by. Pitch black is accurate and unplayable; a
+         character you cannot find is not a difficulty setting. */
+      rig.addDynamicLight(p.x, p.y + 1.0, p.z, 0xbfd0e8, 0.85, 5.0);
     }
     idx++;
   }
@@ -906,8 +930,9 @@ function frame(now) {
   handleHotkeys();
 
   if (!game.running || !game.sim) {
-    rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance, null, cam.zoom);
+    rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance, null, cam.zoom, 0);
     cam.update(rawDt, null, null);
+    heroUniforms.uHeroStrength.value = 0;
     pipeline.render(rig.scene, cam.camera, cam.subpixel);
     hud.update(rawDt);
     hud.ctx.setTransform(hud.dpr, 0, 0, hud.dpr, 0, 0);
@@ -964,7 +989,10 @@ function frame(now) {
   if (input.isDown('zoomOut')) cam.nudgeZoom(rawDt * 8);
 
   rig.setTime(sim.dayTime);
-  rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance, sim.weather, cam.zoom);
+  /* Under a hill there is no sun, no sky and no weather. */
+  const underground = sim.world.caveIdAt
+    ? (sim.world.caveIdAt(cam.smoothed.x, cam.smoothed.z) ? 1 : 0) : 0;
+  rig.update(rawDt, cam.smoothed, pipeline.grade, cam.distance, sim.weather, cam.zoom, underground);
   audio.setAmbient(rig.nightAmount);
 
   game.view.update(cam.smoothed, cam.zoom);
@@ -986,6 +1014,7 @@ function frame(now) {
   const downed = me && me.state !== 'alive';
   pipeline.grade.desaturate = damp(pipeline.grade.desaturate, downed ? 0.75 : 0, 4, rawDt);
 
+  updateHeroFade(me);
   pipeline.render(rig.scene, cam.camera, cam.subpixel);
 
   /* ---- interface ---- */

@@ -31,7 +31,7 @@ export const GROUND_COLORS = {
   [BIOME.PLAZA]:    [0xb3a9bd, 0xa89db3, 0x7d7488, 0x5d5566],
   /* Underground. Dark enough that a torch is the difference between
      seeing the floor and not, which is the whole point of going in. */
-  [BIOME.CAVE]:     [0x3b3742, 0x35313c, 0x2a2731, 0x1c1a22],
+  [BIOME.CAVE]:     [0x54505e, 0x4c4856, 0x2e2b36, 0x1e1c25],
 };
 
 export const GROUND_TEX = {

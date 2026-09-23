@@ -9,7 +9,7 @@
 
 import * as THREE from '../../vendor/three.module.js';
 import { PALETTE, DAY, RENDER, WORLD_HALF } from '../core/config.js';
-import { clamp01, lerp, smoothstep } from '../core/util.js';
+import { clamp01, lerp, smoothstep, damp } from '../core/util.js';
 import { setRimLook, cloudUniforms } from './materials.js';
 import { LAYER_NO_OUTLINE } from './pipeline.js';
 
@@ -75,6 +75,8 @@ export class SceneRig {
     this._fogDay = new THREE.Color(PALETTE.fogDay);
     this._fogNight = new THREE.Color(PALETTE.fogNight);
     this._fogDusk = new THREE.Color(0xd98a6a);
+    this._rock = new THREE.Color(0x120f18);
+    this.under = 0;
     this._tmp = new THREE.Color();
 
     this.starField = this._makeStars();
@@ -151,7 +153,12 @@ export class SceneRig {
 
   setTime(t) { this.time = t; }
 
-  update(dt, cameraTarget, grade, cameraDistance = 52, weather = null, zoom = RENDER.fov) {
+  update(dt, cameraTarget, grade, cameraDistance = 52, weather = null, zoom = RENDER.fov,
+    underground = 0) {
+    /* Eased rather than snapped: walking through a doorway should
+       feel like the light going, not like a switch. */
+    this.under = damp(this.under === undefined ? 0 : this.under, clamp01(underground), 3.4, dt);
+    const under = this.under;
     this.time += dt;
     const t = this.time % this.cycleLength;
 
@@ -204,16 +211,17 @@ export class SceneRig {
     /* More sun, less sky. The hemisphere light fills every face
        evenly, which is exactly what flattens a stack of cubes, so
        the balance moves toward the direction that has a direction. */
-    this.sun.intensity = lerp(2.55, 0.74, night);
+    this.sun.intensity = lerp(2.55, 0.74, night) * lerp(1, 0.10, under);
 
-    this.hemi.intensity = lerp(1.05, 0.60, night);
+    this.hemi.intensity = lerp(1.05, 0.60, night) * lerp(1, 0.34, under);
     this.hemi.color.set(PALETTE.skyDay).lerp(new THREE.Color(0x3a4a80), night);
     this.hemi.groundColor.set(PALETTE.grassDark).lerp(new THREE.Color(0x19203a), night);
-    this.fill.intensity = lerp(0.42, 0.58, night);
+    this.fill.intensity = lerp(0.42, 0.58, night) * lerp(1, 0.30, under);
     this.fill.color.set(0x9fc4ff).lerp(new THREE.Color(0x6f7fff), night);
 
     /* Sky and fog. */
     this._tmp.copy(this._skyDay).lerp(this._skyDusk, duskAmt).lerp(this._skyNight, night * night);
+    this._tmp.lerp(this._rock, under);
     this.scene.background.copy(this._tmp);
     this._tmp.copy(this._fogDay).lerp(this._fogDusk, duskAmt).lerp(this._fogNight, night);
     /* Pull the fog most of the way toward the sky. Distance haze
@@ -232,12 +240,14 @@ export class SceneRig {
        screen, and the world becomes a grey smear. */
     const vis = weather && weather.fog !== undefined ? weather.fog : 1;
     const reach = Math.max(zoom, 4);
-    this.scene.fog.near = cameraDistance + reach * lerp(0.5, 0.0, night) * vis;
-    this.scene.fog.far = cameraDistance + reach * lerp(8.2, 5.2, night) * vis;
+    /* Underground the far distance closes right in: you should not
+       be able to see the whole tunnel system from inside one of it. */
+    this.scene.fog.near = cameraDistance + reach * lerp(lerp(0.5, 0.0, night), -0.2, under) * vis;
+    this.scene.fog.far = cameraDistance + reach * lerp(lerp(8.2, 5.2, night), 1.9, under) * vis;
     if (weather && weather.id === 'ashfall') this.scene.fog.color.lerp(new THREE.Color(0x5a4658), 0.45);
     if (weather && weather.id === 'snowstorm') this.scene.fog.color.lerp(new THREE.Color(0xc8d6e4), 0.4);
 
-    this.starField.material.opacity = Math.max(0, night * night * 0.9);
+    this.starField.material.opacity = Math.max(0, night * night * 0.9) * (1 - under);
     this.starField.position.set(cameraTarget.x, 0, cameraTarget.z);
 
     /* Cloud shadows drift on a slow diagonal. Overcast weather makes
@@ -246,7 +256,7 @@ export class SceneRig {
     this.cloudDrift.x += dt * 0.021;
     this.cloudDrift.y += dt * 0.013;
     cloudUniforms.uCloudDrift.value.copy(this.cloudDrift);
-    cloudUniforms.uCloudStrength.value = lerp(0.85, 0.12, night) * cover;
+    cloudUniforms.uCloudStrength.value = lerp(0.85, 0.12, night) * cover * (1 - under);
 
     /* Motes only where there is light to catch them, and most of all
        at dusk when the light is raking. */
@@ -255,7 +265,7 @@ export class SceneRig {
       0,
       Math.floor(cameraTarget.z / 34) * 34,
     );
-    this.motes.material.opacity = lerp(0.26, 0.05, night) + duskAmt * 0.22;
+    this.motes.material.opacity = (lerp(0.26, 0.05, night) + duskAmt * 0.22) * (1 - under * 0.7);
     {
       const g = this.motes.geometry;
       const pos = g.attributes.position.array;
@@ -287,7 +297,9 @@ export class SceneRig {
       grade.saturation = lerp(0.98, 0.92, night);
       grade.tint.setRGB(lerp(1, 0.88, night), lerp(1, 0.92, night), lerp(1.01, 1.12, night));
       grade.lift.setRGB(lerp(0.016, 0.030, night), lerp(0.018, 0.034, night), lerp(0.026, 0.052, night));
-      grade.vignette = lerp(0.34, 0.70, night);
+      grade.vignette = lerp(lerp(0.34, 0.70, night), 0.92, under);
+      grade.exposure *= lerp(1, 0.86, under);
+      grade.saturation *= lerp(1, 0.80, under);
     }
   }
 

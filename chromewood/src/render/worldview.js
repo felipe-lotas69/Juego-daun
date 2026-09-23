@@ -18,11 +18,23 @@ import { buildProp, propLight, GROUND_COLORS, GROUND_TEX, WATER_COLOR, DEEP_COLO
 import { TEX } from './textures.js';
 import { buildStructure } from './structures.js';
 import { BIOME, FLAG, PROP, SEA_LEVEL } from '../world/worldgen.js';
-import { CHUNK, TILE, LEVEL_STEP } from '../core/config.js';
+import { CHUNK, TILE, LEVEL_STEP, RENDER } from '../core/config.js';
 import { LAYER_WORLD } from './pipeline.js';
 
 const CHECKER = 0.965;      /* second tile tone on the checker  */
 const SKIRT = 3.0;          /* how far the map's rim hangs down */
+/* How much ceiling is taken away around whoever is underground.
+   Wide enough to see where you are going, narrow enough that there
+   is always rock in shot. */
+const CAVE_CUT = 4.4;
+/* The horizontal direction from a point toward the camera, and how
+   far a roof tile has to sit along it before it stops being between
+   the camera and the floor. A circular hole is not enough: a ceiling
+   three metres up occludes from four metres away, and at six metres
+   up from nine - so the hole is a corridor cut toward the viewer,
+   as long as each tile's own height needs it to be. */
+const CAM_U = { x: Math.sin(RENDER.cameraYaw), z: Math.cos(RENDER.cameraYaw) };
+const CAM_TAN = Math.tan(RENDER.cameraPitch);
 
 export class WorldView {
   constructor(world, scene) {
@@ -33,7 +45,7 @@ export class WorldView {
     this.buildBudget = 2;
     this.radius = 4;
 
-    this.solidMat = makeToonMaterial({ vertexColors: true, rim: 0.55 });
+    this.solidMat = makeToonMaterial({ vertexColors: true, rim: 0.55, hero: true });
     this.glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, fog: false });
     this.waterMat = makeToonMaterial({
       vertexColors: true, transparent: true, opacity: 0.80,
@@ -55,76 +67,121 @@ export class WorldView {
 
      Without it a cave is a slot cut in a hillside that you can see
      the whole of from outside, which is a trench, not a cave. With
-     it the hill is unbroken until you walk in, and then the roof of
-     the one cave you are standing in is taken away so you can see
-     where you are going - the oldest trick in isometric games and
-     still the only one that works.
+     it the hill is unbroken until you walk in - and then only the
+     rock immediately over your head is taken away, in a circle that
+     follows you. Lifting the whole roof at once shows you the cave
+     from above, which is a map of a cave; lifting a few tiles shows
+     you a person standing under a ceiling, which is being in one.
 
-     One mesh per cave rather than per chunk: caves are small, and a
-     whole hillside popping in and out a chunk at a time would look
-     like the world breaking. */
+     One mesh per cave rather than per chunk: caves are small enough
+     to rebuild whole when the hole moves, and a hillside popping in
+     and out a chunk at a time would look like the world breaking. */
   _buildCaveRoofs() {
     const w = this.world;
+    this.caveRoofs = [];
+    this.caveHoles = [];
     if (!w.caves || !w.caves.length) return;
-    for (const cave of w.caves) {
-      const b = new MeshBuilder();
-      for (const i of cave.tiles) {
-        const roofTop = w.roof[i];
-        if (!roofTop) continue;                 /* the doorway, left open */
-        const tx = i % w.size, ty = (i / w.size) | 0;
-        const floorY = w.height[i] * LEVEL_STEP;
-        const topY = roofTop * LEVEL_STEP;
-        /* The ceiling starts two levels above the floor: head height,
-           and low enough that the rock reads as thick. */
-        const baseY = floorY + LEVEL_STEP * 2;
-        if (topY <= baseY) continue;
-
-        const biome = w.roofBiome[i];
-        const pal = GROUND_COLORS[biome] || GROUND_COLORS[BIOME.HIGHLAND];
-        const tex = GROUND_TEX[biome] || GROUND_TEX[BIOME.HIGHLAND];
-        const top = ((tx + ty) & 1) ? pal[0] : pal[1];
-        const wx = w.tileToWorldX(tx), wz = w.tileToWorldZ(ty);
-
-        /* A side face only where the rock actually ends: inside the
-           hill they would all be hidden, and at the mouth they are
-           what makes the opening read as a hole. */
-        const open = (ox, oy) => {
-          const jx = tx + ox, jy = ty + oy;
-          if (!w.inBounds(jx, jy)) return true;
-          const j = w.idx(jx, jy);
-          return w.caveId[j] === cave.id && !w.roof[j];
-        };
-        b.at(wx, baseY, wz).rot(0).sc(1);
-        b.box(TILE, topY - baseY, TILE, pal[2], {
-          topColor: top,
-          topTex: tex[0],
-          tex: tex[1],
-          faces: {
-            py: true, ny: true,
-            nx: open(-1, 0), px: open(1, 0), nz: open(0, -1), pz: open(0, 1),
-          },
-        });
-      }
-      if (b.isEmpty) { this.caveRoofs.push(null); continue; }
-      const mesh = new THREE.Mesh(b.build(), this.solidMat);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.layers.set(LAYER_WORLD);
-      mesh.matrixAutoUpdate = false;
-      this.group.add(mesh);
-      this.caveRoofs.push(mesh);
+    for (let k = 0; k < w.caves.length; k++) {
+      this.caveRoofs.push(null);
+      this.caveHoles.push(null);
+      this._rebuildCaveRoof(k, null);
     }
   }
 
-  /* Lift the roof off whichever cave the camera is looking at. */
+  _rebuildCaveRoof(k, hole) {
+    const w = this.world;
+    const cave = w.caves[k];
+    const old = this.caveRoofs[k];
+    if (old) { this.group.remove(old); old.geometry.dispose(); }
+    this.caveRoofs[k] = null;
+    this.caveHoles[k] = hole;
+
+    const b = new MeshBuilder();
+    for (const i of cave.tiles) {
+      const roofTop = w.roof[i];
+      if (!roofTop) continue;                 /* the doorway, left open */
+      const tx = i % w.size, ty = (i / w.size) | 0;
+      const wx = w.tileToWorldX(tx), wz = w.tileToWorldZ(ty);
+      const floorY = w.height[i] * LEVEL_STEP;
+      const topY = roofTop * LEVEL_STEP;
+      /* The ceiling starts two levels above the floor: head height,
+         and low enough that the rock reads as thick. */
+      const baseY = floorY + LEVEL_STEP * 2;
+      if (topY <= baseY) continue;
+      if (hole && this._roofBlocks(wx, wz, baseY, topY, hole)) continue;
+
+      const biome = w.roofBiome[i];
+      const pal = GROUND_COLORS[biome] || GROUND_COLORS[BIOME.HIGHLAND];
+      const tex = GROUND_TEX[biome] || GROUND_TEX[BIOME.HIGHLAND];
+      const top = ((tx + ty) & 1) ? pal[0] : pal[1];
+
+      /* A side face only where the rock actually ends - at the
+         doorway, and around the hole that follows the player. */
+      const open = (ox, oy) => {
+        const jx = tx + ox, jy = ty + oy;
+        if (!w.inBounds(jx, jy)) return true;
+        const j = w.idx(jx, jy);
+        if (w.caveId[j] !== cave.id) return false;
+        if (!w.roof[j]) return true;
+        if (!hole) return false;
+        const jBase = w.height[j] * LEVEL_STEP + LEVEL_STEP * 2;
+        return this._roofBlocks(w.tileToWorldX(jx), w.tileToWorldZ(jy),
+          jBase, w.roof[j] * LEVEL_STEP, hole);
+      };
+      b.at(wx, baseY, wz).rot(0).sc(1);
+      b.box(TILE, topY - baseY, TILE, pal[2], {
+        topColor: top,
+        topTex: tex[0],
+        tex: tex[1],
+        faces: {
+          py: true, ny: true,
+          nx: open(-1, 0), px: open(1, 0), nz: open(0, -1), pz: open(0, 1),
+        },
+      });
+    }
+    if (b.isEmpty) return;
+    const mesh = new THREE.Mesh(b.build(), this.solidMat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.layers.set(LAYER_WORLD);
+    mesh.matrixAutoUpdate = false;
+    this.group.add(mesh);
+    this.caveRoofs[k] = mesh;
+  }
+
+  /* Is this roof tile between the camera and the person under it?
+     Distance along the line toward the camera is `s`; how far the
+     tile has to be for its underside to clear the sightline is set
+     by its own height. Anything beyond that is behind the viewer's
+     line and can stay, which is what leaves a ceiling in shot. */
+  _roofBlocks(wx, wz, baseY, topY, hole) {
+    const dx = wx - hole.x, dz = wz - hole.z;
+    const s = dx * CAM_U.x + dz * CAM_U.z;
+    const qx = dx - s * CAM_U.x, qz = dz - s * CAM_U.z;
+    if (qx * qx + qz * qz > hole.r * hole.r) return false;
+    if (s < -hole.r * 0.5) return false;
+    const reach = Math.max(0, topY - hole.y) / CAM_TAN + 1.8;
+    return s < reach;
+  }
+
+  /* Open a hole in the roof over whoever is inside, and close it
+     again behind them. Rebuilt only when the hole has moved a tile,
+     which is a few times a second at a run. */
   _updateCaveRoofs(target) {
     const w = this.world;
-    if (!this.caveRoofs.length) return;
+    if (!this.caveRoofs || !this.caveRoofs.length) return;
     const inside = w.caveIdAt ? w.caveIdAt(target.x, target.z) : 0;
     for (let k = 0; k < w.caves.length; k++) {
-      const mesh = this.caveRoofs[k];
-      if (!mesh) continue;
-      mesh.visible = w.caves[k].id !== inside;
+      const want = w.caves[k].id === inside
+        ? { x: target.x, y: target.y, z: target.z, r: CAVE_CUT }
+        : null;
+      const cur = this.caveHoles[k];
+      if (!want && !cur) continue;
+      if (want && cur) {
+        const dx = want.x - cur.x, dz = want.z - cur.z;
+        if (dx * dx + dz * dz < TILE * TILE) continue;
+      }
+      this._rebuildCaveRoof(k, want);
     }
   }
 

@@ -11,6 +11,7 @@
    ============================================================ */
 
 import * as THREE from '../../vendor/three.module.js';
+import { patchHeroFade } from './materials.js';
 import { FULLSCREEN_VERT, EDGE_FRAG, BRIGHT_FRAG, BLUR_FRAG, COMPOSITE_FRAG } from './shaders.js';
 import { RENDER } from '../core/config.js';
 
@@ -40,6 +41,11 @@ export class PixelPipeline {
     this.enabled = { outline: RENDER.outline, bloom: RENDER.bloom, dither: RENDER.dither };
 
     this.normalMaterial = new THREE.MeshNormalMaterial();
+    /* The normal and depth buffers have to lose the same pixels the
+       lit pass does, or the edge pass traces a wall that is no
+       longer drawn. */
+    this.normalMaterial.onBeforeCompile = (shader) => patchHeroFade(shader);
+    this.normalMaterial.customProgramCacheKey = () => 'normal-hero';
     this.normalCamera = null;
 
     this.quadScene = new THREE.Scene();
