@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Getaway Daun</title>
+<meta name="description" content="A physics-based lean-and-hop action platformer. Grab a gun, ride the elevators, smash the glass, reach the van.">
+<meta name="theme-color" content="#11131c">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23ffc23c'/><rect x='12' y='6' width='8' height='13' rx='4' fill='%2311131c'/><rect x='11' y='20' width='4' height='7' fill='%2311131c'/><rect x='17' y='20' width='4' height='7' fill='%2311131c'/></svg>">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="shell">
+  <canvas id="game" width="1120" height="630"></canvas>
+
+  <!-- ================= MAIN MENU ================= -->
+  <div id="menu" class="screen">
+    <div class="panel">
+      <h1 class="logo">GETAWAY <span>DAUN</span></h1>
+      <p class="tag">You can't walk. You lean, you hop, you pray.</p>
+      <div class="btnrow">
+        <button id="btn-play" class="btn primary">CAMPAIGN</button>
+        <button id="btn-versus" class="btn primary">VERSUS</button>
+      </div>
+      <div class="btnrow">
+        <button id="btn-levels" class="btn">LEVELS</button>
+        <button id="btn-howto" class="btn">CONTROLS</button>
+        <button id="btn-options" class="btn">OPTIONS</button>
+      </div>
+      <p class="foot">A · D lean &nbsp;·&nbsp; W jump &nbsp;·&nbsp; R interact / shoot</p>
+    </div>
+  </div>
+
+  <!-- ================= CONTROLS ================= -->
+  <div id="howto" class="screen hidden">
+    <div class="panel wide">
+      <h2>CONTROLS</h2>
+      <div class="keys">
+        <div class="keyrow"><kbd>A</kbd><kbd>D</kbd><span>Lean left / right. On the ground a lean turns into a hop — that's how you move.</span></div>
+        <div class="keyrow"><kbd>W</kbd><span>Jump. You launch <em>in the direction you are leaning</em>. Stand tall for height, lean hard for distance.</span></div>
+        <div class="keyrow"><kbd>R</kbd><span>Interact: pick up guns, call elevators, slam buttons. With nothing in reach it fires your weapon.</span></div>
+        <div class="keyrow"><kbd>SPACE</kbd><span>Fire. Recoil pushes you — shotguns and rockets are movement tools.</span></div>
+        <div class="keyrow"><kbd>Q</kbd><span>Drop the weapon you're holding.</span></div>
+        <div class="keyrow"><kbd>P</kbd><kbd>ESC</kbd><span>Pause.</span></div>
+        <div class="keyrow"><kbd>ENTER</kbd><span>Restart the level (campaign), or start the next round (versus).</span></div>
+        <div class="keyrow"><kbd>&uarr;</kbd><kbd>&larr;</kbd><kbd>&rarr;</kbd><kbd>&crarr;</kbd><span>Player two, when two of you share a keyboard in versus.</span></div>
+      </div>
+      <p class="hint">Glass breaks when you shoot it or land on it hard. Lava, spikes, saws and the
+        elevator pistons do not negotiate &mdash; and neither does a long drop. Die and you restart from the
+        last checkpoint you crossed, which you will not have noticed crossing.</p>
+      <div class="btnrow"><button class="btn back">BACK</button></div>
+    </div>
+  </div>
+
+  <!-- ================= LEVEL SELECT ================= -->
+  <div id="levels" class="screen hidden">
+    <div class="panel wide">
+      <h2>LEVEL SELECT</h2>
+      <div id="level-grid" class="grid"></div>
+      <div class="btnrow"><button class="btn back">BACK</button></div>
+    </div>
+  </div>
+
+  <!-- ================= VERSUS SETUP ================= -->
+  <div id="versus" class="screen hidden">
+    <div class="panel wide">
+      <h2>VERSUS</h2>
+      <p class="hint" style="margin-top:0">Three maps in rotation. First to the van wins the round.
+        Empty seats are filled with bots, and every bot plays differently.</p>
+
+      <div class="setuprow">
+        <span class="lbl">FIRST TO</span>
+        <div class="seg" id="seg-target">
+          <button data-v="2">2</button><button data-v="3" class="on">3</button><button data-v="5">5</button>
+        </div>
+      </div>
+      <div class="setuprow">
+        <span class="lbl">HUMANS</span>
+        <div class="seg" id="seg-humans">
+          <button data-v="1" class="on">1</button><button data-v="2">2</button>
+        </div>
+        <span class="tiny">two humans share one keyboard: P2 uses &larr; &darr; &rarr; and &crarr;</span>
+      </div>
+
+      <div id="slot-list" class="slots"></div>
+
+      <div class="btnrow">
+        <button id="btn-versus-start" class="btn primary">START MATCH</button>
+        <button id="btn-lan" class="btn">PLAY OVER LAN</button>
+        <button class="btn back">BACK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= LAN ================= -->
+  <div id="lan" class="screen hidden">
+    <div class="panel wide">
+      <h2>LAN GAME</h2>
+      <p class="hint" style="margin-top:0">One machine hosts and everyone else points a browser at it.
+        Up to four players; empty seats become bots.</p>
+      <div class="lanbox">
+        <div class="lanhead">TO HOST</div>
+        <code>node server/server.js --port 8080</code>
+        <p class="tiny">It prints the address to share. Everyone on the same network opens that
+          address in a browser &mdash; there is nothing to install.</p>
+      </div>
+      <div class="lanbox">
+        <div class="lanhead">TO JOIN</div>
+        <div class="joinrow">
+          <input id="lan-host" type="text" placeholder="192.168.1.20:8080" autocomplete="off" spellcheck="false">
+          <button id="btn-lan-join" class="btn primary">JOIN</button>
+        </div>
+        <p id="lan-status" class="tiny"></p>
+      </div>
+      <div class="btnrow"><button class="btn back">BACK</button></div>
+    </div>
+  </div>
+
+  <!-- ================= OPTIONS ================= -->
+  <div id="options" class="screen hidden">
+    <div class="panel">
+      <h2>OPTIONS</h2>
+      <div class="setuprow">
+        <span class="lbl">BLOOD</span>
+        <div class="seg" id="seg-gore">
+          <button data-v="0">OFF</button><button data-v="1" class="on">ON</button><button data-v="2">LOTS</button>
+        </div>
+      </div>
+      <div class="setuprow">
+        <span class="lbl">SOUND</span>
+        <div class="seg" id="seg-sound">
+          <button data-v="0">OFF</button><button data-v="1" class="on">ON</button>
+        </div>
+      </div>
+      <div class="btnrow"><button class="btn back">BACK</button></div>
+    </div>
+  </div>
+
+  <!-- ================= ROUND OVER ================= -->
+  <div id="roundend" class="screen hidden">
+    <div class="panel">
+      <h2 id="round-title">ROUND OVER</h2>
+      <p id="round-sub" class="hint" style="margin-top:0"></p>
+      <div id="round-board" class="board"></div>
+      <p id="round-next" class="tiny"></p>
+      <div class="btnrow"><button id="btn-round-next" class="btn primary">NEXT MAP</button></div>
+    </div>
+  </div>
+
+  <!-- ================= MATCH OVER ================= -->
+  <div id="matchend" class="screen hidden">
+    <div class="panel">
+      <h2 id="match-title">MATCH OVER</h2>
+      <div id="match-board" class="board"></div>
+      <div class="btnrow col">
+        <button id="btn-rematch" class="btn primary">REMATCH</button>
+        <button id="btn-match-menu" class="btn">MENU</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= PAUSE ================= -->
+  <div id="pause" class="screen hidden">
+    <div class="panel">
+      <h2>PAUSED</h2>
+      <div class="btnrow col">
+        <button id="btn-resume" class="btn primary">RESUME</button>
+        <button id="btn-retry" class="btn">RESTART LEVEL</button>
+        <button id="btn-quit" class="btn">QUIT TO MENU</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= LEVEL COMPLETE ================= -->
+  <div id="complete" class="screen hidden">
+    <div class="panel">
+      <h2 id="complete-title">LEVEL CLEAR</h2>
+      <div class="times">
+        <div><span class="lbl">TIME</span><span id="complete-time" class="val">0.00</span></div>
+        <div><span class="lbl">BEST</span><span id="complete-best" class="val">--</span></div>
+      </div>
+      <p id="complete-note" class="hint"></p>
+      <div class="btnrow col">
+        <button id="btn-next" class="btn primary">NEXT LEVEL</button>
+        <button id="btn-again" class="btn">PLAY AGAIN</button>
+        <button id="btn-menu2" class="btn">MENU</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= HUD ================= -->
+  <div id="hud" class="hidden">
+    <div class="hud-left">
+      <div id="hud-level">LEVEL 1</div>
+      <div id="hud-time">0.00</div>
+    </div>
+    <div class="hud-right">
+      <div id="hud-health" class="bar"><i style="width:100%"></i></div>
+      <div id="hud-weapon">UNARMED</div>
+    </div>
+    <div id="hud-score" class="hidden"></div>
+    <div id="hud-prompt" class="hidden"><kbd>R</kbd> <span></span></div>
+    <div id="hud-toast"></div>
+  </div>
+</div>
+
+<script src="js/utils.js"></script>
+<script src="js/pixel.js"></script>
+<script src="js/ragdoll.js"></script>
+<script src="js/input.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/particles.js"></script>
+<script src="js/weapons.js"></script>
+<script src="js/gore.js"></script>
+<script src="js/entities.js"></script>
+<script src="js/levels.js"></script>
+<script src="js/versusmaps.js"></script>
+<script src="js/navgraph.js"></script>
+<script src="js/bots.js"></script>
+<script src="js/match.js"></script>
+<script src="js/net.js"></script>
+<script src="js/game.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

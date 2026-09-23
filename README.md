@@ -1,3 +1,21 @@
+# JUEGO DAUN
+
+Three browser games in one repository, all plain HTML, CSS and JavaScript with
+no build step.
+
+**Play them here:** https://felipe-lotas69.github.io/Juego-daun/ — once Pages is
+switched on, see [Hosting](#hosting) below.
+
+| | |
+|---|---|
+| [**Chromewood**](chromewood/) | An isometric pixel-art survival RPG. Land with nothing, build a camp, repair the beacon, close the rift. Solo or up to four in co-op. [Its own README](chromewood/README.md). |
+| [**Getaway Daun**](getaway.html) | The game below: lean-and-hop action platforming. |
+| [**Skyline Scramble**](skyline-scramble/) | A two-player ragdoll race across the rooftops. [Its own README](skyline-scramble/README.md). |
+
+The rest of this file is about Getaway Daun.
+
+---
+
 # GETAWAY DAUN
 
 A physics-based, ragdoll-ish action platformer in the spirit of *Getaway Shootout*.
@@ -5,8 +23,8 @@ You can't walk — you **lean** and **hop** your way through collapsing rooftops
 elevator shafts and glass office towers, grabbing guns along the way, trying to
 reach the getaway van before anyone else does.
 
-**Play it here:** https://felipe-lotas69.github.io/Juego-daun/ — once Pages is
-switched on, see [Hosting](#hosting) below.
+Its entry point is `getaway.html`, because the repository root now holds a small
+landing page listing all three games. Its scripts and styles did not move.
 
 ## Controls
 
@@ -128,23 +146,38 @@ directly, so `node server/server.js` is the whole setup.
 
 ## Hosting
 
-The site is plain static files at the repository root, so GitHub Pages can
-serve it straight from the branch — no build, no deploy workflow:
+The whole site is static files at the repository root, so there is nothing to
+build. Two ways to publish it, and only one can be active at a time.
+
+**Branch mode — the one that needs no extra permissions:**
 
 **Settings → Pages → Build and deployment → Source: `Deploy from a branch`,
 Branch: `claude/getaway-shootout-game-x4v0bp` / `(root)` → Save.**
 
 Give it a minute and it appears at
-`https://felipe-lotas69.github.io/Juego-daun/`. Every later push republishes
-automatically.
+`https://felipe-lotas69.github.io/Juego-daun/`, with the landing page at the
+root, Getaway Daun at `/getaway.html`, Chromewood at `/chromewood/` and Skyline
+Scramble at `/skyline-scramble/`. Every later push republishes automatically.
 
-(There is a *Deploy from GitHub Actions* option too, but the workflow token
-here is not allowed to create the Pages site, so branch mode is the one that
-works. The workflow that remains only syntax-checks the scripts and verifies
-the level geometry.)
+Note that this switch has to be thrown by hand, once. A workflow cannot
+do it: `GITHUB_TOKEN` is refused the Pages-site creation API
+(`Resource not accessible by integration`) however its permissions are
+declared. Once the site exists, automation can publish to it freely.
 
-Pages serves the campaign and local versus. LAN play needs the Node host
-above, since Pages only serves static files.
+**Actions mode — deploys only after the checks pass:**
+
+Set **Source** to `GitHub Actions`, then add a repository variable
+`PAGES_VIA_ACTIONS` = `true` under **Settings → Secrets and variables →
+Actions → Variables**. `.github/workflows/deploy-pages.yml` then parses every
+script, runs both level verifiers and Chromewood's full verifier, checks that
+nothing on the landing page is a dead link, and publishes only if all of that
+passes. Without that variable the deploy job is skipped and only the checks
+run, so the workflow is not a standing failure while the repository is in
+branch mode.
+
+Pages serves every game's single-player and same-keyboard modes. Getaway Daun's
+LAN play and Chromewood's co-op both need their Node host running, since Pages
+only serves static files.
 
 ## Running locally
 
@@ -156,7 +189,7 @@ cd Juego-daun
 node server/server.js          # or: python3 -m http.server 8000
 ```
 
-Opening `index.html` straight off disk works too — the scripts are plain classic
+Opening `getaway.html` straight off disk works too — the scripts are plain classic
 scripts, not ES modules, specifically so `file://` doesn't break.
 
 ## Checks
@@ -188,7 +221,8 @@ last check that the routes hold up under play.
 ## Project layout
 
 ```
-index.html         markup + boot
+index.html         the landing page listing all three games
+getaway.html       markup + boot for Getaway Daun
 styles.css         shell, menus, HUD
 js/utils.js        math, rng, collision helpers
 js/pixel.js        low-res buffer, grid snapping, 3x5 bitmap font

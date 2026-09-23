@@ -1,0 +1,132 @@
+name: Deploy to GitHub Pages
+
+# The site is the repository: every game here is plain HTML, CSS and
+# JavaScript with no build step, so Pages serves the tree as it stands.
+# The checks run first regardless, because a broken game is worse
+# published than unpublished.
+#
+# The deploy job is OFF unless the repository variable PAGES_VIA_ACTIONS
+# is set to "true". Pages can publish this repo in either of two modes
+# and only one of them may be active:
+#
+#   Deploy from a branch  - the default here, and what works with no
+#     extra permissions. Pages serves the branch directly; nothing in
+#     this file runs except the checks below.
+#   GitHub Actions        - set Settings > Pages > Source to "GitHub
+#     Actions", then add the repository variable PAGES_VIA_ACTIONS=true
+#     (Settings > Secrets and variables > Actions > Variables). The
+#     deploy job then publishes, and a failed check blocks it.
+#
+# Gating it this way means the workflow is not a permanent red X on
+# every push while the repository is in branch mode.
+#
+# This workflow cannot create the Pages site itself. Tried, and the
+# API is explicit about it:
+#
+#   Create Pages site failed.
+#   Error: Resource not accessible by integration
+#
+# GITHUB_TOKEN does not get that right however its permissions are
+# declared, so somebody with admin on the repository has to turn Pages
+# on once in Settings. After that this workflow can publish to it.
+
+on:
+  push:
+    branches:
+      - claude/getaway-shootout-game-x4v0bp
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and let a newer push win rather than queueing
+# a stale one behind it.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Every script parses
+        run: |
+          for f in js/*.js server/*.js tools/*.js \
+                   skyline-scramble/js/*.js skyline-scramble/tools/*.js; do
+            [ -e "$f" ] || continue
+            node --check "$f" || exit 1
+          done
+
+      - name: Chromewood's modules all load
+        run: |
+          cd chromewood
+          node --check server/server.js
+          for f in $(find src -name '*.js'); do
+            node --input-type=module -e "
+              import('./$f').catch(e => {
+                // main.js touches the DOM, which does not exist here
+                if (/document is not defined|window is not defined|self is not defined/.test(e.message)) process.exit(0);
+                console.error('$f: ' + e.message);
+                process.exit(1);
+              })
+            " || exit 1
+          done
+
+      - name: Getaway Daun's levels are completable
+        run: node tools/verify-levels.js
+
+      - name: Skyline Scramble's levels are completable
+        run: |
+          if [ -f skyline-scramble/tools/verify-levels.js ]; then
+            node skyline-scramble/tools/verify-levels.js
+          fi
+
+      - name: Chromewood's content, worlds, arc and wire format
+        run: node chromewood/tools/verify.js --seeds 4 --minutes 15
+
+      - name: Every page the landing page links to exists
+        run: |
+          for f in index.html getaway.html chromewood/index.html skyline-scramble/index.html; do
+            test -f "$f" || { echo "missing $f"; exit 1; }
+          done
+          # A dead link on the front page is the one bug every visitor hits.
+          for href in $(grep -o 'href="[^"#:]*"' index.html | cut -d'"' -f2); do
+            case "$href" in
+              */) test -f "${href}index.html" || { echo "dead link: $href"; exit 1; } ;;
+              *)  test -e "$href" || { echo "dead link: $href"; exit 1; } ;;
+            esac
+          done
+
+  deploy:
+    needs: check
+    if: vars.PAGES_VIA_ACTIONS == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          # Turns Pages on if it is not on already. If the token is not
+          # allowed to, the job fails here with a clear message and the
+          # repository should stay in branch mode instead.
+          enablement: true
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
