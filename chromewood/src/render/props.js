@@ -98,9 +98,15 @@ export function propLight(prop) {
 /* ------------------------------------------------------------ recipes */
 export function buildProp(b, g, prop, x, y, z, variant, biome) {
   const r1 = vrand(variant, 1), r2 = vrand(variant, 2), r3 = vrand(variant, 3);
-  const jx = x + (r1 - 0.5) * 0.44;
-  const jz = z + (r2 - 0.5) * 0.44;
-  const spin = r3 * Math.PI * 2;
+  /* On the grid, not scattered around it. Props used to sit at a
+     random offset of up to a fifth of a tile and at any angle at
+     all, which is what made a field of them read as clutter thrown
+     on the floor rather than as a place. They stand on their tile
+     now, turned to one of four quarters - still varied, still
+     aligned. */
+  const jx = x;
+  const jz = z;
+  const spin = Math.floor(r3 * 4) * (Math.PI / 2);
   const snowy = biome === BIOME.SNOW;
 
   switch (prop) {

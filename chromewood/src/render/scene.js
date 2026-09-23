@@ -141,7 +141,10 @@ export class SceneRig {
     /* Sun arc: high at noon, grazing at dusk, replaced by a cool
        moon once night is fully in. */
     const dayT = clamp01(t / d);
-    const elevation = lerp(0.30, 0.78, Math.sin(Math.PI * dayT)) * (1 - night) + 0.60 * night;
+    /* A lower arc than before. Blocks need a raking light to show
+       their form; a sun near the top of the sky lights every upward
+       face the same and the world goes flat. */
+    const elevation = lerp(0.26, 0.58, Math.sin(Math.PI * dayT)) * (1 - night) + 0.52 * night;
     const azimuth = Math.PI * 0.25 + dayT * Math.PI * 0.55 + night * Math.PI * 0.9;
     const dir = new THREE.Vector3(
       Math.cos(azimuth) * Math.cos(elevation),
@@ -156,9 +159,12 @@ export class SceneRig {
     this._tmp.set(PALETTE.sunDay).lerp(new THREE.Color(PALETTE.sunDusk), duskAmt);
     this._tmp.lerp(new THREE.Color(PALETTE.sunNight), night * night);
     this.sun.color.copy(this._tmp);
-    this.sun.intensity = lerp(2.75, 0.78, night);
+    /* More sun, less sky. The hemisphere light fills every face
+       evenly, which is exactly what flattens a stack of cubes, so
+       the balance moves toward the direction that has a direction. */
+    this.sun.intensity = lerp(3.15, 0.82, night);
 
-    this.hemi.intensity = lerp(1.15, 0.64, night);
+    this.hemi.intensity = lerp(0.80, 0.52, night);
     this.hemi.color.set(PALETTE.skyDay).lerp(new THREE.Color(0x3a4a80), night);
     this.hemi.groundColor.set(PALETTE.grassDark).lerp(new THREE.Color(0x19203a), night);
     this.fill.intensity = lerp(0.30, 0.55, night);

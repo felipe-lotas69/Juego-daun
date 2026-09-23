@@ -17,13 +17,19 @@ import { TEX } from './textures.js';
 
 /* Per-face multipliers. Top faces catch the sky, the two visible
    side directions differ so cliffs read as solid volumes. */
+/* Baked per-face shading. In a world made of blocks this does more
+   for readability than any light in the scene: the top, the two lit
+   sides and the two shaded sides have to separate at a glance, or a
+   stack of cubes reads as one flat silhouette. Widened from a 0.55
+   to 1.00 spread to 0.40 to 1.00, with the two side pairs pushed
+   apart, so every corner of every block is legible. */
 const FACE_TINT = {
   py: 1.00,   /* up     */
-  ny: 0.55,   /* down   */
-  px: 0.86,
-  nx: 0.72,
-  pz: 0.92,
-  nz: 0.66,
+  ny: 0.40,   /* down   */
+  px: 0.88,   /* the sunward pair */
+  pz: 0.78,
+  nx: 0.62,   /* the shaded pair  */
+  nz: 0.50,
 };
 
 const tmpColor = new THREE.Color();
@@ -31,6 +37,24 @@ const tmpColor = new THREE.Color();
 /* Texture repeats per world unit. Below the screen-pixel density at
    normal zoom, so texels land on whole pixels instead of shimmering. */
 export const UV_SCALE = 0.5;
+
+/* One voxel unit, shared by everything the world is built out of.
+   Snapping to it is most of what separates "made of blocks" from
+   "made of arbitrary boxes that happen to be boxy". */
+export const VOX = 1 / 8;
+
+export function snapVox(v) { return Math.max(VOX, Math.round(v / VOX) * VOX); }
+
+/* Blend two packed hex colours. The stepped stacks need a colour per
+   step and the callers hand us plain integers. */
+export function mixHex(a, b, t) {
+  const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+  const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+  const r = Math.round(ar + (br - ar) * t);
+  const g = Math.round(ag + (bg - ag) * t);
+  const bl = Math.round(ab + (bb - ab) * t);
+  return (r << 16) | (g << 8) | bl;
+}
 
 export class MeshBuilder {
   constructor() {
@@ -91,8 +115,14 @@ export class MeshBuilder {
 
   /* Axis-aligned box centred on x/z, sitting with its base at y=0
      unless `centered` is set. `faces` can drop hidden sides. */
+  /* --------------------------------------------------- blocks */
+  /* The world is built out of one voxel unit. Snapping every block
+     to it is most of what separates "made of blocks" from "made of
+     arbitrary boxes that happen to be boxy". */
+
   box(w, h, d, color, opts = {}) {
-    const { centered = false, tint = 1, faces = null, topColor = null, yOff = 0 } = opts;
+    const { centered = false, tint = 1, faces = null, topColor = null, yOff = 0,
+      xOff = 0, zOff = 0 } = opts;
     const hw = w / 2, hd = d / 2;
     const y0 = (centered ? -h / 2 : 0) + yOff;
     const y1 = y0 + h;
@@ -113,127 +143,87 @@ export class MeshBuilder {
       this._faceTex = undefined;
     };
 
-    face('py', [0, 1, 0], [[-hw, y1, -hd, 0, 0], [-hw, y1, hd, 0, 1], [hw, y1, hd, 1, 1], [hw, y1, -hd, 1, 0]], top);
-    face('ny', [0, -1, 0], [[-hw, y0, -hd, 0, 0], [hw, y0, -hd, 1, 0], [hw, y0, hd, 1, 1], [-hw, y0, hd, 0, 1]], base);
-    face('pz', [0, 0, 1], [[-hw, y0, hd, 0, 0], [hw, y0, hd, 1, 0], [hw, y1, hd, 1, 1], [-hw, y1, hd, 0, 1]], base);
-    face('nz', [0, 0, -1], [[hw, y0, -hd, 0, 0], [-hw, y0, -hd, 1, 0], [-hw, y1, -hd, 1, 1], [hw, y1, -hd, 0, 1]], base);
-    face('px', [1, 0, 0], [[hw, y0, hd, 0, 0], [hw, y0, -hd, 1, 0], [hw, y1, -hd, 1, 1], [hw, y1, hd, 0, 1]], base);
-    face('nx', [-1, 0, 0], [[-hw, y0, -hd, 0, 0], [-hw, y0, hd, 1, 0], [-hw, y1, hd, 1, 1], [-hw, y1, -hd, 0, 1]], base);
+    /* A per-block nudge, used by the leaning stacks above. */
+    const X = xOff, Z = zOff;
+    face('py', [0, 1, 0], [[-hw + X, y1, -hd + Z, 0, 0], [-hw + X, y1, hd + Z, 0, 1], [hw + X, y1, hd + Z, 1, 1], [hw + X, y1, -hd + Z, 1, 0]], top);
+    face('ny', [0, -1, 0], [[-hw + X, y0, -hd + Z, 0, 0], [hw + X, y0, -hd + Z, 1, 0], [hw + X, y0, hd + Z, 1, 1], [-hw + X, y0, hd + Z, 0, 1]], base);
+    face('pz', [0, 0, 1], [[-hw + X, y0, hd + Z, 0, 0], [hw + X, y0, hd + Z, 1, 0], [hw + X, y1, hd + Z, 1, 1], [-hw + X, y1, hd + Z, 0, 1]], base);
+    face('nz', [0, 0, -1], [[hw + X, y0, -hd + Z, 0, 0], [-hw + X, y0, -hd + Z, 1, 0], [-hw + X, y1, -hd + Z, 1, 1], [hw + X, y1, -hd + Z, 0, 1]], base);
+    face('px', [1, 0, 0], [[hw + X, y0, hd + Z, 0, 0], [hw + X, y0, -hd + Z, 1, 0], [hw + X, y1, -hd + Z, 1, 1], [hw + X, y1, hd + Z, 0, 1]], base);
+    face('nx', [-1, 0, 0], [[-hw + X, y0, -hd + Z, 0, 0], [-hw + X, y0, hd + Z, 1, 0], [-hw + X, y1, hd + Z, 1, 1], [-hw + X, y1, -hd + Z, 0, 1]], base);
     return this;
   }
 
   /* Tapered box: a box whose top face is scaled. Trunks, rocks and
      cliff blocks all use this to avoid looking like crates. */
+  /* Was a box with a scaled top face, which is a shape blocks do
+     not make. Now it steps in, one block at a time. */
   taper(w, h, d, topScale, color, opts = {}) {
-    const { tint = 1, topColor = null, yOff = 0, twist = 0 } = opts;
-    if (opts.tex !== undefined) this._faceTex = opts.tex;
-    const hw = w / 2, hd = d / 2;
-    const tw = hw * topScale, td = hd * topScale;
-    const y0 = yOff, y1 = yOff + h;
-    tmpColor.set(color);
-    const base = [tmpColor.r, tmpColor.g, tmpColor.b];
-    let top = base;
-    if (topColor !== null) { tmpColor.set(topColor); top = [tmpColor.r, tmpColor.g, tmpColor.b]; }
-
-    const c = Math.cos(twist), s = Math.sin(twist);
-    const rt = (x, z) => [x * c - z * s, z * c + x * s];
-
-    const bottom = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]];
-    const topPts = [[-tw, -td], [tw, -td], [tw, td], [-tw, td]].map(([x, z]) => rt(x, z));
-
-    /* top cap */
-    {
-      const t = FACE_TINT.py * tint;
-      const idx = topPts.map(([x, z], i) => this._push(x, y1, z, 0, 1, 0, top[0] * t, top[1] * t, top[2] * t, i & 1, i >> 1));
-      this._quad([idx[0], idx[3], idx[2], idx[1]]);
+    const { tint = 1, topColor = null, yOff = 0 } = opts;
+    const steps = Math.abs(topScale - 1) < 0.08 ? 1
+      : Math.max(2, Math.min(4, Math.round(h / (VOX * 3))));
+    for (let i = 0; i < steps; i++) {
+      const t = steps === 1 ? 0 : i / (steps - 1);
+      const sc = 1 + (topScale - 1) * t;
+      const sh = h / steps;
+      const col = topColor === null ? color : mixHex(color, topColor, t);
+      this.box(snapVox(w * sc), sh, snapVox(d * sc), col, {
+        yOff: yOff + i * sh, tint, tex: opts.tex, centered: true, topColor: col,
+      });
     }
-    /* sides */
-    const sideKeys = ['nz', 'px', 'pz', 'nx'];
-    for (let i = 0; i < 4; i++) {
-      const j = (i + 1) % 4;
-      const [bx0, bz0] = bottom[i], [bx1, bz1] = bottom[j];
-      const [tx0, tz0] = topPts[i], [tx1, tz1] = topPts[j];
-      const nx = (bz1 - bz0), nz = -(bx1 - bx0);
-      const nl = Math.hypot(nx, nz) || 1;
-      const t = FACE_TINT[sideKeys[i]] * tint;
-      const r = base[0] * t, g = base[1] * t, b = base[2] * t;
-      const a = this._push(bx0, y0, bz0, nx / nl, 0.2, nz / nl, r, g, b, 0, 0);
-      const bb = this._push(bx1, y0, bz1, nx / nl, 0.2, nz / nl, r, g, b, 1, 0);
-      const cc = this._push(tx1, y1, tz1, nx / nl, 0.2, nz / nl, r * 1.06, g * 1.06, b * 1.06, 1, 1);
-      const dd = this._push(tx0, y1, tz0, nx / nl, 0.2, nz / nl, r * 1.06, g * 1.06, b * 1.06, 0, 1);
-      /* Wound so the outward-facing side is the front face: the
-         ring of corners runs counter-clockwise in XZ, which puts
-         the naive triangle order on the inside of the shape. */
-      this._quad([dd, cc, bb, a]);
-    }
-    this._faceTex = undefined;
     return this;
   }
+
 
   /* Low-poly cone: tree canopies, spikes, hats. */
+  /* A stepped stack of blocks rather than an n-gon. Every tree,
+     rock and spike in the game goes through here, so making this
+     blocky makes the whole world blocky at once - and `segments`
+     now decides how many steps it climbs in, not how round it is. */
   cone(radius, h, segments, color, opts = {}) {
     const { yOff = 0, tint = 1, topColor = null, flatten = 1 } = opts;
-    if (opts.tex !== undefined) this._faceTex = opts.tex;
-    tmpColor.set(color);
-    const r0 = tmpColor.r, g0 = tmpColor.g, b0 = tmpColor.b;
-    let tr = r0, tg = g0, tb = b0;
-    if (topColor !== null) { tmpColor.set(topColor); tr = tmpColor.r; tg = tmpColor.g; tb = tmpColor.b; }
-    for (let i = 0; i < segments; i++) {
-      const a0 = (i / segments) * Math.PI * 2;
-      const a1 = ((i + 1) / segments) * Math.PI * 2;
-      const x0 = Math.cos(a0) * radius, z0 = Math.sin(a0) * radius * flatten;
-      const x1 = Math.cos(a1) * radius, z1 = Math.sin(a1) * radius * flatten;
-      const mx = (x0 + x1) * 0.5, mz = (z0 + z1) * 0.5;
-      const nl = Math.hypot(mx, mz) || 1;
-      /* Facing tint from the side normal keeps flat shading lively. */
-      const face = 0.74 + 0.26 * (0.5 + 0.5 * (-mz / nl));
-      const t = tint * face;
-      const a = this._push(x0, yOff, z0, mx / nl, 0.45, mz / nl, r0 * t, g0 * t, b0 * t, 0, 0);
-      const b = this._push(x1, yOff, z1, mx / nl, 0.45, mz / nl, r0 * t, g0 * t, b0 * t, 1, 0);
-      const c = this._push(0, yOff + h, 0, mx / nl, 0.8, mz / nl, tr * t * 1.12, tg * t * 1.12, tb * t * 1.12, 0.5, 1);
-      this.index.push(b, a, c);
-      /* bottom fan */
-      const d = this._push(x1, yOff, z1, 0, -1, 0, r0 * 0.45, g0 * 0.45, b0 * 0.45, 0, 0);
-      const e = this._push(x0, yOff, z0, 0, -1, 0, r0 * 0.45, g0 * 0.45, b0 * 0.45, 1, 0);
-      const f = this._push(0, yOff, 0, 0, -1, 0, r0 * 0.45, g0 * 0.45, b0 * 0.45, 0.5, 1);
-      this.index.push(e, d, f);
+    const steps = Math.max(2, Math.min(6, segments >= 6 ? Math.round(h / (VOX * 2.6)) || 3 : segments));
+    for (let i = 0; i < steps; i++) {
+      const t = i / steps;
+      const r = radius * (1 - t * 0.86);
+      const w = snapVox(r * 2);
+      const d = snapVox(r * 2 * flatten);
+      const sh = h / steps;
+      const col = topColor === null ? color : mixHex(color, topColor, t);
+      this.box(w, sh, d, col, {
+        yOff: yOff + i * sh, tint, tex: opts.tex, centered: true, topColor: col,
+      });
     }
-    this._faceTex = undefined;
     return this;
   }
 
+
   /* Prismatic crystal: a tapered shaft with a pointed cap. */
+  /* Crystals were the one thing still built out of points while
+     everything else had become blocks, which made every outcrop
+     read as a stray spike in a world of cubes. Now it is a leaning
+     stack, narrowing as it climbs. */
   crystal(radius, h, color, opts = {}) {
-    const { yOff = 0, tilt = 0, sides = 5, tipColor = null } = opts;
-    if (opts.tex !== undefined) this._faceTex = opts.tex;
-    tmpColor.set(color);
-    const r0 = tmpColor.r, g0 = tmpColor.g, b0 = tmpColor.b;
-    let tr = r0 * 1.5, tg = g0 * 1.5, tb = b0 * 1.5;
-    if (tipColor !== null) { tmpColor.set(tipColor); tr = tmpColor.r; tg = tmpColor.g; tb = tmpColor.b; }
-    const shoulder = h * 0.62;
+    const { yOff = 0, tilt = 0, tipColor = null, tint = 1 } = opts;
+    const steps = Math.max(3, Math.min(6, Math.round(h / (VOX * 2))));
     const lean = Math.tan(tilt);
-    for (let i = 0; i < sides; i++) {
-      const a0 = (i / sides) * Math.PI * 2, a1 = ((i + 1) / sides) * Math.PI * 2;
-      const x0 = Math.cos(a0) * radius, z0 = Math.sin(a0) * radius;
-      const x1 = Math.cos(a1) * radius, z1 = Math.sin(a1) * radius;
-      const mx = (x0 + x1) * 0.5, mz = (z0 + z1) * 0.5;
-      const nl = Math.hypot(mx, mz) || 1;
-      const face = 0.55 + 0.45 * (0.5 + 0.5 * (mx / nl - mz / nl) * 0.7071);
-      const r = r0 * face, g = g0 * face, b = b0 * face;
-      const sx = shoulder * lean;
-      const a = this._push(x0, yOff, z0, mx / nl, 0, mz / nl, r * 0.8, g * 0.8, b * 0.8, 0, 0);
-      const bq = this._push(x1, yOff, z1, mx / nl, 0, mz / nl, r * 0.8, g * 0.8, b * 0.8, 1, 0);
-      const c = this._push(x1 * 0.82 + sx, yOff + shoulder, z1 * 0.82, mx / nl, 0.1, mz / nl, r, g, b, 1, 1);
-      const d = this._push(x0 * 0.82 + sx, yOff + shoulder, z0 * 0.82, mx / nl, 0.1, mz / nl, r, g, b, 0, 1);
-      this._quad([d, c, bq, a]);
-      const e = this._push(x0 * 0.82 + sx, yOff + shoulder, z0 * 0.82, mx / nl, 0.4, mz / nl, r, g, b, 0, 0);
-      const f = this._push(x1 * 0.82 + sx, yOff + shoulder, z1 * 0.82, mx / nl, 0.4, mz / nl, r, g, b, 1, 0);
-      const gI = this._push(h * lean, yOff + h, 0, mx / nl, 0.8, mz / nl, tr, tg, tb, 0.5, 1);
-      this.index.push(f, e, gI);
+    for (let i = 0; i < steps; i++) {
+      const t = i / steps;
+      const r = radius * (1 - t * 0.78);
+      const sh = h / steps;
+      const yb = yOff + i * sh;
+      const col = tipColor === null ? color : mixHex(color, tipColor, t * t);
+      /* Each block steps sideways as it rises, so a tilted crystal
+         still looks tilted without a single sloped face. */
+      const off = lean * (yb + sh * 0.5);
+      this.box(snapVox(r * 2), sh, snapVox(r * 2), col, {
+        yOff: yb, tint, tex: opts.tex, centered: true, topColor: col,
+        xOff: off,
+      });
     }
-    this._faceTex = undefined;
     return this;
   }
+
 
   /* A flat quad lying on the ground: decals, water, glyph circles. */
   ground(w, d, color, opts = {}) {
