@@ -311,6 +311,13 @@
       escaping: false,
       escapeTargetIdx: -1,
       cellCount: 0,
+      /* Two different reasons not to be dragged home, kept apart on
+         purpose. `confineCool` is the authorisation window prison.js and
+         reform.js top up to send somebody to a class; `dragCool` is only
+         the breather between two attempts to march them back, and must
+         never be read as permission to be where they are. */
+      confineCool: 0,
+      dragCool: 0,
       deathNoted: false,
       /* What they were allowed to do before, so recruiting hands the
          colony a pawn with their own priorities rather than a blank sheet. */
@@ -381,33 +388,135 @@
     st.resistance = Math.max(0, st.resistance - rate);
   }
 
-  /* What is standing between them and the horizon, in words, or null when
-     the cell is doing its job. */
-  Prisoners.escapeOpening = function (pawn) {
+  /* Is this prisoner out of their cell with the colony's blessing.
+
+     prison.js and reform.js both publish the same gesture - top up
+     `confineCool` (and `prisonState.escortTicks`) every tick of a job
+     that legitimately takes somebody out of the block. Showers, the
+     yard, the workshop, a class, a parole hearing and the walk to
+     solitary all go through it. Anything that reads "out of the cell"
+     as an escape opening has to ask this first, or a prisoner would be
+     rolling for the door the entire length of an eight-session course
+     and no programme would ever finish. */
+  function authorisedOut(pawn, st) {
+    if (st.confineCool > 0) return true;
+    var ps = pawn.prisonState;
+    if (ps && ps.escortTicks > 0) return true;
+    /* And the walk back. `confine` below answers a prisoner found outside
+       their block by ending whatever they were doing and starting the walk
+       to their own bunk; counting that walk as an escape opening would
+       mean the colony's own correction rolled the dice on them, every
+       beat, all the way home. */
+    return goingHome(pawn);
+  }
+
+  /* On their way to their own prisoner bed, which is where `sendHome`
+     below puts them and where a prisoner with nothing else on puts
+     themselves. */
+  function goingHome(pawn) {
+    var job = pawn.job;
+    if (!job || job.defId !== 'layDown' || !pawn.map) return false;
+    var bed = pawn.ownedBedId ? pawn.map.thing(pawn.ownedBedId) : null;
+    return !!(bed && bed.spawned && bed.forPrisoners);
+  }
+
+  /* How closely somebody is being watched, 0 when nobody is. reform.js
+     weighs a dedicated supervisor above a hauler passing through and
+     folds in the guard coverage map; without it, standing in the same
+     room as a free colonist is the whole of the model. */
+  function supervisionOf(pawn) {
+    var R = sys('Reform');
+    if (R && R.supervisionAt) {
+      var sup = R.supervisionAt(pawn.map, pawn.x, pawn.y);
+      if (typeof sup === 'number') return sup;
+    }
+    return watchedNow(pawn) ? 0.5 : 0;
+  }
+
+  /* What is standing between them and the horizon: `{ reason, risk }`,
+     or null when the regime is doing its job. `risk` scales the escape
+     roll, because a man walking to the showers past an empty guard post
+     is not the same proposition as a man alone in a cell with a hole in
+     the wall - both are openings, one is an invitation. */
+  function escapeOpening(pawn) {
     var map = pawn && pawn.map;
     if (!map || !Regions) return null;
     var st = pawn.prisoner;
     if (!st) return null;
 
     var room = Regions.roomAt(map, pawn.x, pawn.y);
-    if (!room || room.id === 0 || room.outdoor || room.touchesEdge) {
-      return 'the cell stands open to the outside';
+    var nowhere = !room || room.id === 0;
+    var openGround = nowhere || room.outdoor || room.touchesEdge;
+
+    if (authorisedOut(pawn, st)) {
+      /* A sanctioned trip is not an escape opening by itself. Two things
+         can still turn it into one: walking ground that runs off the
+         edge of the map, and an escort who is not there. */
+      if (nowhere || (room && room.touchesEdge)) {
+        return { reason: 'the walk out passes open ground', risk: 1 };
+      }
+      var sup = supervisionOf(pawn);
+      if (sup <= 0) {
+        return {
+          reason: 'nobody is watching them where they were sent',
+          /* An unsupervised corridor is a chance, not an open gate: a
+             third of the pull of a cell that does not hold. */
+          risk: openGround ? 0.55 : 0.35
+        };
+      }
+      return null;
     }
-    if (!prisonRoomIds(map)[room.id]) return 'they are out of their cell';
+
+    if (openGround) return { reason: 'the cell stands open to the outside', risk: 1 };
+    if (!prisonRoomIds(map)[room.id]) return { reason: 'they are out of their cell', risk: 1 };
 
     /* Knocking a wall out merges the cell into whatever was behind it, so
        a prison that suddenly got bigger is a prison with a hole in it. The
        remembered size only ever shrinks, or a breach would be adopted as
-       the new normal on the next beat. */
-    if (st.cellCount > 0 && room.size > st.cellCount + 2) return 'a hole in the wall';
-    if (room.size < st.cellCount || !st.cellCount) st.cellCount = room.size;
+       the new normal on the next beat.
+
+       Only their own cell is measured. A block with a shared common room
+       full of prisoner beds is a perfectly good prison, and comparing a
+       forty-tile mess hall against a six-tile bunk would report every
+       dinner as a breach. */
+    if (ownCell(map, pawn, room)) {
+      if (st.cellCount > 0 && room.size > st.cellCount + 2) {
+        return { reason: 'a hole in the wall', risk: 1 };
+      }
+      if (room.size < st.cellCount || !st.cellCount) st.cellCount = room.size;
+    }
 
     for (var i = 0; i < room.doorIds.length; i++) {
       var door = map.thing(room.doorIds[i]);
-      if (door && door.open === true) return 'a door left standing open';
+      if (door && door.open === true) return { reason: 'a door left standing open', risk: 1 };
     }
-    if (now() - st.lastWatchedTick > UNWATCHED_TICKS) return 'nobody has looked in on them for days';
+    if (now() - st.lastWatchedTick > UNWATCHED_TICKS) {
+      return { reason: 'nobody has looked in on them for days', risk: 1 };
+    }
     return null;
+  }
+
+  /* Is this the room their own bunk stands in. A prisoner with no bed at
+     all is judged on wherever they are standing, because that is the only
+     cell the colony has given them. */
+  function ownCell(map, pawn, room) {
+    var bed = pawn.ownedBedId ? map.thing(pawn.ownedBedId) : null;
+    if (!bed || !bed.spawned) return true;
+    return Regions.roomIdAt(map, bed.x, bed.y) === room.id;
+  }
+
+  /* The public shape is still a sentence or null: the UI prints it and
+     the escape log quotes it. */
+  Prisoners.escapeOpening = function (pawn) {
+    var o = escapeOpening(pawn);
+    return o ? o.reason : null;
+  };
+
+  /* And the authorisation window, so prison.js and reform.js can read
+     back the state they write rather than guessing at it. */
+  Prisoners.authorisedOut = function (pawn) {
+    var st = pawn && pawn.prisoner;
+    return !!(st && authorisedOut(pawn, st));
   };
 
   /* Somewhere off the edge of the map, reachable from where they stand. */
@@ -496,8 +605,16 @@
 
     /* Already walking back to their own bunk: let them finish. */
     if (!leaving && pawn.job && pawn.job.defId === 'layDown') return;
+
+    /* Authorised: burn a tick of the window and leave them to it. The
+       window is topped up every tick by whatever sent them, so it runs
+       out on its own the moment that job ends. */
     if (st.confineCool > 0) { st.confineCool--; return; }
-    st.confineCool = 30;
+    /* Just dragged back: give the walk home a moment before interrupting
+       it again. This is a breather, not permission - escapeOpening reads
+       confineCool and must not see this. */
+    if (st.dragCool > 0) { st.dragCool--; return; }
+    st.dragCool = 30;
 
     var J = sys('Jobs');
     if (pawn.job && J) J.end(pawn, 'interrupted');
@@ -552,7 +669,7 @@
     decayResistance(pawn, st);
     captivityThought(pawn, st);
 
-    var opening = Prisoners.escapeOpening(pawn);
+    var opening = escapeOpening(pawn);
     if (!opening) {
       st.escapeWill = Math.max(0, st.escapeWill - 0.05);
       return;
@@ -568,7 +685,9 @@
     st.escapeWill = U.clamp01(Math.max(st.escapeWill, will * legs));
 
     if (legs < 0.4) return;
-    if (U.chance(ESCAPE_CHANCE * st.escapeWill)) beginEscape(pawn, st, opening);
+    if (U.chance(ESCAPE_CHANCE * st.escapeWill * opening.risk)) {
+      beginEscape(pawn, st, opening.reason);
+    }
   };
 
   /* Is anybody free standing in the same room right now. */

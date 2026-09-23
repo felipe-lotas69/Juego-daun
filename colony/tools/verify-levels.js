@@ -577,7 +577,7 @@ const tickWas = Game.tick;
 runTicks(300);
 ok(Game.tick > tickWas && !Game.gameOver, 'and the game keeps ticking after a load');
 
-hr('12. the gap save.js still has to close');
+hr('12. a colonist underground, and where the save file puts them');
 const lift2 = Levels.get(-1);
 const traveller = Levels.colonists()[0] || Levels.all().flatMap(l => l.map.pawns.filter(p => !p.dead))[0];
 ok(!!traveller, 'someone is still alive to send down (' + Levels.colonists().length + ' colonists)');
@@ -598,15 +598,23 @@ let payload = null;
 try { payload = Save.serialize(Game); } catch (e) { ok(false, 'Save.serialize threw with a colonist underground: ' + e.message); }
 ok(!!payload, 'Save.serialize still works with a colonist on another level');
 if (payload) {
-  const inPayload = payload.map.pawns.length;
+  const inSurface = payload.map.pawns.length;
   const everywhere = map.pawns.length + lift2.map.pawns.length;
-  console.log(`  save.js wrote ${inPayload} pawns; the colony actually has ${everywhere} across its levels`);
-  ok(inPayload < everywhere, 'which is exactly the three-line change described in levels.js: ' +
-     'Save.mapRecord/restoreMap, plus Levels.save(Save.mapRecord) and Levels.load(data.levels, Save.restoreMap)');
+  const underground = (payload.levels && payload.levels.levels || [])
+    .reduce((n, rec) => n + ((rec.map && rec.map.pawns) ? rec.map.pawns.length : 0), 0);
+  console.log(`  save.js wrote ${inSurface} pawns on the surface and ${underground} below; ` +
+              `the colony has ${everywhere} across its levels`);
+  ok(inSurface < everywhere,
+     'the surface record alone does not hold everybody - it never could, it is one map');
+  ok(!!payload.levels && !payload.levels.lossy,
+     'the save carries a levels record, and it is the lossless one (packMap was supplied)');
+  ok(inSurface + underground === everywhere,
+     'and every pawn in the colony is in the file exactly once: ' +
+     inSurface + ' + ' + underground + ' = ' + everywhere);
   let packed = 0;
   const injected = Levels.save(function (m) { packed++; return { w: m.w, h: m.h }; });
   ok(packed === injected.levels.length && packed > 0,
-     'Levels.save(packMap) routes every level through the packer save.js will supply (' + packed + ')');
+     'Levels.save(packMap) routes every level through the packer save.js supplies (' + packed + ')');
 }
 }
 
@@ -631,7 +639,7 @@ console.log('  ' + JSON.stringify(Levels.stats().rows));
 
 /* This runs last because it replaces Game.map, which would pull the
    ground out from under every section above it. */
-hr('14. what the save.js gap actually costs the player');
+hr('14. a worked basement, through a save file and back');
 /* Section 12 shows that a colonist underground is missing from the
    file. That reads as a rounding error, and it is not: save.js
    serialises one map, so EVERYTHING on every other level goes with it.

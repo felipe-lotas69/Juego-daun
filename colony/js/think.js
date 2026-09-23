@@ -70,6 +70,7 @@
     DEFEND: 5.4,       /* something is attacking this colonist right now */
     FIGHT: 5.5,        /* a raider between jobs looks for someone to shoot */
     EMERGENCY: 6,
+    ARM: 6.5,          /* unarmed, with a weapon lying in the dirt nearby */
     URGENT: 7,
     SLEEP: 8,
     HUNGER: 9,
@@ -493,6 +494,9 @@
   var REACT_MELEE = 1.8;        /* it is already on me */
   var REACT_ANIMAL = 6;         /* close enough to be coming for me */
   var REACT_RAIDER = 12;        /* close enough to run from */
+  var REACT_RESCUE = 10;        /* a friend being mauled, close enough to help */
+  var ARM_RADIUS = 28;          /* how far a colonist walks for a weapon */
+  var ARM_RESCAN = 1200;        /* and how often they look, having found none */
 
   function selfDefenceJob(pawn) {
     if (!isHuman(pawn) || pawn.drafted || pawn.faction !== 'player') return null;
@@ -511,6 +515,13 @@
     if (bestD <= REACT_MELEE) return attackJob(pawn, best);
 
     if (best.isAnimal) {
+      /* Six tiles, and not a tile further. Opening at rifle range was
+         tried and measured: across a seed sweep it cost more colonists
+         than it saved, because a shot from across the clearing turns a
+         stalk that might have come to nothing into a fight at the
+         animal's best range, and a colonist who fires and misses has
+         told it exactly where they are. The answer to a predator is a
+         door, and closing the distance yourself is not one. */
       if (bestD > REACT_ANIMAL) return null;
       var C = sys('Combat');
       var w = C && C.weaponOf ? C.weaponOf(pawn) : null;
@@ -521,6 +532,146 @@
     /* A hostile human. Undrafted colonists get out of the way and leave
        the fighting to whoever the player drafts. */
     if (bestD <= REACT_RAIDER) return fleeJob(pawn, best);
+    return null;
+  }
+
+  /* An animal that is on one of ours right now, and the person it has.
+
+     Self-defence used to ask only who was attacking *me*, which meant a
+     colonist could stand six tiles away and haul steel while a wolf
+     killed the person they had breakfast with. A predator hunts one pawn
+     at a time, so the rest of the colony was, by construction, never the
+     one being attacked, and a single wolf could work through a colony
+     one body at a time without anybody ever reacting. */
+  function maulingNearby(pawn, map) {
+    var list = map.pawns, i, j;
+    for (i = 0; i < list.length; i++) {
+      var victim = list[i];
+      if (victim === pawn || victim.dead || !victim.isHuman) continue;
+      if (victim.faction !== pawn.faction) continue;
+      if (U.dist(pawn.x, pawn.y, victim.x, victim.y) > REACT_RESCUE) continue;
+      for (j = 0; j < list.length; j++) {
+        var beast = list[j];
+        if (!beast.isAnimal || beast.dead || beast.downed) continue;
+        if (beast.faction === pawn.faction) continue;
+        if (U.cheb(beast.x, beast.y, victim.x, victim.y) > 2) continue;
+        if (!hostileTo(victim, beast)) continue;
+        return { beast: beast, victim: victim };
+      }
+    }
+    return null;
+  }
+
+  /* ------------------------------------------------------------------
+     Picking up a weapon
+
+     The crash drops two weapons in the dirt and nothing in the game ever
+     told anybody to pick one up: `equipWeapon` existed but only a player
+     right-click ever started it. So three colonists stood around a rifle
+     for a fortnight and met the first bear bare-handed, which is how a
+     third of all new colonies ended. Anybody unarmed takes the best thing
+     within reach, and prefers to be able to shoot it from a distance.
+     ------------------------------------------------------------------ */
+  function armSelfJob(pawn) {
+    if (!isHuman(pawn) || pawn.dead || pawn.downed || !pawn.map) return null;
+    if (pawn.faction !== 'player' || pawn.prisoner || pawn.slave) return null;
+    if (pawn.equipment) return null;
+    if (pawn.mentalState) return null;
+    /* Hands. Somebody who cannot hold a tool cannot hold a rifle. */
+    var H = sys('Health');
+    if (H && H.capacity && H.capacity(pawn, 'manipulation') < 0.3) return null;
+
+    var mind = mindOf(pawn);
+    var t = tickNow();
+    if ((mind.armScanTick || 0) > t) return null;
+    mind.armScanTick = t + ARM_RESCAN;
+
+    var best = bestLooseWeapon(pawn);
+    if (!best) return null;
+    return makeJob('equipWeapon', target('thing', best));
+  }
+
+  function weaponScore(thing) {
+    var w = thing.def && thing.def.weapon;
+    if (!w) return -1;
+    /* Range is worth more than damage to somebody who is about to need
+       it: a spear is a losing argument with a bear. */
+    var score = (w.damage || 1) * (w.ranged ? 2.2 : 1);
+    if (w.ranged) score += Math.min(30, w.range || 0);
+    var Q = thing.quality;
+    if (typeof Q === 'number') score *= 1 + Q * 0.05;
+    return score;
+  }
+
+  function bestLooseWeapon(pawn) {
+    var map = pawn.map;
+    if (!map.itemsInRadius) return null;
+    var Res = sys('Res');
+    var items = map.itemsInRadius(pawn.x, pawn.y, ARM_RADIUS);
+    var cands = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it || !it.spawned || !it.def || !it.def.weapon) continue;
+      if (it.def.weapon.ranged === undefined && it.def.weapon.damage === undefined) continue;
+      if (it.forbidden) continue;
+      if (Res && Res.canReserve && !Res.canReserve(pawn, target('thing', it), 1)) continue;
+      var score = weaponScore(it);
+      if (score <= 0) continue;
+      cands.push({ x: it.x, y: it.y, thing: it, score: score });
+    }
+    if (!cands.length) return null;
+    var P = sys('Path');
+    if (!P || !P.closestReachable) return cands[0].thing;
+    /* A better weapon is worth walking for, up to a point: one point of
+       score buys about a tile and a half. */
+    var pick = P.closestReachable(map, pawn, cands, function (c, d) { return c.score * 1.5 - d; });
+    return pick ? pick.thing : null;
+  }
+
+  /* Wade in, or do not: armed is enough reason, and a colonist already on
+     the floor is reason enough bare-handed. Anything else and the colony
+     is trading two people for one. */
+  function defendFriendJob(pawn) {
+    if (!isHuman(pawn) || pawn.drafted || pawn.faction !== 'player') return null;
+    if (pawn.downed || pawn.dead || !pawn.map) return null;
+    if (pawn.mentalState) return null;
+
+    /* One of their own, mid-breakdown, swinging at the people they live
+       with. Raiders are still the player's problem - the tree has always
+       had undrafted colonists run from those and it should - but nobody
+       sleeps through a housemate going berserk two rooms away, and a
+       colony that did lost people to one bad mood while the player was
+       looking at the research tab. */
+    var wild = berserkColleague(pawn, pawn.map);
+    if (wild) return subdueJob(pawn, wild);
+
+    var found = maulingNearby(pawn, pawn.map);
+    if (!found) return null;
+    var C = sys('Combat');
+    var w = C && C.weaponOf ? C.weaponOf(pawn) : null;
+    if (w || found.victim.downed) return attackJob(pawn, found.beast);
+    return null;
+  }
+
+  /* Hands, not rifles, and emphatically not `playerForced`: combat.js
+     reads that flag as permission to finish a target who is already on
+     the floor, which is the opposite of the point. Put them down, then
+     the doctor column tends them. */
+  function subdueJob(pawn, target_) {
+    return makeJob('attackMelee', target('pawn', target_), null, {});
+  }
+
+  function berserkColleague(pawn, map) {
+    var list = map.pawns;
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      if (p === pawn || p.dead || p.downed || !p.isHuman) continue;
+      if (p.faction !== pawn.faction) continue;
+      var ms = p.mentalState;
+      if (!ms || !ms.def || !ms.def.isAggressive) continue;
+      if (U.dist(pawn.x, pawn.y, p.x, p.y) > REACT_RESCUE) continue;
+      return p;
+    }
     return null;
   }
 
@@ -686,8 +837,10 @@
     { tier: TIER.DRAFTED,   name: 'drafted',   fn: draftedBranch },
     { tier: TIER.ANIMAL,    name: 'animal',    fn: animalJob },
     { tier: TIER.DEFEND,    name: 'defend',    fn: selfDefenceJob },
+    { tier: TIER.DEFEND,    name: 'defendFriend', fn: defendFriendJob },
     { tier: TIER.FIGHT,     name: 'fight',     fn: fightBackJob },
     { tier: TIER.EMERGENCY, name: 'emergency', fn: emergencyJob },
+    { tier: TIER.ARM,       name: 'arm',       fn: armSelfJob },
     { tier: TIER.URGENT,    name: 'urgent',    fn: urgentNeedsJob },
     { tier: TIER.SLEEP,     name: 'bedtime',   fn: scheduledSleepJob },
     { tier: TIER.HUNGER,    name: 'hunger',    fn: hungerJob },

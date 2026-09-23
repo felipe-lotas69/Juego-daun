@@ -103,6 +103,11 @@
   var THING_SKIP = {
     def: 1, map: 1, _cells: 1, _defIdx: 1, tickFn: 1,
     id: 1, defId: 1, x: 1, y: 1,
+    /* `spawned` is decided by where the loader puts the thing, not by the
+       record: copying it in flipped the flag under the map's feet and
+       every worn shirt and half-eaten corpse came back indexed into the
+       cell it was standing on. */
+    spawned: 1,
     materials: 1, bills: 1, corpse: 1, apparel: 1
   };
 
@@ -619,11 +624,11 @@
   /* ============================================================
      SERIALIZE
      ============================================================ */
-  Save.serialize = function (game) {
-    game = game || sys('Game');
-    if (!game || !game.map) return null;
-    var map = game.map;
-
+  /* One map, packed. Pulled out of Save.serialize so that levels.js can
+     hand the same packer to every floor it is holding: a basement is a
+     GameMap like any other and deserves the same fidelity as the
+     surface, not a lossy summary that loses whoever was standing in it. */
+  function packMap(map) {
     var terrainIds = Defs.all('terrain').map(function (d) { return d.id; });
 
     var things = [];
@@ -660,6 +665,27 @@
     }
 
     var Zones = sys('Zones');
+
+    return {
+      w: map.w, h: map.h,
+      tickCount: map.tickCount || 0,
+      terrainIds: terrainIds,
+      terrain: encodeGrid(map.terrain),
+      roof: encodeGrid(map.roof),
+      blood: encodeGrid(map.blood),
+      things: things,
+      pawns: pawns,
+      zones: (Zones && Zones.serialize) ? Zones.serialize(map) : [],
+      desig: desig,
+      temps: temps
+    };
+  }
+
+  Save.serialize = function (game) {
+    game = game || sys('Game');
+    if (!game || !game.map) return null;
+    var map = game.map;
+
     var Research = sys('Research');
     var Power = sys('Power');
     var Storyteller = sys('Storyteller');
@@ -667,6 +693,7 @@
     var Factions = sys('Factions');
     var Caravans = sys('Caravans');
     var Trade = sys('Trade');
+    var Levels = sys('Levels');
 
     return {
       v: VERSION,
@@ -679,19 +706,12 @@
       }),
       messages: clone(game.messages || []),
       letters: clone(game.letters || []),
-      map: {
-        w: map.w, h: map.h,
-        tickCount: map.tickCount || 0,
-        terrainIds: terrainIds,
-        terrain: encodeGrid(map.terrain),
-        roof: encodeGrid(map.roof),
-        blood: encodeGrid(map.blood),
-        things: things,
-        pawns: pawns,
-        zones: (Zones && Zones.serialize) ? Zones.serialize(map) : [],
-        desig: desig,
-        temps: temps
-      },
+      map: packMap(map),
+      /* Every floor below and above, through the same packer. Without
+         this the basement was regenerated from its seed on load and the
+         forty hours spent digging it, everything stored in it and
+         anyone standing in it went with it. */
+      levels: (Levels && Levels.save) ? Levels.save(packMap) : null,
       research: (Research && Research.save) ? Research.save() : null,
       power: (Power && Power.save) ? Power.save(map) : null,
       story: (Storyteller && Storyteller.saveState) ? clone(Storyteller.saveState()) : null,
@@ -764,6 +784,48 @@
     }
   }
 
+  /* One map, rebuilt: the mirror of packMap, and the function levels.js
+     is handed so a basement comes back as itself rather than as a fresh
+     roll of the same seed. Nothing here touches the live game, which is
+     what lets a corrupt file be refused without having changed it. */
+  function unpackMap(m, ids) {
+    var map = new root.GameMap(m.w, m.h);
+
+    decodeGrid(m.terrain, map.terrain, terrainRemapper(m.terrainIds));
+    decodeGrid(m.roof, map.roof, null);
+    decodeGrid(m.blood, map.blood, null);
+    map.tickCount = m.tickCount || 0;
+
+    /* Terrain was written straight into the grid, so the cost grid it
+       was built from is now a lie. Recompute it before a single thing
+       lands: spawnThing marks its own cells dirty, but only its own. */
+    for (var i = 0; i < map.size; i++) map.markPathDirtyIdx(i);
+
+    var things = m.things || [];
+    for (var t = 0; t < things.length; t++) {
+      var thing = spawnThingRec(map, things[t]);
+      if (thing && ids && thing.id >= ids.high) ids.high = thing.id + 1;
+    }
+    var pawnRecs = m.pawns || [];
+    for (var p = 0; p < pawnRecs.length; p++) {
+      var pawn = restorePawn(map, pawnRecs[p]);
+      if (pawn && ids && pawn.id >= ids.high) ids.high = pawn.id + 1;
+    }
+
+    var Zones = sys('Zones');
+    if (Zones && Zones.deserialize) Zones.deserialize(map, m.zones || []);
+
+    var desig = m.desig || [];
+    for (var d = 0; d < desig.length; d++) {
+      var row = desig[d];
+      if (!row || row.length < 2) continue;
+      var idx = row[0] | 0;
+      if (idx < 0 || idx >= map.size) continue;
+      map.designate(map.xOf(idx), map.yOf(idx), row[1], { defId: row[2] || null });
+    }
+    return map;
+  }
+
   Save.deserialize = function (data) {
     var bad = checkPayload(data);
     if (bad) return note(bad);
@@ -787,39 +849,14 @@
        here that would not show up until much later. */
     var highId = Math.max(1, data.nid | 0);
 
+    /* Ids handed out while rebuilding a map climb past whatever the file
+       named, and every map in the save draws from the same counter, so
+       the high-water mark is carried between them rather than reset. */
+    var ids = { high: highId };
+
     try {
-      map = new root.GameMap(m.w, m.h);
-
-      decodeGrid(m.terrain, map.terrain, terrainRemapper(m.terrainIds));
-      decodeGrid(m.roof, map.roof, null);
-      decodeGrid(m.blood, map.blood, null);
-      map.tickCount = m.tickCount || 0;
-
-      /* Terrain was written straight into the grid, so the cost grid it
-         was built from is now a lie. Recompute it before a single thing
-         lands: spawnThing marks its own cells dirty, but only its own. */
-      for (var i = 0; i < map.size; i++) map.markPathDirtyIdx(i);
-
-      for (var t = 0; t < m.things.length; t++) {
-        var thing = spawnThingRec(map, m.things[t]);
-        if (thing && thing.id >= highId) highId = thing.id + 1;
-      }
-      for (var p = 0; p < m.pawns.length; p++) {
-        var pawn = restorePawn(map, m.pawns[p]);
-        if (pawn && pawn.id >= highId) highId = pawn.id + 1;
-      }
-
-      var Zones = sys('Zones');
-      if (Zones && Zones.deserialize) Zones.deserialize(map, m.zones || []);
-
-      var desig = m.desig || [];
-      for (var d = 0; d < desig.length; d++) {
-        var row = desig[d];
-        if (!row || row.length < 2) continue;
-        var idx = row[0] | 0;
-        if (idx < 0 || idx >= map.size) continue;
-        map.designate(map.xOf(idx), map.yOf(idx), row[1], { defId: row[2] || null });
-      }
+      map = unpackMap(m, ids);
+      highId = ids.high;
     } catch (e) {
       /* The new map is a local until this point, so a throw here costs
          nothing but the attempt. */
@@ -896,6 +933,34 @@
       if (Power.markDirty) Power.markDirty(map);
       if (Power.load) Power.load(map, data.power);
       else if (Power.update) Power.update(map);
+    }
+
+    /* The floors. Levels.init wants the surface already installed, and
+       each level rebuilds its own regions and power off its own map, so
+       this goes after the surface is whole and before wealth is counted
+       - a cellar full of steel is part of what the colony is worth.
+
+       A save written before levels were stored carries no record, and
+       Levels.load answers that by resetting to the surface alone, which
+       is exactly right: whatever is in memory belongs to the colony that
+       has just been replaced. */
+    var Levels = sys('Levels');
+    if (Levels && Levels.load) {
+      /* One counter across every floor: a thing in the cellar owns its id
+         as firmly as a thing on the surface, and handing that number out
+         again later is the one mistake here that would not show up until
+         much later. */
+      var below = { high: highId };
+      try {
+        Levels.load(data.levels || null, function (rec) {
+          return rec ? unpackMap(rec, below) : null;
+        });
+      } catch (e) {
+        if (Levels.reset) Levels.reset();
+        if (Game.msg) Game.msg('the other floors could not be restored', { type: 'threat' });
+      }
+      if (below.high > highId) highId = below.high;
+      if (U.peekId() < highId) U.setIdCounter(highId);
     }
 
     if (Game.recalcWealth) Game.recalcWealth();

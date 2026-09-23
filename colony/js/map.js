@@ -668,7 +668,13 @@
 
   GameMap.prototype.despawnThing = function (thing) {
     if (!thing) return false;
-    if (thing.spawned && thing.map === this) this._unplace(thing);
+    /* `_cells` is what `_place` wrote and `_unplace` clears, so it is the
+       honest answer to "is this thing in the grids". The `spawned` flag is
+       a field like any other and anything that sets it by hand - a loader
+       replaying a saved record, say - would otherwise leave the thing
+       indexed forever: invisible, unreachable, and still adding its path
+       cost to the cell it is not on. */
+    if (thing.map === this && (thing.spawned || thing._cells)) this._unplace(thing);
     thing.spawned = false;
     this._forget(thing);
     this.undesignateThing(thing);

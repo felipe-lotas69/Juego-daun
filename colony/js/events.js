@@ -1570,7 +1570,17 @@
 
       /* Prefer a predator already on the map: one that has been prowling
          the treeline for days finally picking someone is better than a
-         wolf teleporting in. */
+         wolf teleporting in.
+
+         Within the budget, though. The storyteller hands this incident
+         points for the same reason it hands them to a raid - so that
+         what turns up is the size of the colony it turns up at - and
+         reaching for a resident animal used to ignore them entirely. A
+         bear is worth two hundred and a wolf ninety, so a map that
+         happened to generate a bear sent it at three people on day
+         three, which is not a predator attack, it is the end of the
+         save. The floor keeps a wolf always affordable. */
+      var budget = Math.max(90, points | 0);
       var pred = null, bestD = Infinity;
       for (var i = 0; i < map.pawns.length; i++) {
         var p = map.pawns[i];
@@ -1578,6 +1588,7 @@
         if (p.faction !== 'wild') continue;
         if (!A.isPredator || !A.isPredator(p)) continue;
         if (A.isManhunter && A.isManhunter(p)) continue;
+        if (((p.kind && p.kind.combatPower) || 0) > budget) continue;
         var d = U.distSq(victim.x, victim.y, p.x, p.y);
         if (d < bestD) { bestD = d; pred = p; }
       }

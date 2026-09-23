@@ -544,6 +544,16 @@
        what it has pulled down before it eats. */
     if (prey.downed) {
       if (U.cheb(pawn.x, pawn.y, prey.x, prey.y) > 1) return Jobs.make('goto', T.cell(prey.x, prey.y));
+      /* But not with the rest of them walking up. A wolf will not stand
+         over a body while four people close in, and a colony that sends
+         somebody to carry their friend home should not arrive to find the
+         job already finished. Rescue is only a mechanic if there is time
+         to do it. */
+      if (prey.isHuman && guarded(map, prey, pawn)) {
+        mind.preyId = 0;
+        mind.nextPrey = tick + PREY_SCAN_TICKS;
+        return fleeJob(pawn, prey, map) || waitJob(pawn, 60);
+      }
       killAnimal(prey, pawn, 'killed by a ' + info(pawn.kindId).label);
       mind.preyId = 0;
       return waitJob(pawn, 60);
@@ -578,6 +588,20 @@
       if (score > bestScore) { bestScore = score; best = p; }
     }
     return best;
+  }
+
+  /* Somebody of theirs on their feet, near enough to be a problem. */
+  var GUARD_RADIUS = 7;
+  function guarded(map, victim, predator) {
+    var list = map.pawns;
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      if (p === victim || p === predator) continue;
+      if (p.dead || p.downed || !p.isHuman) continue;
+      if (p.faction !== victim.faction) continue;
+      if (U.dist(p.x, p.y, victim.x, victim.y) <= GUARD_RADIUS) return true;
+    }
+    return false;
   }
 
   function isAlone(map, human) {

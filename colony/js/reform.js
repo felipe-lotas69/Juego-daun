@@ -578,6 +578,11 @@
 
   var _roster = [];
   var _known = {};
+  /* The map this state belongs to, and whether it arrived from a save
+     rather than from a new colony. See adoptMap in section 19. */
+  var _boundMap = null;
+  var _loadedState = false;
+  var _saveHooked = false;
   var _rooms = null;
   var _roomsTick = -1;
   var _tickSeen = -1;
@@ -1027,6 +1032,18 @@
     return U.clamp(q, -1, 1);
   }
 
+  /* Rooms prisoners.js counts as cells: a room holding a prisoner bed
+     and no free one. A programme room outside that set is a room a
+     prisoner has to leave confinement to reach, and prisoners.js rolls
+     for a run at the map edge on every beat they are out. Unknown
+     (prisoners.js absent) reads as inside, so the alert below never
+     fires at a game that cannot answer. */
+  function prisonRoomSet(map) {
+    var P = sys('Prisoners');
+    if (!P || !P.prisonRoomIds) return null;
+    try { return P.prisonRoomIds(map) || null; } catch (e) { return null; }
+  }
+
   Reform.rooms = function (map) {
     map = map || gameMap();
     if (!map) return [];
@@ -1034,6 +1051,7 @@
     if (_rooms && _roomsTick === t && _rooms.mapId === (map.__reformId || 0)) return _rooms.list;
 
     map.__reformId = map.__reformId || U.nextId();
+    var cells = prisonRoomSet(map);
     var byKey = {};
     var list = [];
 
@@ -1052,7 +1070,8 @@
             programmeId: def.id, roomId: rid, pieces: [], seats: [],
             quality: roomQualityOf(map, room),
             x: thing.x, y: thing.y,
-            outdoor: !!(room && room.outdoor)
+            outdoor: !!(room && room.outdoor),
+            inPrison: cells ? !!cells[rid] : true
           };
           list.push(entry);
         }
@@ -1538,6 +1557,13 @@
 
     var open = bestSessionFor(pawn, r, map);
     if (open) {
+      if (open.compel) {
+        /* Marched in, so the enrolment cap is not the player's argument
+           here: they set the regime to compulsory. */
+        Reform.enrol(pawn, open.session.programmeId, true);
+        note(pawn, 'programme', 'Marched into the ' +
+          PROGRAMMES[open.session.programmeId].short.toLowerCase() + ' session.');
+      }
       var seat = pickSeat(open.session, open.room, pawn, map);
       if (seat) {
         var job = Jobs.make('reformAttend', T.cell(seat.x, seat.y), null,
@@ -1561,7 +1587,12 @@
       if (s.closed) continue;
       if (s.ticks > s.length * 0.6) continue;        /* too late to join */
       if (seatsLeft(s) <= 0) continue;
-      if (r.enrolled.indexOf(s.programmeId) < 0) continue;
+      var signedUp = r.enrolled.indexOf(s.programmeId) >= 0;
+      if (!signedUp) {
+        if (Reform.state.policy.attendance !== 'compulsory') continue;
+        if (r.progress[s.programmeId] && r.progress[s.programmeId].completed) continue;
+        if (!Reform.eligible(pawn, s.programmeId)) continue;
+      }
       if (!reachable(map, pawn, s.x, s.y)) continue;
       var room = null;
       for (var k = 0; k < rooms.length; k++) {
@@ -1569,7 +1600,7 @@
       }
       if (!room) continue;
       if (!best || U.distSq(pawn.x, pawn.y, s.x, s.y) < U.distSq(pawn.x, pawn.y, best.session.x, best.session.y)) {
-        best = { session: s, room: room };
+        best = { session: s, room: room, compel: !signedUp };
       }
     }
     return best;
@@ -2126,7 +2157,7 @@
     var P = sys('Prisoners');
     if (P && P.release) P.release(prisoner, by);
 
-    Reform.state.stats.dispositions.ransomed++;
+    noteExit(prisoner, 'ransomed');
     Reform.log('ransom', who + ' was ransomed for ' + amount + ' silver.', { pawn: prisoner });
     letter('Ransom paid for ' + who,
       (f.name || 'Their people') + ' paid ' + amount + ' silver for ' + who + ' and took them ' +
@@ -2147,7 +2178,7 @@
     if (prisoner.slave && S && S.sell) {
       r.exitVia = 'traded';
       var ok = S.sell(prisoner, partner);
-      if (ok) Reform.state.stats.dispositions.traded++;
+      if (ok) noteExit(prisoner, 'traded');
       return !!ok;
     }
 
@@ -2163,7 +2194,7 @@
     var P = sys('Prisoners');
     if (P && P.release) P.release(prisoner, by);
 
-    Reform.state.stats.dispositions.traded++;
+    noteExit(prisoner, 'traded');
     Reform.log('trade', who + ' was handed over for ' + value + ' silver.', { pawn: prisoner });
     letter(who + ' was sold on',
       who + ' has been handed to a passing trader for ' + value + ' silver' +
@@ -2223,7 +2254,7 @@
     var P = sys('Prisoners');
     if (P && P.release) P.release(prisoner, by);
 
-    Reform.state.stats.dispositions.paroled++;
+    noteExit(prisoner, 'paroled');
     Reform.log('parole', who + ' was paroled (' + U.pct(keep) + ' likely to keep it).', { pawn: prisoner });
     letter(who + ' has been paroled',
       who + ' walked out of your gate on a promise' + (by ? ' given to ' + nameOf(by) : '') +
@@ -2321,6 +2352,23 @@
     return entry;
   }
 
+  /* One door, one count.
+
+     Every exit arrives here, whether this file showed them out itself
+     or the roster sweep noticed the bunk was empty, and a record that
+     has already been written is never written again. Before this, a
+     ransom counted itself and was then counted a second time by the
+     sweep four seconds later, so the exits table in the report - the
+     one number a player uses to decide how they are running the place
+     - read double for every door this file operates. */
+  function noteExit(pawn, via) {
+    var r = pawn && pawn.reform;
+    if (!r || !via || r.status !== 'held') return null;
+    var stats = Reform.state.stats.dispositions;
+    if (stats[via] !== undefined) stats[via]++;
+    return recordRelease(pawn, via);
+  }
+
   function classifyExit(pawn) {
     var r = pawn.reform;
     if (!r) return null;
@@ -2356,9 +2404,7 @@
       if (!pawn || !pawn.reform) continue;
       var via = classifyExit(pawn);
       if (!via) continue;
-      var stats = Reform.state.stats.dispositions;
-      if (stats[via] !== undefined) stats[via]++;
-      recordRelease(pawn, via);
+      noteExit(pawn, via);
     }
 
     _roster.length = 0;
@@ -2953,11 +2999,20 @@
     var list = prisonersOf(map), n = 0;
     var P = sys('Prison');
     var hour = hourNow();
+    var compel = Reform.state.policy.attendance === 'compulsory';
     for (var i = 0; i < list.length; i++) {
       var p = list[i];
       if (p.downed || p.carriedBy) continue;
       var r = p.reform;
-      if (!r || r.enrolled.indexOf(programmeId) < 0) continue;
+      if (!r) continue;
+      if (r.enrolled.indexOf(programmeId) < 0) {
+        /* Compulsory attendance is what the policy row has always
+           promised it is: a prisoner who never signed up is marched in
+           anyway, which is why every roll in the room is worse. */
+        if (!compel) continue;
+        if (r.progress[programmeId] && r.progress[programmeId].completed) continue;
+        if (!Reform.eligible(p, programmeId)) continue;
+      }
       var ps = p.prisonState;
       if (ps && ps.solitaryLeft > 0) continue;
       if (lockedDown(p)) continue;
@@ -3182,6 +3237,38 @@
      19. THE BEAT
      ============================================================ */
 
+  /* ---------- which colony this state belongs to ----------
+
+     game.js's newGame() resets Research and Storyteller and nothing
+     else, and game.js is not this file's to edit. Every GameMap is a
+     distinct object, so the module notices the swap itself: a map it
+     has never seen is either a new colony or a loaded save, and the
+     two are told apart by how much of that map has been simulated. A
+     fresh GameMap has run no ticks of its own; a restored one carries
+     the tickCount the save was written with, and a load also says so
+     directly through Reform.load.
+
+     Getting this wrong in the harmless direction keeps a ledger one
+     colony too long. Getting it wrong in the other direction puts a
+     prisoner released from a colony that no longer exists on the new
+     map with a rifle - which is what happened before, because the
+     mapId this replaces was tracked and never acted on. */
+  function adoptMap(map) {
+    if (!map || _boundMap === map) return false;
+    var first = _boundMap === null;
+    var restored = _loadedState || (map.tickCount || 0) > FACILITY_BEAT;
+    _loadedState = false;
+    if (first || restored) {
+      _boundMap = map;
+      Reform.state.mapId = map.__reformId || 0;
+      return false;
+    }
+    Reform.reset();
+    _boundMap = map;
+    Reform.state.mapId = map.__reformId || 0;
+    return true;
+  }
+
   Reform.tickPawn = function (pawn) {
     if (!pawn || pawn.dead) return;
     if (!pawn.prisoner) return;
@@ -3214,11 +3301,10 @@
     if (!map) return;
     var t = now();
     if (_tickSeen === t) return;      /* game.js may also name us */
+    if (!_saveHooked) installSaveHooks();   /* save.js loads after this file */
+    /* Before the guard is set, because a wipe resets it. */
+    adoptMap(map);
     _tickSeen = t;
-
-    /* A new colony wipes the module the way prison.js does. */
-    var id = map.__reformId || 0;
-    if (Reform.state.mapId !== id && id) Reform.state.mapId = id;
 
     if (t % FACILITY_BEAT === 0) {
       refreshRoster(map);
@@ -3285,8 +3371,61 @@
     return true;
   }
 
+  /* save.js does not name Reform either, and save.js is not this
+     file's to edit. The per-prisoner record rides on pawn.reform and
+     save.js already carries it inside the pawn blob; what a reload
+     used to lose was the module - the policy, the counters, the ledger
+     and, above all, the release book, which is the list of people who
+     are still out there. A colony that saved and loaded came back with
+     nobody owed a visit, which quietly deletes the one story this file
+     exists to tell.
+
+     Same shape as the tick driver, and for the same reason: guarded,
+     idempotent, and inert the moment save.js names Reform itself,
+     because it only fills a key that is not already there. save.js
+     loads after this file, so the hook is fitted on the first tick
+     rather than at load. */
+  function plainCopy(value) {
+    try { return JSON.parse(JSON.stringify(value)); } catch (e) { return value; }
+  }
+
+  function installSaveHooks() {
+    var S = root.Save;
+    if (_saveHooked || !S || S.__reformSaved) return false;
+    if (typeof S.serialize !== 'function' || typeof S.deserialize !== 'function') return false;
+
+    var serialize = S.serialize;
+    S.serialize = function () {
+      var data = serialize.apply(this, arguments);
+      if (data && typeof data === 'object' && data.reform === undefined) {
+        data.reform = plainCopy(Reform.save());
+      }
+      return data;
+    };
+
+    var deserialize = S.deserialize;
+    S.deserialize = function (data) {
+      var ok = deserialize.apply(this, arguments);
+      if (!ok) return ok;
+      if (data && data.reform) Reform.load(data.reform);
+      else {
+        /* A save written before this was wired carries no module state,
+           and the colony it restores is not the one running now. */
+        Reform.reset();
+        _loadedState = true;
+        _boundMap = null;
+      }
+      return ok;
+    };
+
+    S.__reformSaved = true;
+    _saveHooked = true;
+    return true;
+  }
+
   Reform.autoDrive = true;
   installDriver();
+  installSaveHooks();
   Reform.registerWork();
 
   /* ============================================================
@@ -3350,6 +3489,7 @@
         roomId: rooms[i].roomId, capacity: rooms[i].capacity,
         quality: Math.round(rooms[i].quality * 100) / 100,
         pieces: rooms[i].pieces.length, outdoor: rooms[i].outdoor,
+        inPrison: rooms[i].inPrison !== false,
         x: rooms[i].x, y: rooms[i].y
       });
     }
@@ -3547,7 +3687,46 @@
         severity: 'high' });
     }
     if (Reform.state.stats.labour.idleBatches > 3) {
-      out.push({ label: 'the labour line keeps running out of materials', severity: 'low' });
+      var busy = null, bl;
+      for (var lz = 0; lz < LABOUR_IDS.length; lz++) {
+        bl = Reform.state.stats.labour.byLine[LABOUR_IDS[lz]];
+        if (bl && (!busy || bl.ticks > busy.ticks)) busy = { id: LABOUR_IDS[lz], ticks: bl.ticks };
+      }
+      var line = busy ? LABOUR[busy.id] : null;
+      var wants = 'materials';
+      if (line && line.input) {
+        if (line.input.defId) {
+          var wd = Defs.maybe ? Defs.maybe('thing', line.input.defId) : null;
+          wants = (wd && wd.label) || line.input.defId;
+        } else if (line.input.foodNutrition) {
+          wants = 'raw food';
+        }
+      }
+      out.push({ label: 'the ' + (line ? line.label.toLowerCase() : 'labour') +
+        ' line keeps standing idle: it wants ' + wants + ' in the same room as the station',
+        severity: 'low' });
+    }
+
+    /* The one building mistake that quietly stops every programme in
+       the prison. A class held outside the cells means the prisoner has
+       to leave confinement to sit it, and prisoners.js rolls for the
+       map edge on every beat they are out of their cell - so the room
+       full of desks reads as working while the block empties. */
+    var outside = [];
+    for (var ro = 0; ro < rooms.length; ro++) {
+      if (rooms[ro].inPrison === false && outside.indexOf(rooms[ro].roomId) < 0) {
+        outside.push(rooms[ro].roomId);
+      }
+    }
+    if (outside.length) {
+      var firstOut = null;
+      for (var rp = 0; rp < rooms.length && !firstOut; rp++) {
+        if (rooms[rp].inPrison === false) firstOut = rooms[rp];
+      }
+      out.push({ label: outside.length + ' programme room' + (outside.length > 1 ? 's are' : ' is') +
+        ' outside the prison: prisoners have to leave their cells to sit a class there, ' +
+        'and that is when they run', severity: 'high',
+        lookAt: firstOut ? { x: firstOut.x, y: firstOut.y } : null });
     }
     if (Reform.state.stats.sessionsDisrupted > Reform.state.stats.sessionsRun &&
         Reform.state.stats.sessionsDisrupted > 2) {
@@ -3570,6 +3749,12 @@
      to does not survive a save either.
      ============================================================ */
 
+  function tail(list, cap) {
+    if (!list || !list.length) return [];
+    var out = Array.isArray(list) ? list : [];
+    return out.length > cap ? out.slice(out.length - cap) : out.slice();
+  }
+
   Reform.save = function () {
     var st = Reform.state;
     return {
@@ -3578,8 +3763,8 @@
       policy: st.policy,
       stats: st.stats,
       ledger: st.ledger.slice(-80),
-      releases: st.releases.slice(),
-      returns: st.returns.slice()
+      releases: tail(st.releases, RELEASE_CAP),
+      returns: tail(st.returns, RETURN_CAP)
     };
   };
 
@@ -3603,10 +3788,14 @@
         }
       }
     }
+    /* The three lists are capped where they are appended to, which is
+       the only place the running game can grow them. A blob is not the
+       running game: it may have been written by an older build, or by
+       hand, so the lids go back on here as well. */
     fresh.nextId = obj.nextId || 1;
-    fresh.ledger = obj.ledger || [];
-    fresh.releases = obj.releases || [];
-    fresh.returns = obj.returns || [];
+    fresh.ledger = tail(obj.ledger, LEDGER_CAP);
+    fresh.releases = tail(obj.releases, RELEASE_CAP);
+    fresh.returns = tail(obj.returns, RETURN_CAP);
     Reform.state = fresh;
     Reform.policy = fresh.policy;
     _roster.length = 0;
@@ -3614,6 +3803,10 @@
     _rooms = null;
     _roomsTick = -1;
     _tickSeen = -1;
+    /* Whatever map this state is about to meet, it is the one the save
+       was written on: adopt it rather than wiping what just loaded. */
+    _loadedState = true;
+    _boundMap = null;
     return true;
   };
 

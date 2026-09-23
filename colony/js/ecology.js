@@ -995,6 +995,11 @@
     return worst;
   }
 
+  /* Before this, a hungry predator is still a predator and will still
+     take somebody who is out on their own - it just does not get told to
+     go and find the colony. */
+  var PRESSURE_GRACE_DAYS = 6;
+
   /* A predator with nothing left to eat is the most direct feedback
      this system has into the rest of the game: it comes for the colony.
      Hunt the deer out and the wolves become your problem. */
@@ -1023,8 +1028,18 @@
 
     var G = game();
     var day = G && G.day ? G.day() : 0;
+    /* This is a threat, so it answers to the things every other threat
+       answers to: the difficulty dial, and the grace the storyteller
+       gives a colony that has not finished unpacking. A starving bear
+       walking into three people with no walls and no rifles on day two
+       is not a story, it is the end of one - and the pressure that sent
+       it was worldgen's, not anything the player did. */
+    var scale = (G && G.difficulty && typeof G.difficulty.threatScale === 'number')
+      ? G.difficulty.threatScale : 1;
+    if (scale <= 0) return;
+    if (day < PRESSURE_GRACE_DAYS) return;
     if (day - (state.predatorRaidDay || -99) < 2) return;
-    var chance = 0.45 * days * U.clamp(pressure - 1.5, 0, 3);
+    var chance = 0.45 * days * U.clamp(pressure - 1.5, 0, 3) * scale;
     if (!U.chance(chance)) return;
     state.predatorRaidDay = day;
     var beast = U.pick(candidates);

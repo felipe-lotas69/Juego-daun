@@ -73,6 +73,18 @@
   var CORPSE_BEAT = 500;        /* stage, smell and mood              */
   var SCAVENGE_BEAT = 2500;     /* what the smell brings in           */
 
+  /* What the smell can sustain. The draw is a pull on the wildlife
+     already out there, not a spawner: without a ceiling, one rotting
+     body rolls twenty-four times a day forever and the map fills with
+     carnivores until they start eating the colony. That is exactly what
+     it did - four colonists on the default seed, killed one at a time by
+     a wolf population that only ever grew. */
+  var SCAV_MAX_DRAW = 0.3;      /* per hour, however bad the smell is  */
+  var SCAV_CAP_BASE = 2;        /* carnivores a clean map carries      */
+  var SCAV_CAP_PER_BODY = 1.5;  /* and what each body left out adds    */
+  var SCAV_CAP_PER_PART = 0.35;
+  var SCAV_CAP_MAX = 8;
+
   /* Blood, in map.blood bytes. A cell holds 0..255 and nothing else,
      so every number here is a byte budget, not a volume. */
   var HIT_BLOOD = 14;           /* base stain under a blow            */
@@ -698,16 +710,35 @@
 
     var bodies = countOutdoorRot(map);
     var parts = countSeveredParts(map);
-    var draw = bodies * 0.06 + parts * 0.03;
+    var draw = Math.min(SCAV_MAX_DRAW, bodies * 0.06 + parts * 0.02);
     if (draw <= 0) return;
-    if (!U.chance(Math.min(0.55, draw))) return;
 
-    var kindId = scavengerKind();
+    /* How many the smell is worth, against how many are already out
+       there. A field of bodies is worth a pack; it is not worth a pack
+       every hour until the map is nothing but wolves. */
+    var cap = Math.min(SCAV_CAP_MAX, Math.round(
+      SCAV_CAP_BASE + bodies * SCAV_CAP_PER_BODY + parts * SCAV_CAP_PER_PART));
+    var here = carnivoresOn(map);
+    if (here >= cap) return;
+    if (!U.chance(draw)) return;
+
+    var kindId = scavengerKind(map);
     if (!kindId) return;
     var edge = MG.edgeSpawnCells ? MG.edgeSpawnCells(map, U.pick(['n', 'e', 's', 'w'])) : null;
     if (!edge || !edge.length) return;
     var at = U.pick(edge);
-    var pack = A.spawnWild(map, kindId, at.x, at.y, U.randInt(1, 3));
+
+    var want = Math.min(U.randInt(1, 3), cap - here);
+    /* And never past the map's own ceiling on wildlife: a scripted count
+       bypasses it, which is why this one is worked out first. */
+    if (A.wildCap && A.wildCount) {
+      var room = A.wildCap(map) - A.wildCount(map);
+      if (room <= 0) return;
+      if (want > room) want = room;
+    }
+    if (want <= 0) return;
+
+    var pack = A.spawnWild(map, kindId, at.x, at.y, want);
     if (!pack || !pack.length) return;
 
     var G = root.Game;
@@ -721,19 +752,51 @@
     }
   }
 
-  var _scavengerKind = undefined;
-  function scavengerKind() {
-    if (_scavengerKind !== undefined) return _scavengerKind;
-    _scavengerKind = null;
+  /* Everything with a nose that is already on the map and not ours. This
+     is the population the draw is measured against. */
+  function carnivoresOn(map) {
+    var n = 0, list = map.pawns;
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      if (p.dead || !p.isAnimal || p.faction === 'player') continue;
+      var k = Defs.maybe('pawnKind', p.kindId);
+      if (k && (k.predator || k.diet === 'carnivore')) n++;
+    }
+    return n;
+  }
+  Gore.carnivoresOn = carnivoresOn;
+
+  /* Whatever eats carrion and lives here. Cached per biome rather than
+     globally: the old version took the first carnivore in the def table
+     and sent the same wolf to the desert, the tundra and the jungle for
+     the rest of the game. ecology.js already knows which species belong
+     in which biome and which of them are scavengers rather than hunters,
+     so a body pulls in jackals and vultures where it should. */
+  var _scavengerKind = {};
+  function scavengerKind(map) {
+    var biome = (map && map.biome) || (root.Game && root.Game.biome) || '*';
+    if (_scavengerKind[biome] !== undefined) return _scavengerKind[biome];
+
+    var scav = [], hunters = [], any = [];
+    var E = sys('Ecology');
+    var species = (E && E.SPECIES) || null;
     var kinds = Defs.all('pawnKind');
-    var best = [];
     for (var i = 0; i < kinds.length; i++) {
       var k = kinds[i];
       if (!k.isAnimal) continue;
-      if (k.predator || k.diet === 'carnivore') best.push(k.id);
+      if (!k.predator && k.diet !== 'carnivore') continue;
+      any.push(k.id);
+      var rec = species ? species[k.id] : null;
+      if (!rec) continue;
+      if (rec.biomes && rec.biomes.indexOf && rec.biomes.indexOf(biome) < 0) continue;
+      if (rec.role === 'scavenger') scav.push(k.id);
+      else if (rec.role === 'predator' || rec.role === 'apex') hunters.push(k.id);
     }
-    if (best.length) _scavengerKind = best[0];
-    return _scavengerKind;
+    /* A scavenger if this biome has one, a hunter if it does not: the
+       smell is the reason either of them came. */
+    var pick = scav.length ? scav[0] : (hunters.length ? hunters[0] : (any.length ? any[0] : null));
+    _scavengerKind[biome] = pick;
+    return pick;
   }
 
   function countOutdoorRot(map) {

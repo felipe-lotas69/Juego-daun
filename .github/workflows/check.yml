@@ -32,6 +32,10 @@ jobs:
         run: node tools/verify-api.js
       - name: A colony survives three simulated days
         run: node tools/verify-sim.js 3
+      - name: Hauling works across z-levels
+        run: node tools/verify-levels.js
+      - name: A prison can take a prisoner out of their cell
+        run: node tools/verify-prison.js 4
       - name: The renderer, UI and input boot and run frames
         run: node tools/verify-client.js 200
 
