@@ -555,14 +555,12 @@ console.log('\ndeterminism');
 }
 
 /* --------------------------------------------------- 4. the whole arc */
-console.log('\nthe full arc');
+console.log('\nthe optional content');
 {
-  /* Two halves. First, a bot with tools has to be able to light the
-     beacon and actually seal a gate by standing in it under fire -
-     that is the loop. Then the phase handoff is driven directly,
-     because whether the Heart wakes when the last gate closes is a
-     property of the state machine and should not depend on whether
-     one particular bot survived ninety simulated minutes. */
+  /* None of this is required of a player any more, so what is under
+     test is that it all still WORKS if they go looking for it: the
+     beacon lights, a gate can be held, the last one wakes the Heart,
+     and killing the Heart does not end anybody's run. */
   const sim = new Sim(777, { difficulty: 1 });
   const p = sim.addPlayer('p0', 'ARC');
   const recipes = allRecipes();
@@ -585,13 +583,23 @@ console.log('\nthe full arc');
     catch (err) { thrown = `${err.message} at step ${i}`; break; }
     if (sim.arc !== seenArcs[seenArcs.length - 1]) seenArcs.push(sim.arc);
     if (sim.stats.gatesSealed >= 1) break;
-    if (sim.phase !== PHASE.RUNNING) break;
   }
 
   check(!thrown, 'the arc runs without throwing', thrown);
   check(sim.beacon.lit, 'the beacon can be repaired and lit', 'the beacon was never lit');
   check(seenArcs.includes(ARC.GATES), 'lighting the beacon opens the gates',
     'arcs seen: ' + seenArcs.join(' -> '));
+  /* The point of the sandbox change: none of it is a prerequisite. */
+  const fresh = new Sim(31415, { difficulty: 1 });
+  const rookie = fresh.addPlayer('r', 'ROOKIE');
+  check(rookie.abilities[0] === PRIMARY_ID, 'you wake up with a working sidearm',
+    'abilities: ' + JSON.stringify(rookie.abilities));
+  rookie.skillPoints = 3;
+  check(fresh.learnSkill(rookie, Object.keys(SKILLS)[0]) === true,
+    'skills can be spent without repairing anything first',
+    'learnSkill refused with the beacon cold');
+  check(fresh.status() === null, 'a quiet world tells you to do nothing',
+    'status: ' + JSON.stringify(fresh.status()));
   check(sim.stats.gatesSealed >= 1, 'a gate can be sealed by standing in it',
     `no gate sealed in 60 simulated minutes (arc ${sim.arc})`);
 
@@ -629,8 +637,10 @@ console.log('\nthe full arc');
       sim.setInput(p.id, { seq: i, mx: 0, mz: 0, ax: p.x + 1, az: p.z });
       sim.step(1 / 60); sim.drainEvents();
     }
-    check(sim.phase === PHASE.WON, 'killing the Heart wins the run',
-      `phase is ${sim.phase}, arc ${sim.arc}`);
+    check(sim.arc === ARC.DONE, 'killing the Heart settles the rift',
+      `arc is ${sim.arc}`);
+    check(sim.phase === PHASE.RUNNING, 'and the run carries on afterwards',
+      `the run ended with phase=${sim.phase}, which is an objective by another name`);
   }
   ok('arc', seenArcs.join(' -> ') + ` then ${sim.arc}, ${sim.night} nights, ` +
     `${sim.stats.gatesSealed}/${sim.gates.length} gates`);

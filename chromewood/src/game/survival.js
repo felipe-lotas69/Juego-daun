@@ -193,14 +193,80 @@ export function swing(sim, p) {
     return true;
   }
 
-  /* Then whatever is growing or outcropping there. */
+  /* Then whatever is growing or outcropping within the swing. */
+  const found = findHarvest(sim, p, reach + 0.4);
+  if (found) return harvestTile(sim, p, found.tx, found.ty, tool);
   return harvestAt(sim, p, hx, hz, tool);
+}
+
+/* What a swing should actually connect with.
+
+   The old rule was "the one tile exactly 1.19m ahead of you". A tree
+   fills its tile so you always hit it, but grass, ferns, flowers and
+   mushrooms sit on single scattered tiles, so unless that one point
+   landed on that one tile the swing did nothing and said nothing.
+   From the player's side small things simply were not destructible.
+
+   So sweep the reach instead, the way hitting a creature already
+   does, and prefer what the tool in your hand is for - otherwise
+   standing in grass would mean never being able to chop the tree in
+   front of you. */
+export function findHarvest(sim, p, reach, arc = 1.2) {
+  const w = sim.world;
+  const held = heldTool(p);
+  const kind = held ? held.kind : 'hand';
+  const ctx = w.worldToTileX(p.x), cty = w.worldToTileZ(p.z);
+  const r = Math.ceil(reach + 0.75);
+  let best = null, bestScore = Infinity;
+
+  for (let oy = -r; oy <= r; oy++) {
+    for (let ox = -r; ox <= r; ox++) {
+      const tx = ctx + ox, ty = cty + oy;
+      if (!w.inBounds(tx, ty)) continue;
+      const h = HARVEST[w.prop[w.idx(tx, ty)]];
+      if (!h) continue;
+
+      const wx = w.tileToWorldX(tx), wz = w.tileToWorldZ(ty);
+      const dx = wx - p.x, dz = wz - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d > reach + 0.75) continue;
+
+      /* Underfoot counts as straight ahead: there is no meaningful
+         angle to something you are standing on. */
+      let off = 0;
+      if (d > 0.45) {
+        off = Math.abs(angleDelta(Math.atan2(dz, dx), p.facing));
+        if (off > arc) continue;
+      }
+
+      /* Alignment matters more than distance, and the wrong kind of
+         thing for the tool you are holding loses to the right kind. */
+      let score = d + off * 1.5;
+      if (h.tool !== kind && !(h.tool === 'hand' && kind === 'hand')) score += 2.5;
+      /* Something you cannot break yet should not swallow the swing. */
+      if (h.tier > bestToolTier(p, h.tool === 'hand' ? 'blunt' : h.tool)) score += 6;
+      if (score < bestScore) { bestScore = score; best = { tx, ty }; }
+    }
+  }
+  return best;
+}
+
+function angleDelta(a, b) {
+  let d = a - b;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
 }
 
 export function harvestAt(sim, p, x, z, tool) {
   const w = sim.world;
   const tx = w.worldToTileX(x), ty = w.worldToTileZ(z);
   if (!w.inBounds(tx, ty)) return false;
+  return harvestTile(sim, p, tx, ty, tool);
+}
+
+export function harvestTile(sim, p, tx, ty, tool) {
+  const w = sim.world;
   const i = w.idx(tx, ty);
   const prop = w.prop[i];
   const h = HARVEST[prop];

@@ -113,7 +113,7 @@ export class Hud {
     this._minimap(state);
     this._vitals(state, me);
     this._hotbar(state, me);
-    if (state.sim.beacon.lit) this._abilities(state, me);
+    this._abilities(state, me);
     this._killFeed(state);
     this._party(state);
     this._bossBar(state);
@@ -176,20 +176,25 @@ export class Hud {
       loud ? (Math.sin(this.time * 6) > 0 ? '#ff8a5a' : PAL.warn) : '#5b6a86',
       { seg: 6 });
 
-    /* Objective, directly under the clock. */
+    /* Whatever is going on right now, if anything. Most of the time
+       there is nothing and the plate is simply not drawn - a banner
+       telling you what to do next is the one thing this game is
+       deliberately without. */
     const obj = state.objective;
+    let below = y + h + 4 * S;
     if (obj) {
-      const oy = y + h + 4 * S;
-      frame(c, x, oy, w, 20 * S);
-      drawText(c, obj.text, x + 5 * S, oy + 3 * S, { scale: S, color: PAL.xp });
-      drawText(c, obj.sub, x + 5 * S, oy + 11 * S, { scale: S, color: PAL.dim });
+      frame(c, x, below, w, 20 * S);
+      drawText(c, obj.text, x + 5 * S, below + 3 * S,
+        { scale: S, color: obj.urgent ? PAL.bad : PAL.xp });
+      if (obj.sub) drawText(c, obj.sub, x + 5 * S, below + 11 * S, { scale: S, color: PAL.dim });
       if (obj.progress > 0 && obj.progress < 1) {
-        bar(c, x + 5 * S, oy + 17 * S, w - 10 * S, 2 * S, obj.progress, 1, PAL.xp);
+        bar(c, x + 5 * S, below + 17 * S, w - 10 * S, 2 * S, obj.progress, 1, PAL.xp);
       }
+      below += 24 * S;
     }
 
     if (state.sim.beacon.lit) {
-      const by = y + h + 28 * S;
+      const by = below;
       frame(c, x, by, w, 16 * S);
       const b = state.sim.beacon;
       const frac = b.hp / b.maxHp;
@@ -206,7 +211,7 @@ export class Hud {
     const c = this.ctx, S = this.scale;
     /* The energy row only exists once the beacon is lit, so the
        plate grows rather than letting the bar run off its edge. */
-    const rows = state.sim.beacon.lit ? 5 : 4;
+    const rows = 5;
     const w = 112 * S, h = (17 + rows * 8) * S;
     const x = 6 * S, y = this.h - h - 6 * S;
     frame(c, x, y, w, h);
@@ -226,11 +231,11 @@ export class Hud {
     row(me.stamina, me.maxStamina, PAL.stam, 'ST');
     row(me.hunger, me.maxHunger, PAL.food, 'FD');
     row(me.warmth, SURVIVAL.maxWarmth, PAL.warm, 'WM');
-    if (state.sim.beacon.lit) row(me.energy, me.maxEnergy, PAL.mana, 'EN');
+    row(me.energy, me.maxEnergy, PAL.mana, 'EN');
 
     /* Experience as a hairline along the bottom edge of the plate. */
     bar(c, x + 1, y + h - 3 * S, w - 2, 2 * S, me.xp, me.xpNext, PAL.xp, { back: 'rgba(0,0,0,0.4)' });
-    if (me.skillPoints > 0 && state.sim.beacon.lit) {
+    if (me.skillPoints > 0) {
       const blink = 0.55 + 0.45 * Math.sin(this.time * 5);
       drawText(c, `[K] ${me.skillPoints} POINT${me.skillPoints > 1 ? 'S' : ''} TO SPEND`,
         x, y - 9 * S, { scale: S, color: `rgba(255,210,74,${blink})` });

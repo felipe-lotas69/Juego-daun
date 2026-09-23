@@ -315,13 +315,6 @@ export class Panels {
   _skills(state, r) {
     const c = this.hud.ctx, S = this.hud.scale;
     const me = state.me;
-    if (!state.sim.beacon.lit) {
-      drawText(c, 'YOUR CORE IS COLD.', r.x + r.w / 2, r.y + r.h / 2 - 10 * S,
-        { scale: S * 2, align: 'center', color: PAL.faint });
-      drawText(c, 'REPAIR THE BEACON AND IT WILL WAKE.', r.x + r.w / 2, r.y + r.h / 2 + 8 * S,
-        { scale: S, align: 'center', color: PAL.dim });
-      return;
-    }
 
     const footH = 20 * S;
     const headH = 15 * S;
@@ -413,16 +406,25 @@ export class Panels {
     const sim = state.sim;
     const colW = Math.floor((r.w - 6 * S) / 2);
 
-    drawText(c, 'THE RUN', r.x, r.y, { scale: S, color: PAL.dim });
+    /* A log of what is out there, not a list of what to do next.
+       When something is actually happening it gets a line; otherwise
+       the space goes to the world instead of to an instruction. */
+    drawText(c, 'OUT THERE', r.x, r.y, { scale: S, color: PAL.dim });
     const obj = state.objective;
-    /* Headline drops a size when it would not fit the column: at the
-       big scale "SEAL THE RIFT GATES" ran under the next heading. */
-    const bigS = textWidth(obj.text, S + 1) <= colW ? S + 1 : S;
-    drawText(c, obj.text, r.x, r.y + 10 * S, { scale: bigS, color: PAL.xp });
-    const subY = r.y + 12 * S + lineHeight(bigS);
-    const subN = drawWrapped(c, obj.sub, r.x, subY, colW, { scale: S, color: PAL.dim });
-
-    let y = subY + subN * lineHeight(S) + 6 * S;
+    let y;
+    if (obj) {
+      const bigS = textWidth(obj.text, S + 1) <= colW ? S + 1 : S;
+      drawText(c, obj.text, r.x, r.y + 10 * S,
+        { scale: bigS, color: obj.urgent ? PAL.bad : PAL.xp });
+      const subY = r.y + 12 * S + lineHeight(bigS);
+      const subN = obj.sub ? drawWrapped(c, obj.sub, r.x, subY, colW, { scale: S, color: PAL.dim }) : 0;
+      y = subY + subN * lineHeight(S) + 6 * S;
+    } else {
+      const n = drawWrapped(c, 'Nothing is demanding anything of you. There is a beacon, '
+        + 'there are rifts, and there is a lot of ground you have not walked.',
+        r.x, r.y + 10 * S, colW, { scale: S, color: PAL.faint });
+      y = r.y + 10 * S + n * lineHeight(S) + 8 * S;
+    }
     if (!sim.beacon.lit) {
       drawText(c, 'BEACON PARTS', r.x, y, { scale: S, color: PAL.chrome });
       y += 10 * S;
@@ -435,7 +437,9 @@ export class Panels {
           { scale: S, align: 'right', color: have >= n ? PAL.good : PAL.warn });
         y += 11 * S;
       }
-      drawWrapped(c, 'Bring these to the beacon and hold G. Lighting it wakes your Core, which is what abilities run on.',
+      drawWrapped(c, 'Optional. Bring these to the beacon and hold G, and it '
+        + 'lights: a warm place, a shared store, turrets and floodlights, and '
+        + 'your core recharges twice as fast.',
         r.x, y + 4 * S, colW, { scale: S, color: PAL.faint });
     } else {
       drawText(c, 'RIFT GATES', r.x, y, { scale: S, color: PAL.chrome });
@@ -446,7 +450,8 @@ export class Panels {
           r.x + colW, y, { scale: S, align: 'right', color: g.sealed ? PAL.good : PAL.warn });
         y += 10 * S;
       });
-      drawWrapped(c, 'Each gate sealed makes every night after it smaller. Seal them all and the Heart wakes.',
+      drawWrapped(c, 'Take them or leave them. Each one sealed makes every night '
+        + 'after it smaller; seal them all and something old wakes up under the beacon.',
         r.x, y + 4 * S, colW, { scale: S, color: PAL.faint });
     }
 
