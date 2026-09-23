@@ -310,8 +310,13 @@ const passable = (w, i) => {
 /* ------------------------------------------ 3. a bot plays the run */
 console.log('\nsimulated runs');
 
-/* The nearest thing this player is actually equipped to harvest. */
-function findResource(sim, p, kinds) {
+/* The nearest thing this player is actually equipped to harvest,
+   preferring whatever the next thing on its shopping list is short
+   of. A purely greedy forager was fine when props were spread evenly,
+   but now that cover and woodland cluster separately it would settle
+   into a meadow pulling grass forever and never walk to the trees -
+   which a person obviously would. */
+function findResource(sim, p, kinds, wanted) {
   const w = sim.world;
   const ctx = w.worldToTileX(p.x), cty = w.worldToTileZ(p.z);
   let best = null, bestD = 1e9;
@@ -324,7 +329,9 @@ function findResource(sim, p, kinds) {
       if (!h || !kinds.includes(h.tool)) continue;
       if (h.tier > bestToolTier(p, h.tool === 'hand' ? 'blunt' : h.tool)) continue;
       const x = w.tileToWorldX(tx), z = w.tileToWorldZ(ty);
-      const d = (x - p.x) ** 2 + (z - p.z) ** 2;
+      let d = (x - p.x) ** 2 + (z - p.z) ** 2;
+      /* Something we actually need is worth a long walk. */
+      if (wanted && wanted.size && h.yield.some(([item]) => wanted.has(item))) d *= 0.05;
       if (d < bestD) { bestD = d; best = { x, z }; }
     }
   }
@@ -394,7 +401,19 @@ function driveBot(sim, p, i, seq, recipes) {
   } else if (!sim.beacon.lit && (repairDone || BEACON_REPAIR.some(([it, n]) => invCount(p, it) >= Math.min(n, 8)))) {
     tx = sim.beacon.x; tz = sim.beacon.z; interact = true;
   } else {
-    const node = findResource(sim, p, ['axe', 'pick', 'hand']);
+    /* What is the next thing on the list short of? */
+    const wanted = new Set();
+    for (const target of SHOPPING) {
+      if (invCount(p, target) > 0 && !BUILDINGS[target]) continue;
+      const rec = recipes.find(x => x.out[0] === target);
+      if (!rec) continue;
+      let short = false;
+      for (const [item, n] of rec.in) {
+        if (invCount(p, item) < n) { wanted.add(item); short = true; }
+      }
+      if (short) break;
+    }
+    const node = findResource(sim, p, ['axe', 'pick', 'hand'], wanted);
     if (node) { tx = node.x; tz = node.z; fire = true; }
     else { tx = sim.beacon.x; tz = sim.beacon.z; }
   }
@@ -470,7 +489,11 @@ function driveBot(sim, p, i, seq, recipes) {
     else if (!(gathered > 2 * MINUTES) || kinds.size < 4) bad(label, `the bots gathered almost nothing in ${MINUTES} minutes: ` +
       `${carried} carried, ${delivered} delivered, kinds: ${[...kinds].join(' ') || '(none)'}`);
     else if (!harvested) bad(label, 'nothing in the world was ever broken down, so harvesting is dead');
-    else if (!crafted) bad(label, 'nobody finished a single craft, so the crafting chain is broken');
+    else if (!crafted) {
+      bad(label, 'nobody finished a single craft, so the crafting chain is broken: '
+        + `${events.craftstart || 0} started, ${events.craftfail || 0} refused, `
+        + `${events.prop_break || 0} harvested, carrying ` + bots.map(b => JSON.stringify(b.inv)).join(' '));
+    }
     else {
       ok(label, `night ${sim.night}, arc ${sim.arc}, lvl ${bots.map(b => b.level).join('/')}, ` +
         `${totalKills} kills, ${gathered} items in ${kinds.size} kinds, ${sim.buildings.length} built, ` +

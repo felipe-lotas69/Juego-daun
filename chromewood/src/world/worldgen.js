@@ -232,6 +232,7 @@ export class World {
     this._plaza();
     this._connect();
     this._scatter();
+    this._starterGround();
     this._ore();
     this._landmarks();
     this.stats.genMs = Date.now() - t0;
@@ -638,6 +639,46 @@ export class World {
   _scatter() {
     const n = this.size;
     const rng = makeRng(this.seed ^ 0x9e3779b9);
+    const S = this.seed;
+
+    /* One slow field per family, plus a clearing field that thins
+       everything at once. These are what turn an even sprinkle into
+       woods with edges, scree slopes, meadows and open ground. */
+    const density = (fam, tx, ty) => {
+      const nx = tx * 0.035, ny = ty * 0.035;
+      switch (fam) {
+        case FAMILY.CANOPY: {
+          const d = fbm(nx * 0.8 + 11.5, ny * 0.8 - 4.25, S + 4001, 3);
+          return Math.max(0, Math.min(1.9, (d - 0.26) * 3.4));
+        }
+        case FAMILY.ROCK: {
+          const d = fbm(nx * 1.15 - 27.0, ny * 1.15 + 8.75, S + 4002, 3);
+          return Math.max(0, Math.min(2.0, (d - 0.33) * 3.8));
+        }
+        case FAMILY.COVER: {
+          const d = fbm(nx * 0.65 + 5.0, ny * 0.65 + 19.0, S + 4003, 2);
+          return Math.max(0, Math.min(1.8, (d - 0.22) * 2.8));
+        }
+        case FAMILY.DEBRIS: {
+          /* Wreckage lies where wreckage lay: tight patches, mostly
+             nothing, so a scrapfield feels like somewhere it happened. */
+          const d = fbm(nx * 1.6 + 63.0, ny * 1.6 - 41.0, S + 4004, 3);
+          return Math.max(0, Math.min(2.4, (d - 0.45) * 5.2));
+        }
+        default: {
+          const d = fbm(nx * 1.9 - 13.0, ny * 1.9 + 71.0, S + 4005, 2);
+          return Math.max(0, Math.min(2.0, (d - 0.40) * 4.2));
+        }
+      }
+    };
+
+    /* Genuine clearings, so there is somewhere to stand and build
+       and somewhere for a structure to be seen from. */
+    const clearing = (tx, ty) => {
+      const c = fbm(tx * 0.022 + 91.0, ty * 0.022 - 57.0, S + 4100, 2);
+      return c < 0.30 ? Math.max(0, (c - 0.15) / 0.15) : 1;
+    };
+
     for (let ty = 0; ty < n; ty++) {
       for (let tx = 0; tx < n; tx++) {
         const i = this.idx(tx, ty);
@@ -655,14 +696,35 @@ export class World {
         const steep = Math.abs(this.levelAt(tx + 1, ty) - this.levelAt(tx - 1, ty))
                     + Math.abs(this.levelAt(tx, ty + 1) - this.levelAt(tx, ty - 1));
         const openness = steep > 2 ? 0.25 : steep > 0 ? 0.7 : 1;
+        const open = clearing(tx, ty);
 
         const table = SCATTER[b];
         if (!table) continue;
+
+        /* Cache the five fields once per tile rather than per entry. */
+        const dens = this._densCache || (this._densCache = new Float32Array(FAMILY_COUNT));
+        for (let k = 0; k < FAMILY_COUNT; k++) dens[k] = density(k, tx, ty);
+
         const roll = rng();
         let acc = 0;
         for (const entry of table) {
-          acc += entry.p * openness;
+          acc += entry.p * openness * open * dens[familyOf(entry.prop)];
           if (roll < acc) { this.setProp(tx, ty, entry.prop); break; }
+        }
+      }
+    }
+
+    /* Give the big things room. Ground cover pressed against a tree
+       trunk or a ruin wall reads as texture on the object instead of
+       as a separate thing, and the silhouette goes with it. */
+    for (let ty = 1; ty < n - 1; ty++) {
+      for (let tx = 1; tx < n - 1; tx++) {
+        const prop = this.prop[this.idx(tx, ty)];
+        if (!prop || !isLandmarkProp(prop)) continue;
+        for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const j = this.idx(tx + ox, ty + oy);
+          const q = this.prop[j];
+          if (q && familyOf(q) === FAMILY.COVER && rng.chance(0.7)) this.clearProp(tx + ox, ty + oy);
         }
       }
     }
@@ -678,6 +740,78 @@ export class World {
       }
     }
   }
+
+  /* Somewhere to start.
+
+     Clustering is what makes the map read as a landscape, but it
+     also means the ground around any given point may legitimately
+     be a clearing - and waking up with nothing in the middle of one
+     is not an interesting first five minutes, it is a walk. So the
+     ring around the plaza is guaranteed to hold the two things you
+     need before you can do anything at all: wood and stone. */
+  _starterGround() {
+    const rng = makeRng(this.seed ^ 0x5741b17);
+    const cx = this.plaza ? this.plaza.tx : Math.floor(this.size / 2);
+    const cy = this.plaza ? this.plaza.ty : Math.floor(this.size / 2);
+    const WANT_WOOD = 26, WANT_STONE = 18, INNER = 5, OUTER = 20;
+
+    const free = [];
+    let wood = 0, stone = 0;
+    for (let oy = -OUTER; oy <= OUTER; oy++) {
+      for (let ox = -OUTER; ox <= OUTER; ox++) {
+        const d2 = ox * ox + oy * oy;
+        if (d2 < INNER * INNER || d2 > OUTER * OUTER) continue;
+        const tx = cx + ox, ty = cy + oy;
+        if (!this.inBounds(tx, ty)) continue;
+        const i = this.idx(tx, ty);
+        const f = this.flags[i];
+        if (f & (FLAG.WATER | FLAG.PLAZA | FLAG.BUILT | FLAG.BLOCKED_EDGE)) continue;
+        const prop = this.prop[i];
+        if (prop) {
+          const h = HARVEST[prop];
+          if (h) {
+            for (const [item] of h.yield) {
+              if (item === 'wood') wood++;
+              else if (item === 'stone') stone++;
+            }
+          }
+          continue;
+        }
+        /* Not on a cliff edge, where nothing else grows either. */
+        const steep = Math.abs(this.levelAt(tx + 1, ty) - this.levelAt(tx - 1, ty))
+                    + Math.abs(this.levelAt(tx, ty + 1) - this.levelAt(tx, ty - 1));
+        if (steep > 1) continue;
+        free.push(i > 0 ? [tx, ty] : [tx, ty]);
+      }
+    }
+
+    /* Shuffle so the top-ups land in a scatter rather than a line. */
+    for (let i = free.length - 1; i > 0; i--) {
+      const j = rng.int(i + 1);
+      const t = free[i]; free[i] = free[j]; free[j] = t;
+    }
+
+    let k = 0;
+    const treeFor = (tx, ty) => {
+      const b = this.biome[this.idx(tx, ty)];
+      if (b === BIOME.SNOW) return PROP.TREE_SNOW;
+      if (b === BIOME.PINE) return PROP.TREE_PINE;
+      if (b === BIOME.ASH || b === BIOME.MARSH) return PROP.TREE_DEAD;
+      return rng.chance(0.5) ? PROP.TREE_OAK : PROP.TREE_BIRCH;
+    };
+    while (wood < WANT_WOOD && k < free.length) {
+      const [tx, ty] = free[k++];
+      this.setProp(tx, ty, treeFor(tx, ty));
+      wood += 5;
+    }
+    while (stone < WANT_STONE && k < free.length) {
+      const [tx, ty] = free[k++];
+      this.setProp(tx, ty, rng.chance(0.3) ? PROP.BOULDER : PROP.ROCK);
+      stone += 3;
+    }
+    this.stats.starterTopUp = k;
+  }
+
 
   /* Ore sits in exposed rock: tiles with a real drop beside them,
      up in the crags and under the snow. Veins cluster, so finding
@@ -832,6 +966,46 @@ export class World {
 }
 
 /* Scatter tables, evaluated in order: probability per tile. */
+/* Which family a prop belongs to, for the clustering pass below.
+   Scatter used to be an independent roll per tile, which is white
+   noise: every tile had the same chance of the same spread of
+   things, so the map came out as an even confetti of small objects
+   with no groves, no boulder fields, no clearings and nothing for
+   the eye to rest on. Each family now gets its own slow-moving
+   density field, so trees gather into woods and woods have edges. */
+const FAMILY = { CANOPY: 0, ROCK: 1, COVER: 2, DEBRIS: 3, ORE: 4 };
+const FAMILY_COUNT = 5;
+
+function familyOf(prop) {
+  switch (prop) {
+    case PROP.TREE_PINE: case PROP.TREE_OAK: case PROP.TREE_BIRCH:
+    case PROP.TREE_BLOOM: case PROP.TREE_DEAD: case PROP.TREE_SNOW:
+    case PROP.STUMP:
+      return FAMILY.CANOPY;
+    case PROP.ROCK: case PROP.BOULDER: case PROP.ROCK_TALL:
+    case PROP.SNOW_ROCK: case PROP.ICE_SPIKE:
+      return FAMILY.ROCK;
+    case PROP.ORE_COPPER: case PROP.ORE_IRON: case PROP.ORE_GOLD:
+    case PROP.ORE_ESSENCE: case PROP.CRYSTAL: case PROP.RIFT_SHARD:
+      return FAMILY.ORE;
+    case PROP.SCRAP_PILE: case PROP.CONDUIT: case PROP.CRATE:
+    case PROP.RUIN_WALL: case PROP.RUIN_PILLAR: case PROP.LAMP:
+    case PROP.ANTENNA: case PROP.PYLON: case PROP.BONES:
+      return FAMILY.DEBRIS;
+    default:
+      return FAMILY.COVER;
+  }
+}
+
+/* Big things need room around them or they stop reading as
+   silhouettes and become part of the texture. */
+function isLandmarkProp(prop) {
+  const f = familyOf(prop);
+  return f === FAMILY.CANOPY || prop === PROP.BOULDER || prop === PROP.ROCK_TALL
+    || prop === PROP.RUIN_WALL || prop === PROP.RUIN_PILLAR || prop === PROP.PYLON
+    || prop === PROP.ANTENNA;
+}
+
 const SCATTER = {
   [BIOME.BEACH]: [
     { prop: PROP.SCRAP_PILE, p: 0.012 }, { prop: PROP.CRATE, p: 0.006 },
