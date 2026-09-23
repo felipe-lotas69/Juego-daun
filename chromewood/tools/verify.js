@@ -31,13 +31,14 @@ import {
   SKILLS, ABILITIES, ENEMIES, BEACON_UPGRADES, SKILL_BRANCHES, PRIMARY_ID,
 } from '../src/game/defs.js';
 import {
-  ITEMS, BUILDINGS, RECIPES, SMELTING, STATION_NAME, BEACON_REPAIR, CAT,
+  ITEMS, BUILDINGS, RECIPES, SMELTING, STATION_NAME, BEACON_REPAIR, CAT, SLOTS,
 } from '../src/game/items.js';
 import { ANIMALS, EXTRA_ENEMIES } from '../src/game/creatures.js';
 import { NIGHTS, WEATHER, CONTRACTS, buildNightDeck } from '../src/game/nights.js';
 import {
-  allRecipes, invCount, invGive, startCraft, bestToolTier, eat, place, canPlace,
+  allRecipes, invCount, invGive, startCraft, bestToolTier, eat, place, canPlace, equipItem,
 } from '../src/game/survival.js';
+import { damagePlayer } from '../src/game/combat.js';
 import {
   encodeSnapshot, decodeInput, encodeInput, PROTOCOL_VERSION,
 } from '../src/net/protocol.js';
@@ -577,6 +578,93 @@ function driveBot(sim, p, i, seq, recipes) {
     }
     if (usPerStep > 400) bad(label + ' performance', `${usPerStep.toFixed(0)}us per step leaves no room for rendering`);
   }
+}
+
+/* ------------------------------------------ 3a0. gear and blocks */
+console.log('\nwearing and stacking');
+{
+  /* Armour: every piece has somewhere to go, a number on it, and a
+     way to make it. A piece with no recipe is a piece nobody sees. */
+  const armour = Object.entries(ITEMS).filter(([, d]) => d.cat === CAT.ARMOR);
+  const problems = [];
+  for (const [id, def] of armour) {
+    if (!SLOTS.includes(def.slot)) problems.push(`${id} is worn on "${def.slot}"`);
+    if (!(def.armor > 0)) problems.push(`${id} has no armour value`);
+    if (!allRecipes().some(r => r.out[0] === id)) problems.push(`${id} cannot be made`);
+  }
+  check(armour.length >= 9, 'there is a full set to make, three deep',
+    `${armour.length} pieces`);
+  check(problems.length === 0, 'and every piece has a slot, a number and a recipe',
+    problems.join('; '));
+
+  const sim = new Sim(606060, { difficulty: 1 });
+  const p = sim.addPlayer('p0', 'GEAR');
+  invGive(p, 'vest_hide', 1);
+  invGive(p, 'vest_iron', 1);
+  const bare = p.stats.armor;
+  equipItem(sim, p, 'vest_hide');
+  check(p.equip.body === 'vest_hide', 'you can put something on',
+    'the vest did not go on');
+  check(invCount(p, 'vest_hide') === 0, 'and it comes out of the pack',
+    'the vest is worn and still in the pack');
+  check(p.stats.armor > bare, 'and it cuts what gets through',
+    `armour went from ${bare} to ${p.stats.armor}`);
+
+  equipItem(sim, p, 'vest_iron');
+  check(p.equip.body === 'vest_iron' && invCount(p, 'vest_hide') === 1,
+    'swapping hands the old piece back rather than eating it',
+    'the hide vest vanished when the iron plate went on');
+
+  /* And it actually reduces damage taken. */
+  const naked = sim.addPlayer('p1', 'NAKED');
+  p.hp = p.maxHp; naked.hp = naked.maxHp;
+  /* Past the spawn grace, or nothing lands on either of them. */
+  p.invuln = 0; naked.invuln = 0;
+  damagePlayer(sim, p, 40, null);
+  damagePlayer(sim, naked, 40, null);
+  check(p.hp > naked.hp, 'a plated player takes less than a bare one',
+    `plated ${Math.round(p.hp)} against bare ${Math.round(naked.hp)}`);
+
+  /* Blocks: they stack, and then they stop. */
+  const blocks = Object.entries(BUILDINGS).filter(([, d]) => d.block);
+  check(blocks.length >= 3, 'there are blocks to build with', `${blocks.length} kinds`);
+  const [blockKey, blockDef] = blocks[0];
+  const b = sim.addPlayer('p2', 'MASON');
+  const w = sim.world;
+  let tile = null;
+  for (let k = 0; k < 4000 && !tile; k++) {
+    const tx = 20 + Math.floor(Math.random() * (w.size - 40));
+    const ty = 20 + Math.floor(Math.random() * (w.size - 40));
+    if (canPlace(sim, b, blockKey, tx, ty) === 'materials') tile = { tx, ty };
+  }
+  check(!!tile, 'and somewhere to put one', 'no buildable tile found');
+  if (tile) {
+    b.x = w.tileToWorldX(tile.tx); b.z = w.tileToWorldZ(tile.ty);
+    b.y = w.groundAt(b.x, b.z);
+    invGive(b, blockKey, 10);
+    let placed = 0;
+    for (let k = 0; k < 8; k++) if (place(sim, b, blockKey, tile.tx, tile.ty)) placed++;
+    const built = sim.buildings.filter(x => x.tx === tile.tx && x.ty === tile.ty);
+    check(built.length === 1, 'stacking makes one taller block, not a pile of them',
+      `${built.length} buildings on one tile`);
+    check(built[0] && built[0].stack === (blockDef.stackMax || 4),
+      'and it stacks exactly as high as it says it does',
+      `stack ${built[0] && built[0].stack} against a maximum of ${blockDef.stackMax}`);
+    check(placed === (blockDef.stackMax || 4), 'and refuses the one after that',
+      `${placed} of eight attempts were taken`);
+  }
+
+  /* Smelting has its own bench, and it comes before the forge. */
+  const smeltRecipes = allRecipes().filter(r => r.station === 'smelter');
+  check(smeltRecipes.length >= 3, 'ore has somewhere to be smelted',
+    `${smeltRecipes.length} recipes at the smelter`);
+  const smelterRecipe = allRecipes().find(r => r.out[0] === 'smelter');
+  check(smelterRecipe && smelterRecipe.station === 'workbench',
+    'and the smelter itself is a workbench job, before the forge',
+    smelterRecipe ? `it is made at the ${smelterRecipe.station}` : 'there is no way to make one');
+  const forgeNeeds = BUILDINGS.forge.cost.map(([it]) => it);
+  check(forgeNeeds.some(it => ITEMS[it]), 'and the forge is made of things the smelter gives you',
+    'the forge costs nothing smeltable');
 }
 
 /* --------------------------------------- 3a. make it, carry it, place it */

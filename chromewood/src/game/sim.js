@@ -23,7 +23,7 @@ import {
   PLAYER, BEACON, WAVE, DAY, COMBAT, XP_CURVE, WORLD_HALF, SURVIVAL, RESONANCE, GATE,
 } from '../core/config.js';
 import { ENEMIES, ELITE, SKILLS, BEACON_UPGRADES, STATUS, BOONS, PRIMARY_ID } from './defs.js';
-import { ITEMS, BUILDINGS, BEACON_REPAIR } from './items.js';
+import { ITEMS, BUILDINGS, BEACON_REPAIR, SLOTS } from './items.js';
 import { ANIMALS, EXTRA_ENEMIES, FACTION, animalsForBiome } from './creatures.js';
 import { NIGHTS, WEATHER, buildNightDeck, rollWeather, CONTRACTS } from './nights.js';
 import { seasonFor, rollSeasonWeather, seasonAnimalWeight } from './seasons.js';
@@ -128,6 +128,7 @@ export class Sim {
       craft: null, buildKey: null, swingCd: 0,
       dashCharges: 1, dashMax: 1, dashTimer: 0, dashCd: 0, dashDirX: 0, dashDirZ: 0,
       state: 'alive', downTimer: 0, respawnTimer: 0, reviveProgress: 0,
+      equip: { head: null, body: null, legs: null }, plate: 0,
       invuln: PLAYER.invulnOnSpawn,
       buffs: [], statuses: [],
       kills: 0, damageDealt: 0, deaths: 0, revives: 0, tookDamageTonight: false,
@@ -200,6 +201,20 @@ export class Sim {
     };
     for (const key of Object.keys(p.skills)) add(SKILLS[key] && SKILLS[key].mods);
     for (const b of p.buffs) add(b.mods);
+
+    /* What you are wearing. Armour points go through a curve rather
+       than straight into the cut, so a full set is worth having and
+       is nowhere near immunity: fifty points is a third off. */
+    let plate = 0;
+    for (const slot of SLOTS) {
+      const worn = p.equip && p.equip[slot];
+      const def = worn && ITEMS[worn];
+      if (!def) continue;
+      plate += def.armor || 0;
+      m.warmth += def.warmth || 0;
+    }
+    p.plate = plate;
+    m.armor += plate / (plate + 100);
     const forge = this.beacon.upgrades.forge;
     if (forge) m.power += forge * 0.08;
 
@@ -1323,7 +1338,7 @@ export class Sim {
       id: newId(), key, def, tx, ty,
       x: w.tileToWorldX(tx), z: w.tileToWorldZ(ty), y: w.heightAtTile(tx, ty),
       hp: def.hp, maxHp: def.hp, owner, open: false, cd: 0, angle: 0, store: {},
-      seed: null, grow: 0,
+      seed: null, grow: 0, stack: def.block ? 1 : 0,
     };
     this.buildings.push(b);
     w.flags[w.idx(tx, ty)] |= FLAG.BUILT;

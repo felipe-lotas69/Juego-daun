@@ -13,6 +13,7 @@
 
 import * as THREE from '../../vendor/three.module.js';
 import { characterSheet, DIR_MAP, CELL_W, CELL_H, DIRS, FRAMES, dirIndex } from './sprite.js';
+import { ITEMS } from '../game/items.js';
 import { MeshBuilder } from './geom.js';
 import { makeToonMaterial, makeBlobShadowMaterial } from './materials.js';
 import { LAYER_WORLD, LAYER_NO_OUTLINE } from './pipeline.js';
@@ -356,7 +357,7 @@ function makeCharacterSprite(colors) {
   const baseY = h / Math.cos(RENDER.cameraPitch) * 0.5;
   mesh.position.y = baseY;
   mesh.renderOrder = 3;
-  return { mesh, tex, baseY, col: -1, frame: -1, flip: false };
+  return { mesh, tex, baseY, col: -1, frame: -1, flip: false, gearKey: '' };
 }
 
 export class Actor {
@@ -450,6 +451,25 @@ export class Actor {
     if (this.sprite) {
       const S = this.sprite;
       const yaw = opts.cameraYaw !== undefined ? opts.cameraYaw : RENDER.cameraYaw;
+
+      /* Worn kit goes into the sheet's palette, so the sheet has to
+         be rebuilt when it changes. Sheets are cached by their own
+         colours, so putting a helmet on and taking it off again
+         costs one canvas the first time and nothing after. */
+      const eq = ent.equip;
+      const gearKey = eq ? `${eq.head || ''}|${eq.body || ''}|${eq.legs || ''}` : '';
+      if (gearKey !== S.gearKey) {
+        S.gearKey = gearKey;
+        const tintOf = (id) => (id && ITEMS[id] ? ITEMS[id].tint : 0);
+        const sheet = characterSheet({
+          ...this.colors,
+          plateHead: tintOf(eq && eq.head),
+          plateBody: tintOf(eq && eq.body),
+          plateLegs: tintOf(eq && eq.legs),
+        });
+        S.tex.image = sheet;
+        S.tex.needsUpdate = true;
+      }
 
       /* A billboard: the quad turns with the camera and never with
          the character. Which way the character is pointing is drawn

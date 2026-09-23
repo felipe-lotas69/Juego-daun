@@ -27,8 +27,8 @@ import { TEX } from './render/textures.js';
 
 import { Sim, PHASE, emptyInput } from './game/sim.js';
 import { nextSeason, seasonProgress } from './game/seasons.js';
-import { ITEMS, BUILDINGS } from './game/items.js';
-import { stationsNear, startCraft, eat, canPlace } from './game/survival.js';
+import { ITEMS, BUILDINGS, CAT, SLOTS } from './game/items.js';
+import { stationsNear, startCraft, eat, canPlace, equipItem, unequipSlot } from './game/survival.js';
 
 import { Mirror } from './net/mirror.js';
 import { RoomClient } from './net/client.js';
@@ -101,6 +101,7 @@ const panels = new Panels(hud, {
   learnSkill: (key) => requestLearnSkill(key),
   buyUpgrade: (key) => requestBuyUpgrade(key),
   trade: (index) => requestTrade(index),
+  unequip: (slot) => requestUnequip(slot),
 });
 
 const menus = new Menus(uiRoot, {
@@ -299,6 +300,8 @@ function applyRemoteAction(from, d) {
     case 'skill': sim.learnSkill(p, d.key); break;
     case 'upgrade': sim.buyBeaconUpgrade(d.key); break;
     case 'trade': sim.tryTrade(p, d.v | 0, d.i | 0); break;
+    case 'equip': equipItem(sim, p, d.item); break;
+    case 'unequip': unequipSlot(sim, p, d.slot); break;
     case 'build': p.buildKey = d.key; break;
     case 'slot': p.hotbarIndex = clamp(d.i | 0, 0, p.hotbar.length - 1); break;
     case 'eat': eat(sim, p, d.item); break;
@@ -604,7 +607,7 @@ function syncBuildings(dt, sim, time) {
        come on, but rebuilding the mesh every frame for a plant that
        takes two and a half minutes would be absurd. */
     const growStep = b.def.farm ? `${b.seed || '-'}:${Math.floor((b.grow || 0) * 8)}` : '';
-    const stateKey = `${b.open ? 1 : 0}:${b.def.seal ? Math.floor((b.progress || 0) * 12) : 0}:${growStep}`;
+    const stateKey = `${b.open ? 1 : 0}:${b.def.seal ? Math.floor((b.progress || 0) * 12) : 0}:${growStep}:${b.stack || 0}`;
     if (!view || view.stateKey !== stateKey) {
       if (view) {
         rig.scene.remove(view.group);
@@ -616,6 +619,7 @@ function syncBuildings(dt, sim, time) {
       buildStructureMesh(sb, gb, b.key, 0, 0, 0, {
         open: b.open, t: 0, angle: 0, progress: gate ? gate.progress : 0,
         seed: b.seed || null, grow: b.grow || 0, cropTint: crop ? crop.tint : undefined,
+        stack: b.stack || 0,
       });
       const group = new THREE.Group();
       if (!sb.isEmpty) {
@@ -862,6 +866,7 @@ const BUILD_FAIL = {
   occupied: 'SOMETHING IS ALREADY THERE', water: 'NOT IN THE WATER',
   blocked: 'CLEAR THE GROUND FIRST', far: 'TOO FAR AWAY',
   uneven: 'THE GROUND IS TOO STEEP', materials: 'NOT ENOUGH MATERIALS',
+  toohigh: 'THAT STACK IS AS HIGH AS IT GOES',
   needs: 'YOU NEED A STATION NEARBY',
 };
 
@@ -896,6 +901,11 @@ function useItem(id) {
   if (!def) return;
   audio.ui();
   if (def.build) { setBuildKey(id); return; }
+  if (def.cat === CAT.ARMOR) {
+    if (game.role === 'client') sendAction({ a: 'equip', item: id });
+    else equipItem(game.sim, me, id);
+    return;
+  }
   if (def.food || def.heal || def.energy) {
     if (game.role === 'client') sendAction({ a: 'eat', item: id });
     else eat(game.sim, me, id);
@@ -915,6 +925,14 @@ function requestLearnSkill(key) {
   audio.ui();
   if (game.role === 'client') sendAction({ a: 'skill', key });
   else game.sim.learnSkill(me, key);
+}
+
+function requestUnequip(slot) {
+  const me = localPlayer();
+  if (!me) return;
+  audio.ui();
+  if (game.role === 'client') sendAction({ a: 'unequip', slot });
+  else unequipSlot(game.sim, me, slot);
 }
 
 function requestTrade(index) {

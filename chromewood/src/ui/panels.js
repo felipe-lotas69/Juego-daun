@@ -11,7 +11,7 @@ import {
   PAL, frame, bar, slot, button, rivets, divider, px, drawText, textWidth, clipText, drawIcon,
 } from './draw.js';
 import { lineHeight, drawWrapped, wrapLines } from './font.js';
-import { ITEMS, BUILDINGS, STATION_NAME, BEACON_REPAIR } from '../game/items.js';
+import { ITEMS, BUILDINGS, STATION_NAME, BEACON_REPAIR, CAT, SLOTS } from '../game/items.js';
 import { SKILLS, SKILL_BRANCHES, BEACON_UPGRADES } from '../game/defs.js';
 import { NIGHTS } from '../game/nights.js';
 import { allRecipes, invHasAll, invCount } from '../game/survival.js';
@@ -144,7 +144,7 @@ export class Panels {
     const entries = Object.entries(me.inv).filter(([, n]) => n > 0)
       .sort((a, b) => {
         const ca = ITEMS[a[0]], cb = ITEMS[b[0]];
-        const order = { tool: 0, weapon: 1, build: 2, food: 3, resource: 4, special: 5 };
+        const order = { tool: 0, weapon: 1, armor: 2, build: 3, food: 4, resource: 5, special: 6 };
         return (order[ca.cat] ?? 9) - (order[cb.cat] ?? 9) || a[0].localeCompare(b[0]);
       });
 
@@ -162,8 +162,11 @@ export class Panels {
         this.tooltip = {
           title: def.name, color: '#' + def.tint.toString(16).padStart(6, '0'),
           body: def.desc || (def.tool ? `${def.tool.kind} tier ${def.tool.tier} · ${def.tool.damage} damage`
+            : def.cat === CAT.ARMOR ? `${def.armor} armour, worn on the ${def.slot}`
             : def.food ? `restores ${def.food || 0} food` : ''),
-          foot: def.build ? 'CLICK TO BUILD' : def.food ? 'CLICK TO EAT' : 'CLICK TO HOLD',
+          foot: def.build ? 'CLICK TO BUILD'
+          : def.cat === CAT.ARMOR ? 'CLICK TO WEAR'
+          : def.food ? 'CLICK TO EAT' : 'CLICK TO HOLD',
         };
       }
     });
@@ -174,6 +177,42 @@ export class Panels {
     /* The column is taller than the grid ever needs, so the bottom of
        it carries what you are actually holding and what shape you are
        in - the two things you open the pack to check. */
+    /* Worn, above what is in hand: three slots, always drawn even
+       when they are empty, because an empty slot is the thing that
+       tells you armour exists at all. */
+    const wearY = r.y + r.h - 76 * S;
+    divider(c, r.x, wearY - 6 * S, colW);
+    drawText(c, 'WORN', r.x, wearY, { scale: S, color: PAL.dim });
+    const plate = me.plate || 0;
+    if (plate > 0) {
+      drawText(c, `${Math.round(plate / (plate + 100) * 100)}% OFF`, r.x + colW - 8 * S, wearY,
+        { scale: S, align: 'right', color: PAL.good });
+    }
+    const wsize = 20 * S;
+    SLOTS.forEach((slotId, i) => {
+      const sx = r.x + i * (wsize + 3 * S);
+      const sy = wearY + 10 * S;
+      const worn = me.equip && me.equip[slotId];
+      const def = worn && ITEMS[worn];
+      const hov = this.hud.isHover(sx, sy, wsize, wsize);
+      slot(c, sx, sy, wsize, {
+        item: def ? def.icon : null, tint: def ? def.tint : undefined,
+        scale: S, selected: hov,
+      });
+      if (!def) {
+        drawText(c, slotId.slice(0, 1).toUpperCase(), sx + wsize / 2, sy + wsize / 2 - 3 * S,
+          { scale: S, align: 'center', color: PAL.faint });
+      }
+      if (def) this.hud.hit('panel:unequip', sx, sy, wsize, wsize, slotId);
+      if (hov) {
+        this.tooltip = def
+          ? { title: def.name, color: '#' + def.tint.toString(16).padStart(6, '0'),
+              body: `${def.armor} armour · ${def.warmth ? `+${def.warmth} warmth` : 'no warmth'}`,
+              foot: 'CLICK TO TAKE OFF' }
+          : { title: slotId.toUpperCase(), color: PAL.dim, body: 'Nothing worn here.' };
+      }
+    });
+
     const held = me.hotbar[me.hotbarIndex];
     let sy2 = r.y + r.h - 44 * S;
     divider(c, r.x, sy2 - 6 * S, colW);
@@ -635,6 +674,7 @@ export class Panels {
       case 'panel:skill': this.hooks.learnSkill(hit.data); return true;
       case 'panel:upgrade': this.hooks.buyUpgrade(hit.data); return true;
       case 'panel:trade': this.hooks.trade(hit.data); return true;
+      case 'panel:unequip': this.hooks.unequip(hit.data); return true;
       default: return false;
     }
   }

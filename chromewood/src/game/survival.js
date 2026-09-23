@@ -11,7 +11,7 @@
    on the host only; clients see the results in snapshots.
    ============================================================ */
 
-import { ITEMS, BUILDINGS, RECIPES, FARM_RECIPES, SMELTING, BEACON_REPAIR } from './items.js';
+import { ITEMS, BUILDINGS, RECIPES, FARM_RECIPES, SMELTING, BEACON_REPAIR, CAT } from './items.js';
 import { HARVEST, PROP, FLAG, CLIMB } from '../world/worldgen.js';
 import { SURVIVAL, RESONANCE, TILE } from '../core/config.js';
 import { clamp, dist2 } from '../core/util.js';
@@ -46,6 +46,34 @@ export function invTake(p, item, n) {
 export function invRoom(p, item, n) {
   if (!ITEMS[item]) return false;
   return (p.inv[item] || 0) + n <= ITEMS[item].stack * 4;
+}
+
+/* Put something on, and take off whatever was in that slot. The old
+   piece goes back in the pack rather than vanishing, which is the
+   difference between swapping gear and losing it. */
+export function equipItem(sim, p, item) {
+  const def = ITEMS[item];
+  if (!def || def.cat !== CAT.ARMOR || !def.slot) return false;
+  if ((p.inv[item] || 0) < 1) return false;
+  if (!p.equip) p.equip = { head: null, body: null, legs: null };
+  const was = p.equip[def.slot];
+  if (was === item) return unequipSlot(sim, p, def.slot);
+  invTake(p, item, 1);
+  p.equip[def.slot] = item;
+  if (was) invGive(p, was, 1);
+  sim.recalcStats(p);
+  sim.emit({ t: 'equip', id: p.id, slot: def.slot, item });
+  return true;
+}
+
+export function unequipSlot(sim, p, slot) {
+  if (!p.equip || !p.equip[slot]) return false;
+  const was = p.equip[slot];
+  p.equip[slot] = null;
+  invGive(p, was, 1);
+  sim.recalcStats(p);
+  sim.emit({ t: 'equip', id: p.id, slot, item: '' });
+  return true;
 }
 
 export function invHasAll(p, list) {
@@ -374,7 +402,13 @@ export function tickCraft(sim, p, dt) {
 
 let _allRecipes = null;
 export function allRecipes() {
-  if (!_allRecipes) _allRecipes = RECIPES.concat(FARM_RECIPES).concat(SMELTING.map(r => ({ ...r, station: 'forge', smelt: true })));
+  /* The smelting table carries its own station now. Forcing it to
+     'forge' here is what kept smelting locked behind the forge even
+     after it had its own building. */
+  if (!_allRecipes) {
+    _allRecipes = RECIPES.concat(FARM_RECIPES)
+      .concat(SMELTING.map(r => ({ ...r, smelt: true })));
+  }
   return _allRecipes;
 }
 
@@ -386,7 +420,15 @@ export function canPlace(sim, p, key, tx, ty) {
   if (!w.inBounds(tx, ty)) return 'bounds';
   const i = w.idx(tx, ty);
   const f = w.flags[i];
-  if (f & FLAG.BUILT) return 'occupied';
+  if (f & FLAG.BUILT) {
+    /* One exception to "something is already there": a block goes on
+       top of a block of its own kind, which is the whole point of
+       having blocks rather than walls. */
+    if (!def.block) return 'occupied';
+    const under = sim.buildings.find(b => b.tx === tx && b.ty === ty && b.hp > 0);
+    if (!under || under.key !== key) return 'occupied';
+    if (under.stack >= (def.stackMax || 4)) return 'toohigh';
+  }
   if ((f & FLAG.WATER) && !(f & FLAG.SHALLOW)) return 'water';
   if (w.prop[i] !== PROP.NONE) return 'blocked';
   const wx = w.tileToWorldX(tx), wz = w.tileToWorldZ(ty);
@@ -414,6 +456,20 @@ export function place(sim, p, key, tx, ty) {
   const why = canPlace(sim, p, key, tx, ty);
   if (why) { sim.emit({ t: 'buildfail', id: p.id, why }); return false; }
   if (!invTake(p, key, 1)) { sim.emit({ t: 'buildfail', id: p.id, why: 'materials' }); return false; }
+  /* Stacking adds a course to what is already there rather than
+     making a second building on the same tile. */
+  const def = BUILDINGS[key];
+  if (def.block) {
+    const under = sim.buildings.find(x => x.tx === tx && x.ty === ty && x.hp > 0 && x.key === key);
+    if (under) {
+      under.stack = (under.stack || 1) + 1;
+      under.maxHp = def.hp * under.stack;
+      under.hp = under.maxHp;
+      sim.resonance.add(under.x, under.z, RESONANCE.perBuild);
+      sim.emit({ t: 'built', id: under.id, key, tx, ty, x: under.x, y: under.y, z: under.z, by: p.id });
+      return under;
+    }
+  }
   const b = sim.addBuilding(key, tx, ty, p.id);
   sim.resonance.add(b.x, b.z, RESONANCE.perBuild);
   sim.noteProgress(p, 'build', key);

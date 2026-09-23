@@ -16,7 +16,7 @@ import { EXTRA_ENEMIES, ANIMALS } from '../game/creatures.js';
 import { BUILDINGS } from '../game/items.js';
 import { q } from '../core/util.js';
 
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 export const ENEMY_TYPES = Object.keys({ ...ENEMIES, ...EXTRA_ENEMIES });
 export const ENEMY_INDEX = Object.fromEntries(ENEMY_TYPES.map((k, i) => [k, i]));
@@ -81,6 +81,10 @@ export function encodeSnapshot(sim) {
       p.hotbarIndex,
       p.buildKey || '',
       p.craft ? q(1 - p.craft.time / p.craft.total) : -1,
+      /* What is worn, and whether they are in the water: both change
+         how a player is drawn, so both have to travel. */
+      `${p.equip.head || ''}|${p.equip.body || ''}|${p.equip.legs || ''}`,
+      p.swimming ? 1 : 0,
       Object.keys(p.skills).join(','),
       q(p.vx), q(p.vz),
       p.name,
@@ -110,7 +114,7 @@ export function encodeSnapshot(sim) {
   const B = [];
   for (const b of sim.buildings) {
     B.push([b.id, BUILD_INDEX[b.key], b.tx, b.ty, q(b.y), q(b.hp), b.maxHp,
-      b.open ? 1 : 0, q(b.angle || 0), b.seed || '', q(b.grow || 0)]);
+      b.open ? 1 : 0, q(b.angle || 0), b.seed || '', q(b.grow || 0), b.stack || 0]);
   }
 
   const R = [];
