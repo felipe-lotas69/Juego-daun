@@ -91,8 +91,10 @@ layers so it can never be mistaken for somewhere to land.
 
 Moving platforms and hazards (trains on tracks, boats, elevators), water to
 fall into, getaway vehicles other than the van, and unlockable cosmetics.
-A racer is about 1/11 of the frame where 1/12 to 1/15 was asked for; closing
-that last bit means redrawing the sprites smaller and rebalancing the courses
-against them.
+
+The art direction is also only part-way there. Still to build: street-level
+courses, the big foreground pieces (brick walls with reachable rooftops,
+cutaway shop fronts, a taxi and a bus used as platforms), chain-link fence
+drawn as a dither, dumpsters and trash bags, and restyled item pickups.
 
 All art, characters and level design here are original.

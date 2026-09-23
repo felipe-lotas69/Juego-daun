@@ -204,10 +204,11 @@
         var left = i < 2;
         var slot = left ? i : (i - 2);
         var x = left ? 15 + slot * 27 : Pixel.UI_W - 58 + slot * 27;
+        /* A floating head and a small colour chip - no card around it.
+           A frame at this size is three pixels of border fighting a nine
+           pixel portrait, and it reads as clutter. */
         this.drawPortrait(c, r, x, 3);
-        Pixel.rect(c, x + 13, 3, 9, 13, '#101018');
-        Pixel.rect(c, x + 14, 4, 7, 11, r.def.mark);
-        Pixel.text(c, String(this.scores[i]), x + 15, 6, 0.5, '#101018');
+        chip(c, x + 12, 4, String(this.scores[i]), r.def.mark);
       }
 
       /* the race bar: everyone's furthest point, on one line */
@@ -222,10 +223,12 @@
       }
 
       if (this.toastT > 0) {
-        Pixel.outlineText(c, this.toast, Pixel.UI_W / 2, 28, 0.75, '#ffc23c', '#101018', 'center');
+        Pixel.text(c, this.toast, Pixel.UI_W / 2, 26, 0.5, '#ffd15c', 'center');
       }
+      /* no big text banner over the action - the map name gets one small
+         line under the race bar and then gets out of the way */
       if (this.bannerT > 0 && this.state === 'playing') {
-        Pixel.outlineText(c, this.banner, Pixel.UI_W / 2, 40, 1.25, '#ffffff', '#101018', 'center');
+        Pixel.text(c, this.banner, Pixel.UI_W / 2, 18, 0.5, 'rgba(255,255,255,0.75)', 'center');
       }
 
       /* what the local players are holding */
@@ -237,9 +240,7 @@
         var boxW = held ? Pixel.textWidth(held, 0.5) + 5 : 10;
         var bxh = (i % 2 === 0) ? 5 : Pixel.UI_W - 5 - boxW;
         var byh = Pixel.UI_H - 13 - (i >> 1) * 13;
-        Pixel.rect(c, bxh, byh, boxW, 11, 'rgba(16,20,30,0.72)');
-        Pixel.frame(c, bxh, byh, boxW, 11, held ? '#ffc23c' : hp.def.mark);
-        Pixel.rect(c, bxh + 1, byh + 1, 2, 9, hp.def.mark);
+        Pixel.rect(c, bxh, byh + 1, 2, 9, hp.def.mark);
         if (held) {
           Pixel.text(c, held, bxh + 4, byh + 2, 0.5, '#ffffff');
           if (hp.weapon) Pixel.text(c, String(hp.weapon.ammo), bxh + 4, byh + 6, 0.5, '#ffc23c');
@@ -249,6 +250,9 @@
       }
     },
 
+    /* a small rounded colour box with a number in it */
+    chipDraw: null,
+
     drawPortrait: function (c, r, x, y, small) {
       var sprite = ART.HEADS[r.def.head];
       var map = {
@@ -256,10 +260,6 @@
         n: r.def.skin, m: Draw.mix(r.def.skin, '#000000', 0.35),
         e: '#20232f', o: '#20232f'
       };
-      if (!small) {
-        Pixel.rect(c, x, y, 12, 13, '#101018');
-        Pixel.rect(c, x + 1, y + 1, 10, 11, Draw.mix(r.def.mark, '#ffffff', 0.55));
-      }
       Pixel.stamp(c, sprite, map, x + (small ? 4 : 6), y + (small ? 5 : 7), 0, false);
     },
 
@@ -321,6 +321,13 @@
       Pixel.text(c, 'PRESS ANY KEY', Pixel.UI_W / 2, Pixel.UI_H - 12, 0.6, '#9fb0c4', 'center');
     }
   };
+
+  /* A score chip: a small rounded box in the racer's colour. */
+  function chip(c, x, y, text, col) {
+    Pixel.rect(c, x + 1, y, 8, 11, col);
+    Pixel.rect(c, x, y + 1, 10, 9, col);
+    Pixel.text(c, text, x + 3, y + 3, 0.5, '#20232f');
+  }
 
   /* The menu sits on a real slice of the first map, so the title screen
      and the game look like the same place. */

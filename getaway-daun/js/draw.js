@@ -64,23 +64,19 @@
     var sceneryData = buildScenery(L);
     var W = Pixel.cw, H = Pixel.ch;
 
-    var g = sc.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, L.sky[0]);
-    g.addColorStop(0.52, L.sky[1]);
-    g.addColorStop(1, L.sky[2]);
-    sc.fillStyle = g;
+    /* Flat, saturated cyan - no gradient. The only softness in the sky is
+       a pale sun glow tucked into one corner. */
+    sc.fillStyle = L.sky[0];
     sc.fillRect(0, 0, W, H);
 
     if (L.theme === 'indoor') return;
 
-    var S = Pixel.SCALE;
-    /* a soft sun, and cloud banks built from overlapping blurred discs */
-    var sunG = sc.createRadialGradient(W * 0.78, H * 0.17, 0, W * 0.78, H * 0.17, 90 * S / 4);
-    sunG.addColorStop(0, 'rgba(255,255,255,0.45)');
-    sunG.addColorStop(1, 'rgba(255,255,255,0)');
+    var sunG = sc.createRadialGradient(W * 0.84, H * 0.10, 0, W * 0.84, H * 0.10, H * 0.55);
+    sunG.addColorStop(0, 'rgba(255,248,206,0.46)');
+    sunG.addColorStop(0.55, 'rgba(255,246,190,0.13)');
+    sunG.addColorStop(1, 'rgba(255,246,190,0)');
     sc.fillStyle = sunG;
     sc.fillRect(0, 0, W, H);
-
   }
 
   /* ---------------------------------------------------------- sky */
@@ -93,7 +89,7 @@
     if (L.theme === 'desert') drawScrub(L, cam, sc);
     else {
       drawSkyline(L, cam, sc);
-      if (L.theme !== 'indoor') drawPosts(L, cam, sc);
+      if (L.theme !== 'indoor') { drawStreet(L, cam); drawPosts(L, cam, sc); }
     }
   }
 
@@ -164,6 +160,18 @@
     }
   }
 
+  /* The street the whole skyline stands on: a flat pale strip with one
+     darker curb line, running under everything. */
+  function drawStreet(L, cam) {
+    /* A thin band, not a floor. It is the street the distant skyline
+       stands on; filling everything below it just buries the frame in
+       flat grey and swallows the drops the level is built around. */
+    var y = Math.round(Pixel.H * 0.64 - cam.y * 0.05);
+    Pixel.rect(P, 0, y, Pixel.W, 7, '#cfcac1');
+    Pixel.rect(P, 0, y, Pixel.W, 1, '#b9b4ab');
+    Pixel.rect(P, 0, y + 6, Pixel.W, 1, '#a9a399');
+  }
+
   function drawSkyline(L, cam, sc) {
     /* three skyline layers, each slower and paler than the one in front */
     var par = [0.10, 0.20, 0.34];
@@ -171,12 +179,13 @@
       var band = sc.layers[l], col = L.city[l];
       var winLit = L.theme === 'indoor' ? '#6a6a96' : mix(col, '#ffffff', 0.55);
       var winDark = mix(col, '#000000', 0.10);
-      var baseY = Math.round(Pixel.H - 30 - l * 4 - cam.y * par[l] * 0.5);
-      /* Aerial perspective. Each layer is pushed hard toward the sky, so
-         distance reads as distance and the background can never be
-         mistaken for something you could land on. */
-      var haze = [0.72, 0.55, 0.36][l];
-      var sky = L.sky[2];
+      /* the skyline sits low - roughly the bottom 40% of the frame */
+      var baseY = Math.round(Pixel.H * 0.64 - l * 3 - cam.y * par[l] * 0.5);
+      /* Warm and low, not hazy and blue. Distance is carried by the
+         palette getting darker and browner, and by parallax, rather than
+         by fading everything into the sky. */
+      var haze = 0;
+      var sky = L.sky[0];
       for (var k = 0; k < band.length; k++) {
         var bd = band[k];
         var bx = Math.round(bd.x - cam.x * par[l]);
@@ -186,7 +195,7 @@
            one flat colour reads as a bar chart however many windows you
            put on it; the variation is what makes it a city. */
         var face = mix(col, bd.lit > 0.5 ? L.cityWarm : L.cityCool, Math.abs(bd.lit - 0.5) * 1.4);
-        face = mix(face, sky, haze);
+        if (haze) face = mix(face, sky, haze);
         Pixel.rect(P, bx, by, bd.w, bd.h + 60, face);
         Pixel.rect(P, bx + bd.w - 1, by, 1, bd.h + 60, mix(face, '#000000', 0.05));
         Pixel.rect(P, bx, by, bd.w, 1, mix(face, '#ffffff', 0.22));
@@ -196,7 +205,8 @@
         /* A regular grid of small panes. Scattering them at random and
            making them large read as damage rather than as windows. */
         /* windows fade out with the rest of it */
-        var lit = L.theme === 'indoor' ? winLit : mix(face, '#ffffff', 0.34 * (1 - haze) + 0.08);
+        /* window grids in a light blue-grey, the way glass reads warm brick */
+        var lit = L.theme === 'indoor' ? winLit : mix(face, '#b8cdd8', 0.62);
         var cols = Math.floor((bd.w - 2) / 4);
         var inset = Math.max(1, (bd.w - cols * 4 + 2) >> 1);
         for (var wy = by + 4; wy < by + bd.h - 3; wy += 5) {
@@ -263,12 +273,12 @@
       Pixel.rect(P, x, y, s.w, 1, f.lip);
       return;
     }
+    /* Flat colour and ONE slightly darker shade for depth. No black
+       keyline: the reference has none anywhere, and an outline at this
+       pixel size reads as grime rather than as definition. */
     Pixel.rect(P, x, y, s.w, s.h, f.body);
     Pixel.rect(P, x, y, s.w, 2, f.lip);
     Pixel.rect(P, x, y + s.h - 2, s.w, 2, f.low);
-    Pixel.rect(P, x, y, s.w, 1, f.edge);
-    Pixel.rect(P, x, y, 1, s.h, f.edge);
-    Pixel.rect(P, x + s.w - 1, y, 1, s.h, f.edge);
   }
 
   /* --------------------------------------------------------- decor */
@@ -302,9 +312,8 @@
          as the top of a building rather than a bar floating in the sky */
       Pixel.rect(P, x, y, d.w, 5, mix(f.body, '#000000', 0.42));
       Pixel.rect(P, x, y, d.w, 1, mix(f.body, '#000000', 0.55));
-      for (var fw = x + 4; fw < x + d.w - 5; fw += 9) {
-        Pixel.rect(P, fw, y - 7, 4, 5, 'rgba(24,30,44,0.55)');
-        Pixel.rect(P, fw, y - 7, 4, 1, 'rgba(255,255,255,0.14)');
+      for (var fw = x + 3; fw < x + d.w - 3; fw += 6) {
+        Pixel.rect(P, fw, y - 5, 2, 3, 'rgba(30,36,50,0.45)');
       }
     } else if (d.kind === 'tank') {
       /* a water tank on legs */
@@ -496,16 +505,18 @@
     }
 
     /* far side limbs first so the body reads in front of them */
-    Pixel.limb(P, p[J.CHEST].x + ox, p[J.CHEST].y + oy, p[J.ELB_B].x + ox, p[J.ELB_B].y + oy, 3, m.limbBack);
-    Pixel.limb(P, p[J.ELB_B].x + ox, p[J.ELB_B].y + oy, p[J.HAND_B].x + ox, p[J.HAND_B].y + oy, 3, m.limbBack);
+    Pixel.limb(P, p[J.CHEST].x + ox, p[J.CHEST].y + oy, p[J.ELB_B].x + ox, p[J.ELB_B].y + oy, 2, m.limbBack);
+    Pixel.limb(P, p[J.ELB_B].x + ox, p[J.ELB_B].y + oy, p[J.HAND_B].x + ox, p[J.HAND_B].y + oy, 2, m.limbBack);
     Pixel.stamp(P, ART.HAND, m.hand, p[J.HAND_B].x + ox, p[J.HAND_B].y + oy, 0, flip);
-    Pixel.limb(P, p[J.HIP].x + ox, p[J.HIP].y + oy, p[J.KNEE_B].x + ox, p[J.KNEE_B].y + oy, 3, m.trousersBack);
-    Pixel.limb(P, p[J.KNEE_B].x + ox, p[J.KNEE_B].y + oy, p[J.FOOT_B].x + ox, p[J.FOOT_B].y + oy, 3, m.trousersBack);
-    Pixel.stamp(P, ART.SHOE, m.shoe, p[J.FOOT_B].x + ox, p[J.FOOT_B].y + oy, 0, flip);
-
-    Pixel.limb(P, p[J.HIP].x + ox, p[J.HIP].y + oy, p[J.KNEE_A].x + ox, p[J.KNEE_A].y + oy, 3, m.trousers);
-    Pixel.limb(P, p[J.KNEE_A].x + ox, p[J.KNEE_A].y + oy, p[J.FOOT_A].x + ox, p[J.FOOT_A].y + oy, 3, m.trousers);
-    Pixel.stamp(P, ART.SHOE, m.shoe, p[J.FOOT_A].x + ox, p[J.FOOT_A].y + oy, 0, flip);
+    /* ONE leg column, not two. These are plank-like people: the trousers
+       are a single block from the hips down, ending in a dark shoe. Two
+       separate legs at this size read as a spider, and they lose the
+       stiff, tipping-over silhouette the whole look rests on. */
+    var kx = (p[J.KNEE_A].x + p[J.KNEE_B].x) / 2, ky = (p[J.KNEE_A].y + p[J.KNEE_B].y) / 2;
+    var fx = (p[J.FOOT_A].x + p[J.FOOT_B].x) / 2, fy = (p[J.FOOT_A].y + p[J.FOOT_B].y) / 2;
+    Pixel.limb(P, p[J.HIP].x + ox, p[J.HIP].y + oy, kx + ox, ky + oy, 5, m.trousers);
+    Pixel.limb(P, kx + ox, ky + oy, fx + ox, fy + oy, 5, m.trousers);
+    Pixel.stamp(P, ART.SHOE, m.shoe, fx + ox, fy + oy, 0, flip);
 
     /* the torso rides the spine, not the collision box */
     var mx = (p[J.CHEST].x + p[J.HIP].x) / 2, my = (p[J.CHEST].y + p[J.HIP].y) / 2;
@@ -515,8 +526,8 @@
     var neck = Math.atan2(p[J.HEAD].y - p[J.CHEST].y, p[J.HEAD].x - p[J.CHEST].x) + Math.PI / 2;
     Pixel.stamp(P, ART.HEADS[r.def.head], m.head, p[J.HEAD].x + ox, p[J.HEAD].y + oy, neck, flip);
 
-    Pixel.limb(P, p[J.CHEST].x + ox, p[J.CHEST].y + oy, p[J.ELB_A].x + ox, p[J.ELB_A].y + oy, 3, m.limbJacket);
-    Pixel.limb(P, p[J.ELB_A].x + ox, p[J.ELB_A].y + oy, p[J.HAND_A].x + ox, p[J.HAND_A].y + oy, 3, m.limbJacket);
+    Pixel.limb(P, p[J.CHEST].x + ox, p[J.CHEST].y + oy, p[J.ELB_A].x + ox, p[J.ELB_A].y + oy, 2, m.limbJacket);
+    Pixel.limb(P, p[J.ELB_A].x + ox, p[J.ELB_A].y + oy, p[J.HAND_A].x + ox, p[J.HAND_A].y + oy, 2, m.limbJacket);
     Pixel.stamp(P, ART.HAND, m.hand, p[J.HAND_A].x + ox, p[J.HAND_A].y + oy, 0, flip);
     drawGun(r, cam);
 

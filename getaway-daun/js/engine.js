@@ -113,9 +113,13 @@
        asset - characters, platforms, props, skyline, clouds. Three, so a
        22-unit character stands about a tenth of the frame and the camera
        can show a wide slice of the level. */
-    W: 427,          /* world units across the view */
-    H: 240,
-    SCALE: 3,        /* screen pixels per world unit, and per art pixel */
+    /* Measured off the reference art: its frame works out at about
+       160x100 art pixels, which with a 22-unit character puts a racer at
+       roughly a quarter of the screen height. Eight screen pixels an art
+       pixel, and that holds for every asset in the game. */
+    W: 160,          /* world units across the view */
+    H: 90,
+    SCALE: 8,        /* screen pixels per world unit, and per art pixel */
 
     /* The interface does NOT live in world units - it would shrink every
        time the camera pulled back. It gets a fixed space of its own. */

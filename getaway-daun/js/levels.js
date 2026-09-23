@@ -23,9 +23,9 @@
       name: 'ROOFTOP ROW',
       theme: 'day',
       width: 2460, height: 230,
-      sky: ['#35c6ed', '#7fd8ee', '#ace0e9'],
-      city: ['#e0eedb', '#d2e2c6', '#c6d8ba'],
-      cityWarm: '#e8efcd', cityCool: '#b6e5e1',
+      sky: ['#29c7f0', '#29c7f0', '#29c7f0'],
+      city: ['#d9cfa8', '#bfa87c', '#8a7350'],
+      cityWarm: '#efe7a7', cityCool: '#6b6348',
       spawn: { x: 24, y: 120 },
       goal: { x: 2330, y: 122, w: 26, h: 26 },
       solids: [], items: [], checkpoints: [], decor: []
